@@ -19,6 +19,8 @@ class Ledger:
         self.commands, self.used, self.reserved = {}, set(), set()
         self.tower_cells, self.wall_cells = set(tower_cells), set(wall_cells)
         self.new_towers = 0
+        # Claims are work destinations, not occupied movement cells.
+        self.build_claims = {}
         self.purchases = set()
 
     def add(self, uid, cmd):

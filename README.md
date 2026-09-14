@@ -4,7 +4,9 @@
 
 **交付状态：可启动和测试的策略基线。** 建筑区域及部分建筑参数在任务书的内网图片中，当前无法读取。默认布局、建造费用沿用或推导自仓库 demo，正式比赛前需核对。未获得完整判题器，尚未验证比赛胜率、连续生存十天或完整计分表现。
 
-最新策略修正：矿石批量出售、造墙石料批量采集、失败建造点退避期间切换经济活动、按当回合可输出火力分配操控者、火箭空地溅射选点，以及电磁炮回合末伤害结算修正。具体对比、复现方法和限制见 [策略优化验证](docs/策略优化验证.md)。
+最新建墙与弱模型优化：取消首日六面墙上限、双工人协作、固定镜像矩形外围与射击口、目标认领、弱模型简化任务协议。说明和复现方法见 [建墙与弱模型优化](docs/建墙与弱模型优化.md)。
+
+上一轮策略修正：矿石批量出售、造墙石料批量采集、失败建造点退避期间切换经济活动、按当回合可输出火力分配操控者、火箭空地溅射选点，以及电磁炮回合末伤害结算修正。具体对比、复现方法和限制见 [策略优化验证](docs/策略优化验证.md)。
 
 ## 快速启动
 
@@ -44,6 +46,7 @@ python3 -m unittest discover -s tests -v
 python3 tools/replay.py examples/request.json
 python3 tools/replay.py examples/request.json --output examples/local-response.json
 python3 tools/strategy_benchmark.py
+python3 tools/fortification_benchmark.py
 ```
 
 回放工具还支持由多个连续回合请求组成的 JSON 数组。它只调用决策器，不模拟机器人、经济结算或任务判分。

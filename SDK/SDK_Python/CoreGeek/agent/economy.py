@@ -1,6 +1,7 @@
 from collections import Counter
+from dataclasses import replace
 from .commands import command
-from .model import ORES, WEAPONS, pos, distance
+from .model import ORES, WEAPONS, HEROES, pos, distance
 
 
 def walk(nav, ledger, hero, targets):
@@ -50,34 +51,47 @@ def use_inventory(turn, nav, ledger, hero):
 
 def wall_keeps_access(turn, nav, ledger, target):
     destinations = [turn.station.cells] if turn.station else []
-    vendors = {p for p, k in turn.zones.items() if k in ("vendor", "weaponShop")}
-    if vendors:
-        destinations.append(vendors)
-    # Preserve existing reachable routes; existing isolated actors must not block every wall build.
-    reachable = [(h, ds) for h in turn.heroes for ds in destinations
-                 if nav.approach(h, ds, ledger.reserved)]
-    turn.blocked.add(target)
+    for kind in ("vendor", "weaponShop", *ORES):
+        cells = {p for p, k in turn.zones.items() if k == kind}
+        if cells:
+            destinations.append(cells)
+    destinations.extend(w.cells for w in turn.weapons)
+    destinations.extend({p} for p, (_, name) in ledger.build_claims.items() if name in WEAPONS)
+    # Connectivity is structural: a passing actor must not turn a planned gate
+    # into a permanent extra hole. Check actors at their proposed end positions.
+    original = turn.blocked
+    mobile = {r.pos for r in (*turn.ours, *turn.enemies, *turn.robots)
+              if r.kind in HEROES or r in turn.robots}
+    built = {pos(c["targetPos"][0]) for c in ledger.commands.values() if c["action"] == "build"}
+    turn.blocked = (original - mobile) | built
+    heroes = []
+    for hero in turn.heroes:
+        cmd = ledger.commands.get(str(hero.id), {})
+        heroes.append(replace(hero, pos=pos(cmd["targetPos"][0])) if cmd.get("action") == "move" else hero)
     try:
-        return all(nav.approach(h, ds, ledger.reserved) is not None for h, ds in reachable)
+        reachable = [(h, ds) for h in heroes for ds in destinations if nav.approach(h, ds)]
+        turn.blocked = turn.blocked | {target}
+        return all(nav.approach(h, ds) is not None for h, ds in reachable)
     finally:
-        turn.blocked.discard(target)
+        turn.blocked = original
 
 
 def build(turn, cfg, mem, nav, ledger, hero, sites, name_for):
     options = []
     for index, target in enumerate(sites):
-        if target in turn.blocked or target in ledger.reserved or target in mem.build_failures:
+        if (target in turn.blocked or target in ledger.reserved
+                or target in ledger.build_claims or target in mem.build_failures):
             continue
         route = nav.approach(hero, [target], ledger.reserved)
         if route:
             options.append((route[0], index, target, route))
     for _, index, target, route in sorted(options):
         name = name_for(index)
-        if route[1] is not None:
-            return ledger.add(hero.id, command("move", route[1]))
         if name == "wall" and not wall_keeps_access(turn, nav, ledger, target):
             continue
-        if ledger.add(hero.id, command("build", target, name=name)):
+        action = command("move", route[1]) if route[1] is not None else command("build", target, name=name)
+        if ledger.add(hero.id, action):
+            ledger.build_claims[target] = (hero.id, name)
             return True
     return False
 
@@ -89,8 +103,6 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False):
     for p, kind in turn.zones.items():
         if kind not in ORES or p in mem.collect_failures:
             continue
-        if any(o["name"] == kind and o["startDay"] <= turn.day <= o["endDay"] for o in mem.outages):
-            continue
         if want_stone and kind != "stone":
             continue
         if local_only and not turn.adjacent(hero.pos, p):
@@ -100,6 +112,9 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False):
             value = 1 if want_stone else max(0, turn.prices.get(kind, 0))
             # Amortize walking over a batch; use observed market prices, no fixed copper preference.
             score = value / (1 + route[0] / max(1, cfg.sell_batch))
+            # Weak-model news is advisory; only observed failures disable a mine.
+            if any(o["name"] == kind and o["startDay"] <= turn.day <= o["endDay"] for o in mem.outages):
+                score *= .25
             options.append((-score, route[0], p, route))
     if not options:
         return False
@@ -113,23 +128,39 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder):
     if use_inventory(turn, nav, ledger, hero):
         return
     available_towers = [p for p in tower_sites if p not in turn.blocked
-                        and p not in ledger.reserved and p not in mem.build_failures]
+                        and p not in ledger.reserved and p not in ledger.build_claims
+                        and p not in mem.build_failures]
     missing_towers = max(0, min(len(available_towers),
-                               len(cfg.loadout) - len(turn.weapons) - ledger.new_towers))
+                               len(cfg.loadout) - len(turn.weapons)
+                               - sum(name in WEAPONS for _, name in ledger.build_claims.values())))
     if missing_towers and ledger.gold >= cfg.weapon_cost:
         if build(turn, cfg, mem, nav, ledger, hero, tower_sites, lambda i: cfg.loadout[i % len(cfg.loadout)]):
             return
-    walls = [u for u in turn.ours if u.kind == "wall"]
     available_walls = [p for p in wall_sites if p not in turn.blocked
-                       and p not in ledger.reserved and p not in mem.build_failures]
-    new_walls = sum(c["action"] == "build" and c.get("name") == "wall"
-                    for c in ledger.commands.values())
-    missing_walls = max(0, min(len(available_walls),
-                              min(len(wall_sites), 4 + turn.day * 2) - len(walls) - new_walls))
-    need_walls = builder and missing_walls > 0
-    stone_goal = min(max(cfg.wall_stones, cfg.stone_batch), missing_walls * cfg.wall_stones)
-    # Finish a batch at the mine instead of carrying one stone back each trip.
-    # If the deposit vanishes or is on outage, use the stones already carried.
+                       and p not in ledger.reserved and p not in ledger.build_claims
+                       and p not in mem.build_failures]
+    # Count missing blueprint cells, not all walls or an artificial daily quota.
+    missing_walls = len(available_walls)
+    other_stones = 0
+    for other in turn.workers:
+        if other.id == hero.id:
+            continue
+        spent = ledger.commands.get(str(other.id), {})
+        stones = other.inventory["stone"]
+        if spent.get("action") == "build" and spent.get("name") == "wall":
+            stones -= cfg.wall_stones
+        other_stones += max(0, stones)
+    need_walls = builder and missing_walls > 0 and (
+        hero.inventory["stone"] >= cfg.wall_stones or missing_walls * cfg.wall_stones > other_stones)
+    stone_goal = min(max(cfg.wall_stones, cfg.stone_batch),
+                     max(cfg.wall_stones, missing_walls * cfg.wall_stones - other_stones))
+    # As dusk approaches, spend an existing partial batch instead of returning
+    # with unused stone. Include travel, construction, and the operator margin.
+    if need_walls and hero.inventory["stone"] >= cfg.wall_stones:
+        routes = [r[0] for p in available_walls
+                  if (r := nav.approach(hero, [p], ledger.reserved)) is not None]
+        if routes and turn.day_left <= min(routes) + 2 * stone_goal + cfg.return_margin:
+            stone_goal = cfg.wall_stones
     if need_walls and hero.inventory["stone"] < stone_goal:
         if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
                 local_only=hero.inventory["stone"] >= cfg.wall_stones):
