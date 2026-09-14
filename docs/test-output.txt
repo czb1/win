@@ -1,0 +1,60 @@
+
+1300 static-state protocol turns: worst=2.37 ms (not an engine simulation)
+
+test_attack_key_controller_lock_and_target_count (test_agent.CombatTests.test_attack_key_controller_lock_and_target_count) ... ok
+test_cooldown_and_day_prevent_attack (test_agent.CombatTests.test_cooldown_and_day_prevent_attack) ... ok
+test_emergency_healing_excludes_operator (test_agent.CombatTests.test_emergency_healing_excludes_operator) ... ok
+test_invalid_cone_rejected (test_agent.CombatTests.test_invalid_cone_rejected) ... ok
+test_rocket_ignores_wall_railgun_does_not (test_agent.CombatTests.test_rocket_ignores_wall_railgun_does_not) ... ok
+test_rocket_splash_and_railgun_energy (test_agent.CombatTests.test_rocket_splash_and_railgun_energy) ... ok
+test_unknown_range_never_assumed_infinite (test_agent.CombatTests.test_unknown_range_never_assumed_infinite) ... ok
+test_invalid_json_and_recovery (test_agent.HTTPTests.test_invalid_json_and_recovery) ... ok
+test_invalid_state_has_complete_fallback (test_agent.HTTPTests.test_invalid_state_has_complete_fallback) ... decision failed; sending protocol-compatible empty turn
+Traceback (most recent call last):
+  File "/workspace/scratch/4b5069724d49/future-war/SDK/SDK_Python/CoreGeek/agent/server.py", line 74, in do_POST
+    response = self.server.agent.decide(data)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/4b5069724d49/future-war/SDK/SDK_Python/CoreGeek/agent/brain.py", line 25, in decide
+    turn = Turn(data, self.cfg)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/4b5069724d49/future-war/SDK/SDK_Python/CoreGeek/agent/model.py", line 68, in __init__
+    self.round = int(data["roundNo"])
+                     ~~~~^^^^^^^^^^^
+KeyError: 'roundNo'
+ok
+test_post_health_and_bad_path (test_agent.HTTPTests.test_post_health_and_bad_path) ... ok
+test_all_rounds_protocol_and_latency (test_agent.IntegrationTests.test_all_rounds_protocol_and_latency) ... ok
+test_duplicate_requests_do_not_spend_llm_twice (test_agent.IntegrationTests.test_duplicate_requests_do_not_spend_llm_twice) ... ok
+test_no_action_for_dead_team (test_agent.IntegrationTests.test_no_action_for_dead_team) ... ok
+test_repo_sample (test_agent.IntegrationTests.test_repo_sample) ... ok
+test_round_reset_and_side_switch (test_agent.IntegrationTests.test_round_reset_and_side_switch) ... ok
+test_daily_quota_and_task_exemption (test_agent.IntelligenceTests.test_daily_quota_and_task_exemption) ... ok
+test_failed_build_backoff (test_agent.IntelligenceTests.test_failed_build_backoff) ... ok
+test_json_only (test_agent.IntelligenceTests.test_json_only) ... ok
+test_llm_sandbox_answer_round_trip (test_agent.IntelligenceTests.test_llm_sandbox_answer_round_trip) ... ok
+test_malformed_news_retries_within_quota (test_agent.IntelligenceTests.test_malformed_news_retries_within_quota) ... ok
+test_skipped_turn_drops_stale_answer (test_agent.IntelligenceTests.test_skipped_turn_drops_stale_answer) ... ok
+test_task_death_clears_pending_work (test_agent.IntelligenceTests.test_task_death_clears_pending_work) ... ok
+test_treasure_requires_evidence (test_agent.IntelligenceTests.test_treasure_requires_evidence) ... ok
+test_build_limit_and_night (test_agent.LedgerTests.test_build_limit_and_night) ... ok
+test_no_collect_full_or_wrong_role (test_agent.LedgerTests.test_no_collect_full_or_wrong_role) ... ok
+test_shared_build_budget (test_agent.LedgerTests.test_shared_build_budget) ... ok
+test_treasure_requires_exact_inventory_counts (test_agent.LedgerTests.test_treasure_requires_exact_inventory_counts) ... ok
+test_unknown_action_and_missing_target (test_agent.LedgerTests.test_unknown_action_and_missing_target) ... ok
+test_configuration_rejects_bad_loadout (test_agent.ModelTests.test_configuration_rejects_bad_loadout) ... ok
+test_day_boundaries (test_agent.ModelTests.test_day_boundaries) ... ok
+test_dead_units_do_not_block (test_agent.ModelTests.test_dead_units_do_not_block) ... ok
+test_enemy_and_neutral_block (test_agent.ModelTests.test_enemy_and_neutral_block) ... ok
+test_explicit_empty_layout_builds_nothing (test_agent.ModelTests.test_explicit_empty_layout_builds_nothing) ... ok
+test_station_footprint (test_agent.ModelTests.test_station_footprint) ... ok
+test_two_cell_task_point (test_agent.ModelTests.test_two_cell_task_point) ... ok
+test_approach_not_onto_resource (test_agent.NavigationTests.test_approach_not_onto_resource) ... ok
+test_diagonal_corner_cut_is_legal (test_agent.NavigationTests.test_diagonal_corner_cut_is_legal) ... ok
+test_same_destination_and_swaps_rejected (test_agent.NavigationTests.test_same_destination_and_swaps_rejected) ... ok
+test_start_equals_goal (test_agent.NavigationTests.test_start_equals_goal) ... ok
+test_unreachable_and_deadline (test_agent.NavigationTests.test_unreachable_and_deadline) ... ok
+
+----------------------------------------------------------------------
+Ran 40 tests in 0.775s
+
+OK

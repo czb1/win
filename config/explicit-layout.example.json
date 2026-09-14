@@ -1,0 +1,8 @@
+{
+  "layout_mode": "explicit",
+  "weapon_cells": [],
+  "wall_cells": [],
+  "weapon_cost": 25,
+  "wall_stones": 1,
+  "llm_enabled": true
+}

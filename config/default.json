@@ -1,0 +1,20 @@
+{
+  "round_origin": 1,
+  "layout_mode": "demo_inferred",
+  "weapon_cost": 25,
+  "wall_stones": 1,
+  "weapon_cells": [],
+  "wall_cells": [],
+  "loadout": ["gatling", "railgun", "rocket"],
+  "stone_batch": 6,
+  "sell_batch": 12,
+  "return_margin": 5,
+  "task_min_rounds": 8,
+  "llm_enabled": true,
+  "daily_llm_limit": 3,
+  "max_python_chars": 12000,
+  "max_body_bytes": 2097152,
+  "decision_seconds": 3.5,
+  "build_retry_rounds": 20,
+  "task_max_rounds": 40
+}

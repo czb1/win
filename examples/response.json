@@ -1,0 +1,33 @@
+{
+  "roleCommandMap": {
+    "10011": {
+      "action": "move",
+      "targetPos": [
+        {
+          "x": 9,
+          "y": 13
+        }
+      ]
+    },
+    "10010": {
+      "action": "move",
+      "targetPos": [
+        {
+          "x": 6,
+          "y": 23
+        }
+      ]
+    },
+    "10012": {
+      "action": "move",
+      "targetPos": [
+        {
+          "x": 9,
+          "y": 17
+        }
+      ]
+    }
+  },
+  "prompt": "",
+  "executeCmd": ""
+}
