@@ -73,6 +73,16 @@ class LayoutRegressionTests(unittest.TestCase):
             turn, _, nav, _ = setup_case(case)
             self.assertTrue(select_targets(turn, turn.weapons[0], {}, nav.deadline))
 
+    def test_diagonal_custom_railgun_has_a_clear_supercover_ray(self):
+        cfg = Config(loadout=["rocket", "rocket", "railgun"])
+        p = payload(71, roles=[unit(13, "station", 3, 11)])
+        towers, walls = layout(Turn(p, cfg), cfg)
+        p["teamOur"]["roles"] += [unit(100+i, "wall", *point) for i, point in enumerate(walls)]
+        p["teamOur"]["roles"].append(unit(20, "railgun", *towers[2]))
+        p["robot"]["roles"] = [unit(80, "smallRobot", 8, 6, health=40)]
+        turn = Turn(p, cfg)
+        self.assertTrue(select_targets(turn, turn.weapons[0], {}, monotonic() + 3))
+
     def test_complete_wall_ring_keeps_worker_route_to_base(self):
         p = payload(roles=[unit(13, "station", 3, 11), unit(10, "worker", 8, 10)])
         towers, walls = layout(Turn(p, Config()), Config())

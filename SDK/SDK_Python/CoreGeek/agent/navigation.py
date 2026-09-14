@@ -101,5 +101,8 @@ def layout(turn, cfg):
         slot = u + du, v + dv
         if slot in perimeter:
             openings.add(slot)
+            if du and dv:
+                # Supercover rays touch both side cells at a diagonal corner.
+                openings.update({(u + du, v), (u, v + dv)} & perimeter)
     order = sorted(perimeter - openings, key=lambda p: (-max(p), -min(p), p))
     return towers, [world(p) for p in order if turn.inside(world(p))]
