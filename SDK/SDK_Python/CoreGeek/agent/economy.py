@@ -82,7 +82,7 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for):
     return False
 
 
-def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False):
+def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False):
     if not hero.space:
         return False
     options = []
@@ -92,6 +92,8 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False):
         if any(o["name"] == kind and o["startDay"] <= turn.day <= o["endDay"] for o in mem.outages):
             continue
         if want_stone and kind != "stone":
+            continue
+        if local_only and not turn.adjacent(hero.pos, p):
             continue
         route = nav.approach(hero, [p], ledger.reserved)
         if route:
@@ -110,18 +112,32 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False):
 def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder):
     if use_inventory(turn, nav, ledger, hero):
         return
-    if len(turn.weapons) + ledger.new_towers < len(cfg.loadout) and ledger.gold >= cfg.weapon_cost:
+    available_towers = [p for p in tower_sites if p not in turn.blocked
+                        and p not in ledger.reserved and p not in mem.build_failures]
+    missing_towers = max(0, min(len(available_towers),
+                               len(cfg.loadout) - len(turn.weapons) - ledger.new_towers))
+    if missing_towers and ledger.gold >= cfg.weapon_cost:
         if build(turn, cfg, mem, nav, ledger, hero, tower_sites, lambda i: cfg.loadout[i % len(cfg.loadout)]):
             return
     walls = [u for u in turn.ours if u.kind == "wall"]
-    need_walls = builder and len(walls) < min(len(wall_sites), 4 + turn.day * 2)
+    available_walls = [p for p in wall_sites if p not in turn.blocked
+                       and p not in ledger.reserved and p not in mem.build_failures]
+    new_walls = sum(c["action"] == "build" and c.get("name") == "wall"
+                    for c in ledger.commands.values())
+    missing_walls = max(0, min(len(available_walls),
+                              min(len(wall_sites), 4 + turn.day * 2) - len(walls) - new_walls))
+    need_walls = builder and missing_walls > 0
+    stone_goal = min(max(cfg.wall_stones, cfg.stone_batch), missing_walls * cfg.wall_stones)
+    # Finish a batch at the mine instead of carrying one stone back each trip.
+    # If the deposit vanishes or is on outage, use the stones already carried.
+    if need_walls and hero.inventory["stone"] < stone_goal:
+        if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
+                local_only=hero.inventory["stone"] >= cfg.wall_stones):
+            return
     if need_walls and hero.inventory["stone"] >= cfg.wall_stones:
         if build(turn, cfg, mem, nav, ledger, hero, wall_sites, lambda _: "wall"):
             return
-    if need_walls and hero.inventory["stone"] < cfg.stone_batch:
-        if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True):
-            return
-    reserve = max(0, len(cfg.loadout)-len(turn.weapons)-ledger.new_towers)*cfg.weapon_cost
+    reserve = missing_towers * cfg.weapon_cost
     # Buy only a currently applicable voucher, without duplicating one already carried by the team.
     if not any("UpgradeVoucher" in item for h in turn.heroes for item in h.backpack):
         upgrade = next((f"WeaponUpgradeVoucher{w.level}" for w in sorted(turn.weapons, key=lambda w: (w.level, w.id)) if w.level < 3), None)
@@ -132,13 +148,21 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder):
                 return
     counts = hero.inventory
     ore_count = sum(counts[k] for k in ORES)
-    if ore_count and (ore_count >= cfg.sell_batch or not hero.space or ledger.gold < cfg.weapon_cost):
-        sellable = [k for k in ORES if counts[k] and k in turn.prices and not (need_walls and k == "stone")]
+    sellable = [k for k in ORES if counts[k] and turn.prices.get(k, 0) > 0
+                and not (need_walls and k == "stone")]
+    sale_value = sum(counts[k] * turn.prices[k] for k in sellable)
+    funds_tower = missing_towers and ledger.gold < cfg.weapon_cost <= ledger.gold + sale_value
+    if ore_count and (ore_count >= cfg.sell_batch or not hero.space or funds_tower):
         if sellable:
             kind = max(sellable, key=lambda k: counts[k] * turn.prices[k])
             if visit(turn, nav, ledger, hero, "vendor", command("sell", name=kind, num=counts[kind])):
                 return
-    mine(turn, cfg, mem, nav, ledger, hero)
+    if mine(turn, cfg, mem, nav, ledger, hero):
+        return
+    # A depleted/unreachable mine must not strand a partial saleable batch.
+    if sellable:
+        kind = max(sellable, key=lambda k: counts[k] * turn.prices[k])
+        visit(turn, nav, ledger, hero, "vendor", command("sell", name=kind, num=counts[kind]))
 
 
 def pioneer(turn, cfg, mem, nav, ledger, hero):
