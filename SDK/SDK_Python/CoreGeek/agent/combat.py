@@ -1,6 +1,6 @@
 """Defence assignment and weapon-specific targeting. No simulated enemy moves."""
 from itertools import permutations
-from .model import distance, dump
+from .model import distance, dump, neighbours
 from .commands import command
 from .navigation import check_time
 
@@ -33,15 +33,25 @@ def assignments(turn, nav, ledger):
     if not count:
         return []
     routes = {(h.id, w.id): nav.approach(h, [w.pos], ledger.reserved) for h in heroes for w in towers}
-    best, result = float("inf"), []
+    # When an operator heals/dies, tower IDs must not decide which gun stays idle.
+    firepower = {}
+    for w in towers:
+        damage = {}
+        if not turn.is_day and not w.cooldown:
+            select_targets(turn, w, damage, nav.deadline)
+        firepower[w.id] = sum(damage.get(r.id, 0) * threat(turn, r) for r in turn.robots)
+    best, result = None, []
     for selected in permutations(towers, count):
         for crew in permutations(heroes, count):
             check_time(nav.deadline)
             pairs = list(zip(crew, selected))
-            cost = sum(routes[h.id, w.id][0] if routes[h.id, w.id] else 10000 for h, w in pairs)
-            if cost < best:
+            travel = sum(routes[h.id, w.id][0] if routes[h.id, w.id] else 10000 for h, w in pairs)
+            immediate = sum(firepower[w.id] for h, w in pairs
+                            if routes[h.id, w.id] and routes[h.id, w.id][0] == 0)
+            cost = (-immediate, travel)
+            if best is None or cost < best:
                 best, result = cost, pairs
-    return result
+    return sorted(result, key=lambda pair: (-firepower[pair[1].id], pair[1].id))
 
 
 def threat(turn, robot):
@@ -52,9 +62,10 @@ def threat(turn, robot):
 
 
 def select_targets(turn, tower, damage, deadline):
-    targets = [r for r in turn.robots if distance(tower.pos, r.pos) <= tower.attack_range]
-    if not targets or tower.attack_range <= 0:
+    if tower.attack_range <= 0:
         return []
+    check_time(deadline)
+    targets = [r for r in turn.robots if distance(tower.pos, r.pos) <= tower.attack_range]
     # Shot origin follows upstream demo (weapon centre); confirm against official engine.
     barriers = {p for p, kind in turn.zones.items() if kind != "land"}
     for u in (*turn.ours, *turn.enemies):
@@ -62,9 +73,8 @@ def select_targets(turn, tower, damage, deadline):
             barriers.update(u.cells)
     if tower.kind != "rocket":
         targets = [r for r in targets if not (set(line_cells(tower.pos, r.pos)) & barriers)]
-    if not targets:
-        return []
     remaining = {r.id: max(0, r.health - damage.get(r.id, 0)) for r in turn.robots}
+    weights = {r.id: threat(turn, r) for r in turn.robots}
     if tower.kind == "railgun":
         options = []
         for r in targets:
@@ -72,40 +82,55 @@ def select_targets(turn, tower, damage, deadline):
             path = set(line_cells(tower.pos, r.pos))
             energy, score, hits = max(0, tower.power), 0, {}
             for hit in sorted((b for b in turn.robots if b.pos in path), key=lambda b: distance(tower.pos, b.pos)):
-                amount = min(energy, remaining[hit.id])
-                energy -= amount
+                # All damage settles at turn end: earlier planned shots do NOT
+                # reduce the energy absorbed by a currently living blocker.
+                actual = min(energy, hit.health)
+                energy -= actual
+                amount = min(actual, remaining[hit.id])
                 hits[hit.id] = amount
                 score += amount * threat(turn, hit)
             options.append((score, -r.id, r.pos, hits))
+        if not options:
+            return []
         score, _, target, hits = max(options, key=lambda x: x[:2])
         if score <= 0:
             return []
         for uid, amount in hits.items():
             damage[uid] = damage.get(uid, 0) + amount
         return [target]
+    # Cache physical hits, then rescore marginal damage after each projectile.
+    # A rocket's best landing cell can be empty, including at the range edge.
+    shots = {}
+    if tower.kind == "rocket":
+        for robot in turn.robots:
+            check_time(deadline)
+            for point in [robot.pos, *neighbours(robot.pos)]:
+                if turn.inside(point) and distance(tower.pos, point) <= tower.attack_range:
+                    shots.setdefault(point, {})[robot.id] = 20 if point == robot.pos else 10
+    else:
+        for robot in targets:
+            check_time(deadline)
+            path = set(line_cells(tower.pos, robot.pos))
+            hit = min((b for b in turn.robots if b.pos in path),
+                      key=lambda b: distance(tower.pos, b.pos), default=robot)
+            shots[robot.pos] = {hit.id: 10}
     result = []
     for _ in range(tower.level):
         check_time(deadline)
-        candidates = targets
+        candidates = shots
         if tower.kind == "gatling":
-            candidates = [r for r in targets if all(
-                (r.pos[0]-tower.pos[0])*(p[0]-tower.pos[0]) + (r.pos[1]-tower.pos[1])*(p[1]-tower.pos[1]) >= 0 for p in result)]
+            candidates = [q for q in shots if all(
+                (q[0]-tower.pos[0])*(p[0]-tower.pos[0]) + (q[1]-tower.pos[1])*(p[1]-tower.pos[1]) >= 0 for p in result)]
         ranked = []
-        for r in candidates:
-            if tower.kind == "rocket":
-                hits = {b.id: min(remaining[b.id], 20 if b.pos == r.pos else 10)
-                        for b in turn.robots if distance(b.pos, r.pos) <= 1}
-            else:
-                path = set(line_cells(tower.pos, r.pos))
-                # Bullets stop at the nearest living robot, even if earlier planned shots kill it at end of turn.
-                hit = min((b for b in turn.robots if b.pos in path), key=lambda b: distance(tower.pos, b.pos), default=r)
-                hits = {hit.id: min(remaining[hit.id], 10)}
-            score = sum(amount * threat(turn, turn_robot) for turn_robot in turn.robots
-                        if (amount := hits.get(turn_robot.id, 0)))
-            ranked.append((score, -r.id, r.pos, hits))
+        for point in candidates:
+            hits = {uid: min(remaining[uid], amount) for uid, amount in shots[point].items()}
+            score = sum(amount * weights[uid] for uid, amount in hits.items())
+            ranked.append((score, point, hits))
         if not ranked:
             return []
-        _, _, target, hits = max(ranked, key=lambda x: x[:2])
+        score, target, hits = min(ranked, key=lambda x: (-x[0], x[1]))
+        if score <= 0 and not result:
+            return []
         result.append(target)
         for uid, amount in hits.items():
             remaining[uid] -= amount
@@ -122,10 +147,12 @@ def defend(turn, nav, ledger, pairs=None):
         if route and route[1] is not None:
             ledger.add(hero.id, command("move", route[1]))
         elif route and not turn.is_day and not tower.cooldown:
-            targets = select_targets(turn, tower, damage, nav.deadline)
+            planned = damage.copy()
+            targets = select_targets(turn, tower, planned, nav.deadline)
             if targets:
-                ledger.add(tower.id, {"action": "attack", "controllerId": str(hero.id),
-                                      "targetPos": [dump(p) for p in targets]})
+                if ledger.add(tower.id, {"action": "attack", "controllerId": str(hero.id),
+                                        "targetPos": [dump(p) for p in targets]}):
+                    damage = planned
 
 
 def emergency_items(turn, ledger):
