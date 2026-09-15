@@ -8,6 +8,8 @@
   "loadout": ["rocket", "rocket", "rocket"],
   "stone_batch": 6,
   "sell_batch": 12,
+  "sell_batch_max": 40,
+  "economy_rounds": 40,
   "return_margin": 5,
   "task_min_rounds": 12,
   "task_danger_radius": 6,

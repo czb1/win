@@ -1,0 +1,688 @@
+{
+  "scope": "Controlled fixtures, no battle, official engine, task rewards or win-rate inference",
+  "baseline": "3ecee1c4d6f4b4733700a849bb463e2b52c521cf",
+  "python": "3.12.14",
+  "progression_before": {
+    "scope": "controlled infinite deposits and fixed prices; no battle or win rate",
+    "days": 5,
+    "gold": 1190,
+    "invalid_actions": 0,
+    "weapon_levels": [
+      3,
+      3,
+      3
+    ],
+    "station_level": 3,
+    "walls": 6,
+    "first_rounds": {
+      "WeaponUpgradeVoucher1": 17,
+      "Medicine": 21,
+      "used_WeaponUpgradeVoucher1": 22,
+      "StationUpgradeVoucher1": 57,
+      "used_StationUpgradeVoucher1": 63,
+      "WeaponUpgradeVoucher2": 151,
+      "used_WeaponUpgradeVoucher2": 156,
+      "StationUpgradeVoucher2": 284,
+      "used_StationUpgradeVoucher2": 290,
+      "WallUpgradeVoucher1": 296,
+      "used_WallUpgradeVoucher1": 299,
+      "WallUpgradeVoucher2": 302,
+      "used_WallUpgradeVoucher2": 305
+    },
+    "purchases": {
+      "WeaponUpgradeVoucher1": 3,
+      "Medicine": 3,
+      "StationUpgradeVoucher1": 1,
+      "WeaponUpgradeVoucher2": 3,
+      "StationUpgradeVoucher2": 1,
+      "WallUpgradeVoucher1": 6,
+      "WallUpgradeVoucher2": 6
+    },
+    "upgrades": {
+      "WeaponUpgradeVoucher1": 3,
+      "StationUpgradeVoucher1": 1,
+      "WeaponUpgradeVoucher2": 3,
+      "StationUpgradeVoucher2": 1,
+      "WallUpgradeVoucher1": 6,
+      "WallUpgradeVoucher2": 6
+    },
+    "actions": {
+      "move": 318,
+      "collect": 271,
+      "build": 6,
+      "sell": 21,
+      "buy": 23,
+      "use": 21
+    },
+    "worst_ms": 12.78
+  },
+  "far_shop_before": {
+    "case": "far_shop",
+    "mirror": false,
+    "days": 1,
+    "checkpoints": {
+      "40": {
+        "gold": 20,
+        "income": 120,
+        "spent": 175,
+        "weapon_levels": [
+          1,
+          1,
+          1
+        ],
+        "operators_ready": 0,
+        "walls": 5,
+        "front_walls": 5,
+        "carried_vouchers": 1,
+        "carried_ore_value": 1
+      },
+      "70": {
+        "gold": 10,
+        "income": 120,
+        "spent": 185,
+        "weapon_levels": [
+          1,
+          1,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 7,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 0
+      }
+    },
+    "early_worker_actions": {
+      "move": 52,
+      "build": 8,
+      "collect": 18,
+      "sell": 1,
+      "buy": 1
+    },
+    "actions": {
+      "move": 101,
+      "build": 10,
+      "collect": 19,
+      "sell": 1,
+      "buy": 2,
+      "use": 1
+    },
+    "purchases": {
+      "WeaponUpgradeVoucher1": 1,
+      "Medicine": 1
+    },
+    "first": {
+      "move": 1,
+      "build_rocket": 3,
+      "collect": 8,
+      "build_wall": 17,
+      "sell_copper": 27,
+      "buy_WeaponUpgradeVoucher1": 38,
+      "buy_Medicine": 42,
+      "use_WeaponUpgradeVoucher1": 56
+    },
+    "invalid_actions": 0,
+    "worst_ms": 142.93
+  },
+  "opening_before": {
+    "case": "near",
+    "mirror": false,
+    "days": 3,
+    "checkpoints": {
+      "40": {
+        "gold": 0,
+        "income": 120,
+        "spent": 195,
+        "weapon_levels": [
+          1,
+          1,
+          2
+        ],
+        "operators_ready": 1,
+        "walls": 5,
+        "front_walls": 5,
+        "carried_vouchers": 0,
+        "carried_ore_value": 71
+      },
+      "70": {
+        "gold": 20,
+        "income": 240,
+        "spent": 295,
+        "weapon_levels": [
+          1,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 6,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 43
+      },
+      "170": {
+        "gold": 160,
+        "income": 480,
+        "spent": 395,
+        "weapon_levels": [
+          1,
+          2,
+          2
+        ],
+        "operators_ready": 1,
+        "walls": 10,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 0
+      },
+      "200": {
+        "gold": 130,
+        "income": 600,
+        "spent": 545,
+        "weapon_levels": [
+          1,
+          2,
+          3
+        ],
+        "operators_ready": 2,
+        "walls": 10,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 0
+      },
+      "300": {
+        "gold": 100,
+        "income": 720,
+        "spent": 695,
+        "weapon_levels": [
+          1,
+          2,
+          3
+        ],
+        "operators_ready": 1,
+        "walls": 12,
+        "front_walls": 6,
+        "carried_vouchers": 1,
+        "carried_ore_value": 94
+      },
+      "330": {
+        "gold": 70,
+        "income": 840,
+        "spent": 845,
+        "weapon_levels": [
+          1,
+          3,
+          3
+        ],
+        "operators_ready": 2,
+        "walls": 14,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 2
+      }
+    },
+    "early_worker_actions": {
+      "move": 42,
+      "build": 8,
+      "collect": 25,
+      "sell": 1,
+      "buy": 3,
+      "use": 1
+    },
+    "actions": {
+      "move": 244,
+      "build": 17,
+      "collect": 100,
+      "sell": 7,
+      "buy": 8,
+      "use": 6
+    },
+    "purchases": {
+      "Medicine": 2,
+      "WeaponUpgradeVoucher1": 2,
+      "StationUpgradeVoucher1": 1,
+      "WeaponUpgradeVoucher2": 2,
+      "StationUpgradeVoucher2": 1
+    },
+    "first": {
+      "move": 1,
+      "build_rocket": 3,
+      "collect": 8,
+      "build_wall": 17,
+      "sell_copper": 27,
+      "buy_Medicine": 30,
+      "buy_WeaponUpgradeVoucher1": 31,
+      "use_WeaponUpgradeVoucher1": 38,
+      "buy_StationUpgradeVoucher1": 160,
+      "use_StationUpgradeVoucher1": 167,
+      "buy_WeaponUpgradeVoucher2": 176,
+      "use_WeaponUpgradeVoucher2": 185,
+      "buy_StationUpgradeVoucher2": 313,
+      "use_StationUpgradeVoucher2": 323
+    },
+    "invalid_actions": 0,
+    "worst_ms": 75.39
+  },
+  "opening_after": {
+    "case": "near",
+    "mirror": false,
+    "days": 3,
+    "checkpoints": {
+      "40": {
+        "gold": 395,
+        "income": 320,
+        "spent": 0,
+        "weapon_levels": [],
+        "operators_ready": 0,
+        "walls": 0,
+        "front_walls": 0,
+        "carried_vouchers": 0,
+        "carried_ore_value": 0
+      },
+      "70": {
+        "gold": 20,
+        "income": 320,
+        "spent": 375,
+        "weapon_levels": [
+          2,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 5,
+        "front_walls": 5,
+        "carried_vouchers": 0,
+        "carried_ore_value": 0
+      },
+      "170": {
+        "gold": 320,
+        "income": 620,
+        "spent": 375,
+        "weapon_levels": [
+          2,
+          2,
+          2
+        ],
+        "operators_ready": 1,
+        "walls": 5,
+        "front_walls": 5,
+        "carried_vouchers": 0,
+        "carried_ore_value": 100
+      },
+      "200": {
+        "gold": 120,
+        "income": 720,
+        "spent": 675,
+        "weapon_levels": [
+          2,
+          3,
+          3
+        ],
+        "operators_ready": 3,
+        "walls": 6,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 0
+      },
+      "300": {
+        "gold": 520,
+        "income": 1120,
+        "spent": 675,
+        "weapon_levels": [
+          2,
+          3,
+          3
+        ],
+        "operators_ready": 1,
+        "walls": 6,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 0
+      },
+      "330": {
+        "gold": 160,
+        "income": 1160,
+        "spent": 1075,
+        "weapon_levels": [
+          3,
+          3,
+          3
+        ],
+        "operators_ready": 3,
+        "walls": 6,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 1
+      }
+    },
+    "early_worker_actions": {
+      "move": 44,
+      "collect": 32,
+      "sell": 4
+    },
+    "actions": {
+      "move": 235,
+      "collect": 123,
+      "sell": 14,
+      "buy": 5,
+      "build": 9,
+      "use": 8
+    },
+    "purchases": {
+      "WeaponUpgradeVoucher1": 3,
+      "WeaponUpgradeVoucher2": 3,
+      "StationUpgradeVoucher1": 1,
+      "StationUpgradeVoucher2": 1
+    },
+    "first": {
+      "move": 1,
+      "collect": 10,
+      "sell_copper": 32,
+      "buy_WeaponUpgradeVoucher1": 43,
+      "build_rocket": 46,
+      "use_WeaponUpgradeVoucher1": 47,
+      "build_wall": 59,
+      "buy_WeaponUpgradeVoucher2": 175,
+      "use_WeaponUpgradeVoucher2": 179,
+      "buy_StationUpgradeVoucher1": 305,
+      "buy_StationUpgradeVoucher2": 306,
+      "use_StationUpgradeVoucher1": 317,
+      "use_StationUpgradeVoucher2": 318
+    },
+    "invalid_actions": 0,
+    "worst_ms": 324.45
+  },
+  "far_shop_after": {
+    "case": "far_shop",
+    "mirror": false,
+    "days": 1,
+    "checkpoints": {
+      "40": {
+        "gold": 60,
+        "income": 160,
+        "spent": 175,
+        "weapon_levels": [
+          1,
+          1,
+          1
+        ],
+        "operators_ready": 0,
+        "walls": 0,
+        "front_walls": 0,
+        "carried_vouchers": 1,
+        "carried_ore_value": 5
+      },
+      "70": {
+        "gold": 90,
+        "income": 190,
+        "spent": 175,
+        "weapon_levels": [
+          1,
+          1,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 6,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 20
+      }
+    },
+    "early_worker_actions": {
+      "move": 53,
+      "collect": 21,
+      "sell": 2,
+      "build": 3,
+      "buy": 1
+    },
+    "actions": {
+      "move": 91,
+      "collect": 27,
+      "sell": 3,
+      "build": 9,
+      "buy": 1,
+      "use": 1
+    },
+    "purchases": {
+      "WeaponUpgradeVoucher1": 1
+    },
+    "first": {
+      "move": 1,
+      "collect": 10,
+      "sell_copper": 22,
+      "build_rocket": 28,
+      "buy_WeaponUpgradeVoucher1": 33,
+      "build_wall": 43,
+      "use_WeaponUpgradeVoucher1": 49
+    },
+    "invalid_actions": 0,
+    "worst_ms": 189.99
+  },
+  "remote_ore_after": {
+    "case": "remote_ore",
+    "mirror": false,
+    "days": 1,
+    "checkpoints": {
+      "40": {
+        "gold": 255,
+        "income": 180,
+        "spent": 0,
+        "weapon_levels": [],
+        "operators_ready": 0,
+        "walls": 0,
+        "front_walls": 0,
+        "carried_vouchers": 0,
+        "carried_ore_value": 6
+      },
+      "70": {
+        "gold": 86,
+        "income": 186,
+        "spent": 175,
+        "weapon_levels": [
+          1,
+          1,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 5,
+        "front_walls": 5,
+        "carried_vouchers": 0,
+        "carried_ore_value": 1
+      }
+    },
+    "early_worker_actions": {
+      "move": 47,
+      "collect": 31,
+      "sell": 2
+    },
+    "actions": {
+      "move": 85,
+      "collect": 37,
+      "sell": 3,
+      "buy": 1,
+      "build": 8,
+      "use": 1
+    },
+    "purchases": {
+      "WeaponUpgradeVoucher1": 1
+    },
+    "first": {
+      "move": 1,
+      "collect": 10,
+      "sell_iron": 31,
+      "buy_WeaponUpgradeVoucher1": 45,
+      "build_rocket": 47,
+      "use_WeaponUpgradeVoucher1": 49,
+      "build_wall": 57
+    },
+    "invalid_actions": 0,
+    "worst_ms": 129.28
+  },
+  "remote_ore_before": {
+    "case": "remote_ore",
+    "mirror": false,
+    "days": 1,
+    "checkpoints": {
+      "40": {
+        "gold": 52,
+        "income": 72,
+        "spent": 95,
+        "weapon_levels": [
+          1,
+          1,
+          1
+        ],
+        "operators_ready": 0,
+        "walls": 6,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 38
+      },
+      "70": {
+        "gold": 24,
+        "income": 144,
+        "spent": 195,
+        "weapon_levels": [
+          1,
+          1,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 8,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 21
+      }
+    },
+    "early_worker_actions": {
+      "move": 42,
+      "build": 9,
+      "collect": 26,
+      "sell": 1,
+      "buy": 2
+    },
+    "actions": {
+      "move": 77,
+      "build": 11,
+      "collect": 38,
+      "sell": 2,
+      "buy": 3,
+      "use": 1
+    },
+    "purchases": {
+      "Medicine": 2,
+      "WeaponUpgradeVoucher1": 1
+    },
+    "first": {
+      "move": 1,
+      "build_rocket": 3,
+      "collect": 8,
+      "build_wall": 17,
+      "sell_iron": 28,
+      "buy_Medicine": 31,
+      "buy_WeaponUpgradeVoucher1": 54,
+      "use_WeaponUpgradeVoucher1": 61
+    },
+    "invalid_actions": 0,
+    "worst_ms": 211.02
+  },
+  "progression_after": {
+    "scope": "controlled infinite deposits and fixed prices; no battle or win rate",
+    "days": 5,
+    "gold": 3390,
+    "invalid_actions": 0,
+    "weapon_levels": [
+      3,
+      3,
+      3
+    ],
+    "station_level": 3,
+    "walls": 6,
+    "first_rounds": {
+      "Medicine": 17,
+      "WeaponUpgradeVoucher1": 42,
+      "WeaponUpgradeVoucher2": 43,
+      "used_WeaponUpgradeVoucher1": 47,
+      "used_WeaponUpgradeVoucher2": 54,
+      "StationUpgradeVoucher1": 173,
+      "StationUpgradeVoucher2": 174,
+      "used_StationUpgradeVoucher1": 181,
+      "used_StationUpgradeVoucher2": 182
+    },
+    "purchases": {
+      "Medicine": 1,
+      "WeaponUpgradeVoucher1": 3,
+      "WeaponUpgradeVoucher2": 3,
+      "StationUpgradeVoucher1": 1,
+      "StationUpgradeVoucher2": 1
+    },
+    "upgrades": {
+      "WeaponUpgradeVoucher1": 3,
+      "WeaponUpgradeVoucher2": 3,
+      "StationUpgradeVoucher1": 1,
+      "StationUpgradeVoucher2": 1
+    },
+    "actions": {
+      "move": 139,
+      "collect": 447,
+      "sell": 45,
+      "buy": 6,
+      "use": 9,
+      "build": 6
+    },
+    "worst_ms": 33.87
+  },
+  "far_shop_fixed_40": {
+    "case": "far_shop",
+    "mirror": false,
+    "days": 1,
+    "checkpoints": {
+      "40": {
+        "gold": 395,
+        "income": 320,
+        "spent": 0,
+        "weapon_levels": [],
+        "operators_ready": 0,
+        "walls": 0,
+        "front_walls": 0,
+        "carried_vouchers": 0,
+        "carried_ore_value": 0
+      },
+      "70": {
+        "gold": 320,
+        "income": 320,
+        "spent": 75,
+        "weapon_levels": [
+          1,
+          1,
+          1
+        ],
+        "operators_ready": 3,
+        "walls": 5,
+        "front_walls": 5,
+        "carried_vouchers": 0,
+        "carried_ore_value": 2
+      }
+    },
+    "early_worker_actions": {
+      "move": 44,
+      "collect": 32,
+      "sell": 4
+    },
+    "actions": {
+      "move": 87,
+      "collect": 39,
+      "sell": 4,
+      "build": 8
+    },
+    "purchases": {},
+    "first": {
+      "move": 1,
+      "collect": 10,
+      "sell_copper": 32,
+      "build_rocket": 46,
+      "build_wall": 55
+    },
+    "invalid_actions": 0,
+    "worst_ms": 388.17
+  }
+}
