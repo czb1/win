@@ -3,6 +3,7 @@ from dataclasses import replace
 from .commands import command
 from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
 from .navigation import wall_priority
+from .mining import mine, earn
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites
 
 
@@ -240,72 +241,32 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for):
     return False
 
 
-def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False):
-    if not hero.space:
+def finish_preparation(turn, cfg, mem, nav, ledger, hero, tower, wall_sites):
+    """Spend one local preparation action only with a checked route to a gun."""
+    route = nav.approach(hero, tower.cells, ledger.reserved)
+    if route is None or turn.day_left <= route[0] + 2:
         return False
-    options = []
-    for p, kind in turn.zones.items():
-        if kind not in ORES or p in mem.collect_failures:
-            continue
-        if want_stone and kind != "stone":
-            continue
-        if local_only and not turn.adjacent(hero.pos, p):
-            continue
-        route = nav.approach(hero, [p], ledger.reserved)
-        if route:
-            value = 1 if want_stone else max(0, turn.prices.get(kind, 0))
-            # Deposits contain ten units. Include the trip to a vendor rather
-            # than choosing an expensive deposit that is cheap only to reach.
-            vendors = [q for q, k in turn.zones.items() if k == "vendor"]
-            travel = via(nav, hero, [[p], vendors], ledger.reserved) if not want_stone and vendors else route[0]
-            if travel is None:
-                continue
-            score = value / (1 + travel / max(1, min(10, hero.space)))
-            # Weak-model news is advisory; only observed failures disable a mine.
-            if any(o["name"] == kind and o["startDay"] <= turn.day <= o["endDay"] for o in mem.outages):
-                score *= .25
-            options.append((-score, route[0], p, route))
-    if not options:
-        return False
-    _, _, target, route = min(options)
-    if route[1] is None:
-        return ledger.add(hero.id, command("collect", target))
-    return ledger.add(hero.id, command("move", route[1]))
-
-
-def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, funding_goal=0):
-    counts = hero.inventory
-    ores = [k for k in ORES if counts[k] and turn.prices.get(k, 0) > 0]
-    total = sum(counts[k] for k in ores)
-    if not total:
-        mem.sale_workers.discard(hero.id)
-    vendors = [p for p, k in turn.zones.items() if k == "vendor"]
-    sale_route = nav.approach(hero, vendors, ledger.reserved) if vendors else None
-    batch = cfg.sell_batch
-    due = False
-    if deadline is not None and sale_route:
-        batch = min(cfg.sell_batch_max, max(cfg.sell_batch, 2 * sale_route[0] + 10))
-        home = [w.pos for w in turn.weapons] or (list(turn.station.cells) if turn.station else [])
-        home_trip = via(nav, hero, [vendors, home], ledger.reserved) if home else sale_route[0]
-        due = (turn.tick < deadline and deadline - turn.tick <= sale_route[0] + 1
-               or home_trip is not None and turn.day_left <= home_trip + 2 + cfg.return_margin)
-    value = sum(counts[k] * turn.prices[k] for k in ores)
-    funds = ledger.gold < funding_goal <= ledger.gold + value
-    if total and (total >= batch or not hero.space or due or funds or hero.id in mem.sale_workers):
-        kind = max(ores, key=lambda k: counts[k] * turn.prices[k])
-        if visit(turn, nav, ledger, hero, "vendor", command("sell", name=kind, num=counts[kind])):
-            mem.sale_workers.add(hero.id)
-            return True
-    if mine(turn, cfg, mem, nav, ledger, hero):
+    if use_inventory(turn, nav, ledger, hero, local_only=True):
         return True
-    if ores:
-        kind = max(ores, key=lambda k: counts[k] * turn.prices[k])
-        return visit(turn, nav, ledger, hero, "vendor", command("sell", name=kind, num=counts[kind]))
+    if hero.kind != "worker" or hero.inventory["stone"] < cfg.wall_stones:
+        return False
+    for target in front_sites(turn, wall_sites):
+        if not turn.adjacent(hero.pos, target) or target in turn.blocked:
+            continue
+        original = turn.blocked
+        try:
+            turn.blocked = original | {target}
+            after = nav.approach(hero, tower.cells, ledger.reserved)
+        finally:
+            turn.blocked = original
+        if after and turn.day_left > after[0] + 2:
+            if build(turn, cfg, mem, nav, ledger, hero, [target], lambda _: "wall"):
+                return True
     return False
 
 
 def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
-           develop=True, shopping=True, deadline=None):
+           develop=True, shopping=True, deadline=None, gather_first=False):
     if hero.health <= 165 and hero.inventory["Medicine"]:
         ledger.add(hero.id, command("use", name="Medicine"))
         return
@@ -324,6 +285,15 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
         return
     if use_inventory(turn, nav, ledger, hero):
         return
+    if gather_first:
+        built_walls = {w.pos for w in turn.ours if w.kind == "wall"}
+        missing = sum(p not in built_walls and p not in mem.build_failures for p in wall_sites)
+        held = sum(h.inventory["stone"] for h in turn.workers)
+        # The courier can construct guns while the other worker collects the
+        # front-wall batch on its way home, avoiding a second base -> mine trip.
+        if held < min(cfg.stone_batch, missing * cfg.wall_stones):
+            if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True):
+                return
     available_towers = [p for p in tower_sites if p not in turn.blocked
                         and p not in ledger.reserved and p not in ledger.build_claims
                         and p not in mem.build_failures]
@@ -400,7 +370,12 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     if not free:
         return
     trading = {h.id for h in free if trade_available(turn, mem, nav, h)}
-    cutoff = preparation_start(turn, cfg, mem, nav, free, tower_sites) if trading else 0
+    planned = planned_weapons(turn, cfg, mem, tower_sites)
+    built_walls = {w.pos for w in turn.ours if w.kind == "wall"}
+    work_remains = (any(w.id < 0 or w.level < 3 for w in planned)
+                    or turn.station and turn.station.level < 3 and bool(turn.shop)
+                    or any(p not in built_walls and p not in mem.build_failures for p in wall_sites))
+    cutoff = (preparation_start(turn, cfg, mem, nav, free, tower_sites) if work_remains else 70) if trading else 0
     developing = {h.id for h in free if h.id not in trading or turn.tick >= cutoff
                   or any("UpgradeVoucher" in k or k == "WallFixer" for k in h.backpack)}
     # Liquidate the last farming load before either actor leaves for the base
@@ -428,7 +403,14 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
         p = supplies(turn, cfg, mem, nav, ledger, h, reserve, planned=planned, bulk=True)
         if p:
             buyers.append((p[1][0], h.id))
-    buyer = min(buyers)[1] if buyers else None
+    # Keep the same courier through buying and delivery. Reassign only when
+    # its work finishes, becomes infeasible, or the worker disappears.
+    carrying = next((h for h in free if h.id == mem.supply_worker
+                     and any("UpgradeVoucher" in k for k in h.backpack)), None)
+    eligible = {uid for _, uid in buyers}
+    buyer = (mem.supply_worker if mem.supply_worker in eligible or carrying
+             else min(buyers)[1] if buyers else None)
+    mem.supply_worker = buyer
     # Economic maps first need the continuous enemy-facing segment. Optional
     # rear construction waits for the weapon programme; no-commerce maps keep
     # the full defensive fallback because there is no income to sacrifice.
@@ -455,7 +437,12 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
         if last_site and vacate_site(turn, nav, ledger, hero, sites):
             continue
         worker(turn, cfg, mem, nav, ledger, hero, tower_sites, selected_walls, hero.id in builder_ids,
-               develop=hero.id in developing, shopping=hero.id == buyer, deadline=cutoff)
+               develop=hero.id in developing, shopping=hero.id == buyer, deadline=cutoff,
+               gather_first=bool(trading) and hero.id in builder_ids and buyer is not None)
+        if hero.id not in ledger.mine_claims:
+            mem.mine_targets.pop(hero.id, None)
+        if hero.id not in ledger.used:
+            vacate_site(turn, nav, ledger, hero, sites)
 
 
 def pioneer(turn, cfg, mem, nav, ledger, hero):
@@ -494,7 +481,8 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
         cells = turn.task_cells(task)
         route = nav.approach(hero, cells, ledger.reserved)
         # Include a conservative return-distance estimate when accepting distant tasks.
-        return_estimate = min((distance(p, w.pos) for p in cells for w in turn.weapons), default=0)
+        home = [w.pos for w in turn.weapons] or (list(turn.station.cells) if turn.station else [])
+        return_estimate = min((distance(p, q) for p in cells for q in home), default=0)
         if route and turn.day_left > route[0] + cfg.task_min_rounds + return_estimate + cfg.return_margin:
             duration = min(int(task.get("timeoutRounds", cfg.task_max_rounds)), cfg.task_max_rounds)
             value = (int(task.get("scoreReward", 0)) + .5*int(task.get("goldReward", 0))) / max(1, route[0]+duration)

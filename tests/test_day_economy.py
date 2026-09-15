@@ -124,15 +124,30 @@ class OpeningReplayTests(unittest.TestCase):
                 r = simulate(Agent, Config, mirror=mirror)
                 self.assertEqual(r["invalid_actions"], 0)
                 self.assertEqual(r["checkpoints"]["40"]["spent"], 0)
-                dusk = r["checkpoints"]["70"]
+                dusk = r["checkpoints"]["69"]
                 self.assertEqual(dusk["weapon_levels"], [2, 2, 2])
                 self.assertEqual(dusk["operators_ready"], 3)
                 self.assertEqual(dusk["carried_vouchers"], 0)
+                self.assertEqual(dusk["front_walls"], 6)
+                self.assertGreaterEqual(r["worker_actions_before_70"]["collect"], 40)
+                self.assertLess(r["worker_actions_before_70"]["move"], 75)
+
+    def test_nearby_iron_is_used_and_first_defence_still_finishes(self):
+        for mirror in (False, True):
+            with self.subTest(mirror=mirror):
+                r = simulate(Agent, Config, case="local_ore", mirror=mirror)
+                self.assertEqual(r["invalid_actions"], 0)
+                self.assertGreater(r["mined_before_70"].get("iron", 0), 0)
+                self.assertLess(r["worker_actions_before_70"]["move"], 70)
+                dusk = r["checkpoints"]["69"]
+                self.assertEqual(dusk["weapon_levels"], [2, 2, 2])
+                self.assertEqual(dusk["operators_ready"], 3)
+                self.assertEqual(dusk["front_walls"], 6)
 
     def test_long_shop_trip_starts_early_and_finishes_before_night(self):
         r = simulate(Agent, Config, case="far_shop")
         self.assertEqual(r["invalid_actions"], 0)
         self.assertLess(r["first"]["buy_WeaponUpgradeVoucher1"], 40)
-        self.assertEqual(r["checkpoints"]["70"]["weapon_levels"], [1, 1, 2])
-        self.assertEqual(r["checkpoints"]["70"]["operators_ready"], 3)
-        self.assertEqual(r["checkpoints"]["70"]["carried_vouchers"], 0)
+        self.assertEqual(r["checkpoints"]["69"]["weapon_levels"], [1, 1, 2])
+        self.assertEqual(r["checkpoints"]["69"]["operators_ready"], 3)
+        self.assertEqual(r["checkpoints"]["69"]["carried_vouchers"], 0)

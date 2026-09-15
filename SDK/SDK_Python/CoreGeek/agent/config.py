@@ -6,7 +6,7 @@ from pathlib import Path
 
 @dataclass
 class Config:
-    round_origin: int = 1
+    round_origin: int = 0
     # These three defaults are inferred from the upstream demo, NOT verified rules.
     layout_mode: str = "demo_inferred"
     weapon_cost: int = 25
@@ -16,8 +16,8 @@ class Config:
     # Rockets can fire over the continuous front wall; direct-fire guns cannot.
     loadout: list = field(default_factory=lambda: ["rocket", "rocket", "rocket"])
     stone_batch: int = 6
-    sell_batch: int = 12
-    sell_batch_max: int = 40
+    sell_batch: int = 40
+    sell_batch_max: int = 80
     economy_rounds: int = 40
     return_margin: int = 5
     task_min_rounds: int = 12

@@ -69,7 +69,7 @@ class EconomyRegressionTests(unittest.TestCase):
         self.assertEqual(self.trade_case(["copper"], has_mine=False)["action"], "sell")
 
     def test_full_batch_sells_even_without_construction(self):
-        self.assertEqual(self.trade_case(["copper"] * 12)["action"], "sell")
+        self.assertEqual(self.trade_case(["copper"] * 40)["action"], "sell")
 
     def test_zero_gold_does_not_force_one_ore_sale_when_towers_are_complete(self):
         p = payload(roles=[unit(1, "worker", 5, 5, backpack=["copper"]),

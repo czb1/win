@@ -17,6 +17,31 @@ class Navigator:
     def __init__(self, turn, deadline):
         self.turn, self.deadline = turn, deadline
         self._trees = {}
+        self._distances = {}
+
+    def distances_to(self, targets, vacated=(), reserved=()):
+        """One reverse BFS serves every mine; no BFS per deposit endpoint."""
+        check_time(self.deadline)
+        targets = frozenset(targets)
+        blocked = frozenset((self.turn.blocked - set(vacated)) | set(reserved))
+        key = targets, blocked
+        if key not in self._distances:
+            goals = {p for t in targets for p in neighbours(t)
+                     if self.turn.inside(p) and p not in blocked and p not in targets}
+            distances = dict.fromkeys(goals, 0)
+            queue = deque(sorted(goals))
+            visited = 0
+            while queue:
+                visited += 1
+                if visited % 32 == 0:
+                    check_time(self.deadline)
+                p = queue.popleft()
+                for q in neighbours(p):
+                    if q not in distances and q not in blocked and self.turn.inside(q):
+                        distances[q] = distances[p] + 1
+                        queue.append(q)
+            self._distances[key] = distances
+        return self._distances[key]
 
     def search(self, hero, goals, reserved=()):
         check_time(self.deadline)
