@@ -57,14 +57,14 @@ class Agent:
                         walk(nav, ledger, hero, turn.station.cells)
             else:
                 defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning])
-                for index, hero in enumerate(turn.workers):
+                for hero in turn.workers:
                     if hero.id not in ledger.used and hero.id not in returning:
-                        worker(turn, self.cfg, mem, nav, ledger, hero, towers, walls, index == 0)
+                        worker(turn, self.cfg, mem, nav, ledger, hero, towers, walls, True)
                 h = turn.pioneer
                 if h and h.id not in ledger.used and h.id not in returning:
                     if turn.phase_task:
                         elapsed = turn.round - mem.task_started
-                        if elapsed < min(mem.task_timeout, self.cfg.task_max_rounds):
+                        if elapsed < min(mem.task_timeout, self.cfg.task_max_rounds) and mem.task_failures < 3:
                             prompt, execute = intel.task(ledger)
                         elif turn.station:
                             walk(nav, ledger, h, turn.station.cells)

@@ -1,0 +1,31 @@
+name: Python strategy checks
+
+on:
+  push:
+    branches: [main, codex/fortify-walls-and-weak-model]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11.10'
+      - name: Unit, protocol and HTTP regressions
+        run: python -m unittest discover -s tests -v
+      - name: First-day construction replay
+        run: python tools/fortification_benchmark.py
+      - name: Compare historical construction baseline
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/win-baseline" 11e8404d57674208b4938f748d3f26a179cb97a7
+          python tools/fortification_benchmark.py --agent-root "$RUNNER_TEMP/win-baseline"
