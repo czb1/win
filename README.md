@@ -4,7 +4,9 @@
 
 **交付状态：可启动和测试的策略基线。** 建筑区域及部分建筑参数在任务书的内网图片中，当前无法读取。默认布局、建造费用沿用或推导自仓库 demo，正式比赛前需核对。未获得完整判题器，尚未验证比赛胜率、连续生存十天或完整计分表现。
 
-最新修复：持续采矿收入、主动买药与分阶段升级、购买与使用去重；按 `targetTeam` 隔离两路机器人，同时过滤误伤对手路线的溅射和穿透。自进化增加固定 `READ` / `LIST` 工具、明确文档路径自动读取、接口证据和失败代码保留，按实际威胁决定夜间回防。说明、取舍与回放对比见 [实战采购与自进化改进](docs/实战采购与自进化改进.md)。
+最新经济策略：默认前 40 回合双工人挣钱，按卖矿、购物和交付路程提前准备；临时分配建造采购任务，批量买券，优先三座武器全部二级、随后三级。满血角色不再专程买备用药，健康围墙不自动逐座升级。经济地图先安排迎敌侧墙段，后侧延后，因此不保证首日建齐 18 面墙。策略、首夜火力与多日收入对比见 [按夜晚截止时间安排经济和升级](docs/deadline-economy.md)。
+
+此前机器人阵营隔离、固定 `READ` / `LIST` 工具和自进化可靠性改进见 [实战采购与自进化改进](docs/实战采购与自进化改进.md)。
 
 此前连续防线和布局修复见 [自进化与连续防线修复](docs/自进化与连续防线修复.md)。
 
@@ -51,6 +53,8 @@ python3 tools/replay.py examples/request.json
 python3 tools/replay.py examples/request.json --output examples/local-response.json
 python3 tools/strategy_benchmark.py
 python3 tools/progression_benchmark.py
+python3 tools/day_economy_benchmark.py --days 3
+python3 tools/day_economy_benchmark.py --case far_shop
 python3 tools/fortification_benchmark.py
 python3 tools/fortification_benchmark.py --mirror
 ```

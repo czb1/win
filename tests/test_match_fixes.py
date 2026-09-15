@@ -150,11 +150,11 @@ class SuppliesTests(unittest.TestCase):
         p["roundNo"] = 69
         self.assertNotEqual(self.decide_worker(p)["action"], "buy")
 
-    def test_station_and_wall_vouchers_have_real_purchase_paths(self):
+    def test_station_and_damaged_wall_vouchers_have_real_purchase_paths(self):
         for building, name in (("station", "StationUpgradeVoucher1"), ("wall", "WallUpgradeVoucher1")):
             p = self.case()
             p["teamOur"]["roles"][1]["level"] = 3
-            p["teamOur"]["roles"].append(unit(30, building, 3, 7, health=1500))
+            p["teamOur"]["roles"].append(unit(30, building, 3, 7, health=400 if building == "wall" else 1500))
             p["weaponShopList"] = [{"name": name, "price": 20}]
             self.assertEqual(self.decide_worker(p)["name"], name)
 
@@ -167,14 +167,14 @@ class SuppliesTests(unittest.TestCase):
                                {"name": "WallUpgradeVoucher1", "price": 20}]
         self.assertNotEqual(self.decide_worker(p)["action"], "buy")
 
-    def test_one_worker_earns_while_other_collects_wall_stone(self):
+    def test_both_workers_seek_income_before_preparation(self):
         p = payload(roles=[unit(1, "worker", 5, 5), unit(2, "worker", 5, 7)])
         p["teamOur"]["goldNum"] = 0
         p["mapInfo"]["zones"] = [{"neutralType": k, "pos": {"x": x, "y": y}} for k, x, y in
                                    (("stone", 6, 5), ("copper", 6, 7), ("vendor", 4, 7))]
         p["vendorShopList"] = [{"name": "stone", "price": 1}, {"name": "copper", "price": 10}]
         result = Agent(Config(layout_mode="explicit", wall_cells=[[8, 5]], llm_enabled=False)).decide(p)
-        self.assertEqual(result["roleCommandMap"]["1"], command("collect", (6, 5)))
+        self.assertEqual(result["roleCommandMap"]["1"], command("move", (5, 6)))
         self.assertEqual(result["roleCommandMap"]["2"], command("collect", (6, 7)))
 
     def test_repair_carrier_walks_back_and_uses_fixer(self):
@@ -194,9 +194,10 @@ class SuppliesTests(unittest.TestCase):
         self.assertEqual(result["invalid_actions"], 0)
         self.assertEqual(result["weapon_levels"], [3, 3, 3])
         self.assertEqual(result["station_level"], 3)
-        self.assertEqual(result["upgrades"]["WallUpgradeVoucher2"], 6)
+        self.assertEqual(result["purchases"].get("WallUpgradeVoucher2", 0), 0)
         self.assertGreater(result["purchases"]["Medicine"], 0)
-        self.assertLess(result["first_rounds"]["used_WeaponUpgradeVoucher1"], 30)
+        self.assertLess(result["first_rounds"]["used_WeaponUpgradeVoucher2"], 70)
+        self.assertGreater(result["gold"], 2660)
         self.assertLess(result["worst_ms"], 1000)
 
 

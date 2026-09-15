@@ -8,7 +8,7 @@ from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
 from .combat import assignments, defend, emergency_items
-from .economy import worker, pioneer, walk, vacate_site, use_inventory
+from .economy import workers, pioneer, walk, vacate_site, use_inventory
 from .intelligence import Memory, Intelligence
 
 LOG = logging.getLogger(__name__)
@@ -84,20 +84,7 @@ class Agent:
                         walk(nav, ledger, hero, turn.station.cells)
             else:
                 defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning])
-                # Once trade is possible, keep one worker earning while the
-                # other completes walls. Both may still build the first guns.
-                traders = [h for h in turn.workers if h.id not in returning
-                           and nav.approach(h, [p for p, k in turn.zones.items() if k == "vendor"])
-                           and nav.approach(h, [p for p, k in turn.zones.items()
-                                               if k in turn.prices and turn.prices[k] > 0])]
-                trader = max(traders, key=lambda h: (sum(h.inventory[k] for k in ("iron", "copper")),
-                                                     -h.inventory["stone"], h.id), default=None) if len(traders) > 1 else None
-                for hero in turn.workers:
-                    if hero.id not in ledger.used and hero.id not in returning:
-                        sites = towers + walls
-                        last_site = all(p in turn.blocked or p in ledger.reserved for p in sites)
-                        if not (last_site and vacate_site(turn, nav, ledger, hero, sites)):
-                            worker(turn, self.cfg, mem, nav, ledger, hero, towers, walls, hero != trader)
+                workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
                 if h and h.id not in ledger.used and h.id not in returning:
                     if turn.phase_task:
                         if not hold_task and turn.station:

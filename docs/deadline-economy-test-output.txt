@@ -1,0 +1,22 @@
+decision failed; sending protocol-compatible empty turn
+Traceback (most recent call last):
+  File "/workspace/scratch/04cb82f13152/win/SDK/SDK_Python/CoreGeek/agent/server.py", line 74, in do_POST
+    response = self.server.agent.decide(data)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/04cb82f13152/win/SDK/SDK_Python/CoreGeek/agent/brain.py", line 25, in decide
+    turn = Turn(data, self.cfg)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/04cb82f13152/win/SDK/SDK_Python/CoreGeek/agent/model.py", line 68, in __init__
+    self.round = int(data["roundNo"])
+                     ~~~~^^^^^^^^^^^
+KeyError: 'roundNo'
+----------------------------------------------------------------------
+Ran 132 tests in 13.399s
+
+OK
+
+1300 static-state protocol turns: worst=5.18 ms (not an engine simulation)
+
+Controlled construction replay: {"walls_day1": 18, "first_wall_position": [8, 15], "front_complete_round": 30, "front_missing": [], "blueprint_missing": [], "first_wall_round": 16, "walls_round_30": 6, "walls_round_50": 13, "walls_per_worker": {"12": 8, "10": 10}, "invalid_actions": 0, "actions": {"move": 93, "build": 21, "collect": 18}, "worst_decision_ms": 39.55}
+
+Controlled construction replay: {"walls_day1": 18, "first_wall_position": [15, 4], "front_complete_round": 20, "front_missing": [], "blueprint_missing": [], "first_wall_round": 15, "walls_round_30": 9, "walls_round_50": 18, "walls_per_worker": {"12": 9, "10": 9}, "invalid_actions": 0, "actions": {"move": 91, "build": 21, "collect": 19}, "worst_decision_ms": 48.31}

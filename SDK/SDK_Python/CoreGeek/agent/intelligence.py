@@ -152,12 +152,17 @@ class Memory:
     build_failures: dict = field(default_factory=dict)
     collect_failures: dict = field(default_factory=dict)
     buy_failures: dict = field(default_factory=dict)
+    preparation_tick: int = 70
+    preparation_workers: set = field(default_factory=set)
+    sale_workers: set = field(default_factory=set)
     last_response: dict | None = None
     last_digest: str = ""
 
     def observe(self, turn, cfg):
         if self.day != turn.day:
             self.day, self.calls = turn.day, 0
+            self.preparation_tick = 70
+            self.preparation_workers.clear()
         news = turn.raw.get("worldNews") or {}
         record = {"day": turn.day, "officialNews": str(news.get("officialNews", ""))[:12000],
                   "folkLegends": str(news.get("folkLegends", ""))[:20000]}
