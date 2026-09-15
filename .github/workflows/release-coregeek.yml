@@ -1,0 +1,60 @@
+name: Publish CoreGeek archive
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: coregeek-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  package-and-upload:
+    name: Package and upload CoreGeek
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the released version
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Build and verify archive
+        id: archive
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          source_dir="SDK/SDK_Python/CoreGeek"
+          if [[ ! -d "$source_dir" ]]; then
+            echo "::error::Required directory not found: $source_dir"
+            exit 1
+          fi
+
+          safe_tag="${RELEASE_TAG//\//-}"
+          archive="CoreGeek-${safe_tag}.tar.gz"
+
+          tar --create --gzip --file "$archive" \
+            --directory "SDK/SDK_Python" \
+            "CoreGeek"
+
+          tar --list --gzip --file "$archive" >/dev/null
+          printf 'path=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Upload archive to the Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          ARCHIVE_PATH: ${{ steps.archive.outputs.path }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" "$ARCHIVE_PATH" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
