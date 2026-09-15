@@ -13,7 +13,8 @@ class Config:
     wall_stones: int = 1
     weapon_cells: list = field(default_factory=list)
     wall_cells: list = field(default_factory=list)
-    loadout: list = field(default_factory=lambda: ["gatling", "railgun", "rocket"])
+    # Rockets can fire over the continuous front wall; direct-fire guns cannot.
+    loadout: list = field(default_factory=lambda: ["rocket", "rocket", "rocket"])
     stone_batch: int = 6
     sell_batch: int = 12
     return_margin: int = 5
@@ -24,7 +25,8 @@ class Config:
     max_body_bytes: int = 2 * 1024 * 1024
     decision_seconds: float = 3.5
     build_retry_rounds: int = 20
-    task_max_rounds: int = 40
+    # A configurable policy cap, not a substitute for playerTasks.timeoutRounds.
+    task_max_rounds: int = 1300
 
     @classmethod
     def load(cls, path=None):

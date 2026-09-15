@@ -5,7 +5,7 @@
   "wall_stones": 1,
   "weapon_cells": [],
   "wall_cells": [],
-  "loadout": ["gatling", "railgun", "rocket"],
+  "loadout": ["rocket", "rocket", "rocket"],
   "stone_batch": 6,
   "sell_batch": 12,
   "return_margin": 5,
@@ -16,5 +16,5 @@
   "max_body_bytes": 2097152,
   "decision_seconds": 3.5,
   "build_retry_rounds": 20,
-  "task_max_rounds": 40
+  "task_max_rounds": 1300
 }
