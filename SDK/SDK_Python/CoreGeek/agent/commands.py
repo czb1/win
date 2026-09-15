@@ -22,6 +22,8 @@ class Ledger:
         # Claims are work destinations, not occupied movement cells.
         self.build_claims = {}
         self.purchases = set()
+        self.upgrade_claims = set()
+        self.repair_claims = set()
 
     def add(self, uid, cmd):
         unit = self.turn.units.get(uid)
@@ -123,11 +125,12 @@ class Ledger:
                         building = next((u for u in self.turn.ours if target == u.pos), None)
                         if not building or not any(self.turn.adjacent(unit.pos, p) for p in building.cells):
                             return False
-                        if name == "WallFixer" and building.kind != "wall":
+                        if name == "WallFixer" and (building.kind != "wall" or building.id in self.repair_claims):
                             return False
                         if "UpgradeVoucher" in name:
                             kinds = WEAPONS if name.startswith("Weapon") else ("station",) if name.startswith("Station") else ("wall",)
-                            if building.kind not in kinds or not name.endswith(str(building.level)) or building.level >= 3:
+                            if (building.kind not in kinds or not name.endswith(str(building.level))
+                                    or building.level >= 3 or building.id in self.upgrade_claims):
                                 return False
             elif action == "drop":
                 if name not in unit.inventory:
@@ -150,6 +153,10 @@ class Ledger:
             self.new_towers += 1
         if action == "buy":
             self.purchases.add(name)
+        if action == "use" and "UpgradeVoucher" in str(name):
+            self.upgrade_claims.add(building.id)
+        if action == "use" and name == "WallFixer":
+            self.repair_claims.add(building.id)
         self.commands[str(uid)] = cmd
         return True
 

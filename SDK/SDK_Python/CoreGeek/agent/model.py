@@ -110,6 +110,17 @@ class Turn:
     def base_distance(self, p):
         return min(distance(p, q) for q in self.station.cells) if self.station else 999
 
+    def threatens_us(self, robot):
+        # The protocol field is authoritative; spawn side and current distance
+        # must never override an explicit destination team.
+        if robot.target_team in ("challenger", "defender"):
+            return robot.target_team == self.team
+        other = next((u for u in self.enemies if u.kind == "station"), None)
+        if self.station and other:
+            return self.base_distance(robot.pos) <= min(distance(robot.pos, p) for p in other.cells)
+        # Compatibility with incomplete offline/older payloads.
+        return True
+
     def task_cells(self, task):
         anchor = pos(task["taskPosition"])
         kind = self.zones.get(anchor)

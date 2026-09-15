@@ -4,11 +4,11 @@ import logging
 from collections import OrderedDict
 from time import monotonic
 from .config import Config
-from .model import Turn
+from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
-from .commands import Ledger, command
+from .commands import Ledger
 from .combat import assignments, defend, emergency_items
-from .economy import worker, pioneer, walk, vacate_site
+from .economy import worker, pioneer, walk, vacate_site, use_inventory
 from .intelligence import Memory, Intelligence
 
 LOG = logging.getLogger(__name__)
@@ -41,45 +41,66 @@ class Agent:
         intel = Intelligence(turn, self.cfg, mem)
         prompt, execute = "", ""
         try:
+            h = turn.pioneer
+            within_timeout = bool(h and turn.phase_task and turn.round - mem.task_started <
+                                  min(mem.task_timeout, self.cfg.task_max_rounds))
+            task_return = min((route[0] for w in turn.weapons
+                               if (route := nav.approach(h, w.cells)) is not None), default=0) if within_timeout else 0
+            danger = bool(h and any(turn.threatens_us(r) and (
+                turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius,
+                                                 task_return + self.cfg.return_margin + r.attack_range)
+                or distance(h.pos, r.pos) <= max(self.cfg.task_danger_radius, r.attack_range + 2))
+                for r in turn.robots))
+            # A night transition alone does not end a task. Workers return on
+            # schedule; the pioneer stays while no wave threatens it or the base.
+            hold_task = within_timeout and not danger and not mem.stop_reason
             if not turn.is_day:
                 emergency_items(turn, ledger)
-            pairs = assignments(turn, nav, ledger)
+            pairs = assignments(turn, nav, ledger, excluded={h.id} if hold_task else ())
             returning = set()
-            return_lengths = {}
             for hero, tower in pairs:
                 route = nav.approach(hero, [tower.pos], ledger.reserved)
                 length = route[0] if route else 130
-                return_lengths[hero.id] = length
                 if not turn.is_day or turn.day_left <= length + self.cfg.return_margin:
                     returning.add(hero.id)
-            h = turn.pioneer
             if h and turn.phase_task:
-                elapsed = turn.round - mem.task_started
-                within_timeout = elapsed < min(mem.task_timeout, self.cfg.task_max_rounds)
                 # Submit a ready answer before a return movement can cancel it.
                 # LLM/sandbox work holds the pioneer at the task point and gets
                 # its own chance before expensive worker connectivity searches.
-                if within_timeout and (mem.answer is not None or turn.is_day and h.id not in returning):
-                    available = turn.day_left - return_lengths.get(h.id, 0) - self.cfg.return_margin
+                if within_timeout and (mem.answer is not None or hold_task):
+                    available = min(mem.task_timeout, self.cfg.task_max_rounds) - (turn.round - mem.task_started)
                     prompt, execute = intel.task(ledger, available_rounds=available)
-                    if prompt or execute:
-                        ledger.used.add(h.id)
+                if hold_task:
+                    ledger.used.add(h.id)
+                elif not mem.stop_reason:
+                    mem.stop_reason = "defence_threat" if danger else "task_deadline"
+                    LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             if not turn.is_day:
                 defend(turn, nav, ledger, pairs)
                 for hero in turn.heroes:
+                    if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True):
+                        continue
                     if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs} and turn.station:
                         walk(nav, ledger, hero, turn.station.cells)
             else:
                 defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning])
+                # Once trade is possible, keep one worker earning while the
+                # other completes walls. Both may still build the first guns.
+                traders = [h for h in turn.workers if h.id not in returning
+                           and nav.approach(h, [p for p, k in turn.zones.items() if k == "vendor"])
+                           and nav.approach(h, [p for p, k in turn.zones.items()
+                                               if k in turn.prices and turn.prices[k] > 0])]
+                trader = max(traders, key=lambda h: (sum(h.inventory[k] for k in ("iron", "copper")),
+                                                     -h.inventory["stone"], h.id), default=None) if len(traders) > 1 else None
                 for hero in turn.workers:
                     if hero.id not in ledger.used and hero.id not in returning:
                         sites = towers + walls
                         last_site = all(p in turn.blocked or p in ledger.reserved for p in sites)
                         if not (last_site and vacate_site(turn, nav, ledger, hero, sites)):
-                            worker(turn, self.cfg, mem, nav, ledger, hero, towers, walls, True)
+                            worker(turn, self.cfg, mem, nav, ledger, hero, towers, walls, hero != trader)
                 if h and h.id not in ledger.used and h.id not in returning:
                     if turn.phase_task:
-                        if not within_timeout and turn.station:
+                        if not hold_task and turn.station:
                             walk(nav, ledger, h, turn.station.cells)
                     else:
                         pioneer(turn, self.cfg, mem, nav, ledger, h)
