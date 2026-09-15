@@ -34,7 +34,13 @@ class Agent:
         self.sessions.move_to_end(key)
         while len(self.sessions) > 8:
             self.sessions.popitem(last=False)
+        previous_mines = mem.mine_kinds.copy()
         mem.observe(turn, self.cfg)
+        if mem.last_round < 0 or previous_mines != mem.mine_kinds:
+            LOG.info("round=%s source=mapInfo.zones mines_received=%s mines=%s", turn.round,
+                     len(mem.mine_kinds), json.dumps(
+                         [{"type": kind, "pos": list(p)} for p, kind in sorted(mem.mine_kinds.items())],
+                         ensure_ascii=False))
         towers, walls = layout(turn, self.cfg)
         ledger = Ledger(turn, self.cfg, towers, walls)
         nav = Navigator(turn, started + self.cfg.decision_seconds)
@@ -60,12 +66,14 @@ class Agent:
             if not turn.is_day:
                 emergency_items(turn, ledger)
             pairs = assignments(turn, nav, ledger, excluded={h.id} if hold_task else ())
+            ledger.return_targets = {hero.id: tower.cells for hero, tower in pairs}
             returning = set()
             for hero, tower in pairs:
                 route = nav.approach(hero, [tower.pos], ledger.reserved)
-                length = route[0] if route else 130
-                if not turn.is_day or turn.day_left <= length + self.cfg.return_margin:
+                if route is not None and (not turn.is_day or turn.day_left <= route[0] + self.cfg.return_margin):
                     returning.add(hero.id)
+                    LOG.debug("round=%s worker_or_pioneer=%s return_to_tower=%s steps=%s day_left=%s",
+                              turn.round, hero.id, tower.id, route[0], turn.day_left)
             if h and turn.phase_task:
                 # Submit a ready answer before a return movement can cancel it.
                 # LLM/sandbox work holds the pioneer at the task point and gets
@@ -107,6 +115,11 @@ class Agent:
         response = ledger.response(prompt, execute)
         mem.last_round, mem.last_digest, mem.last_response = turn.round, digest, response
         mem.last_commands = response["roleCommandMap"]
+        if turn.is_day:
+            for worker in turn.workers:
+                LOG.debug("round=%s worker=%s position=%s free_space=%s mining_target=%s command=%s",
+                          turn.round, worker.id, worker.pos, worker.space, mem.mine_targets.get(worker.id),
+                          response["roleCommandMap"].get(str(worker.id)))
         LOG.info("round=%s day=%s phase=%s commands=%s latency_ms=%.2f", turn.round, turn.day,
                  "day" if turn.is_day else "night", len(ledger.commands), (monotonic()-started)*1000)
         return json.loads(json.dumps(response))

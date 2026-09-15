@@ -44,11 +44,13 @@ def assignments(turn, nav, ledger, excluded=()):
     for selected in permutations(towers, count):
         for crew in permutations(heroes, count):
             check_time(nav.deadline)
-            pairs = list(zip(crew, selected))
-            travel = sum(routes[h.id, w.id][0] if routes[h.id, w.id] else 10000 for h, w in pairs)
+            # An unreachable gun must not reserve a worker for an impossible
+            # return trip. Keep the best reachable partial crew instead.
+            pairs = [(h, w) for h, w in zip(crew, selected) if routes[h.id, w.id] is not None]
+            travel = sum(routes[h.id, w.id][0] for h, w in pairs)
             immediate = sum(firepower[w.id] for h, w in pairs
                             if routes[h.id, w.id] and routes[h.id, w.id][0] == 0)
-            cost = (-immediate, travel)
+            cost = (-immediate, -len(pairs), travel)
             if best is None or cost < best:
                 best, result = cost, pairs
     return sorted(result, key=lambda pair: (-firepower[pair[1].id], pair[1].id))
