@@ -1,33 +1,31 @@
 name: Publish CoreGeek archive
 
 on:
-  release:
-    types: [published]
+  push:
+    branches:
+      - main
 
 permissions:
   contents: write
 
-concurrency:
-  group: coregeek-release-${{ github.event.release.tag_name }}
-  cancel-in-progress: false
-
 jobs:
-  package-and-upload:
-    name: Package and upload CoreGeek
+  package-and-release:
+    name: Package and publish CoreGeek
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
-      - name: Check out the released version
+      - name: Check out the pushed commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Build and verify archive
         id: archive
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: v1.0.${{ github.run_number }}
         run: |
           set -euo pipefail
 
@@ -37,24 +35,41 @@ jobs:
             exit 1
           fi
 
-          safe_tag="${RELEASE_TAG//\//-}"
-          archive="CoreGeek-${safe_tag}.tar.gz"
-
+          archive="CoreGeek-${RELEASE_TAG}.tar.gz"
           tar --create --gzip --file "$archive" \
             --directory "SDK/SDK_Python" \
             "CoreGeek"
 
           tar --list --gzip --file "$archive" >/dev/null
           printf 'path=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Upload archive to the Release
+      - name: Create Release and upload archive
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ steps.archive.outputs.tag }}
           ARCHIVE_PATH: ${{ steps.archive.outputs.path }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_TAG" "$ARCHIVE_PATH" \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            git fetch --force --tags origin
+            tag_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
+
+            if [[ "$tag_sha" != "$SOURCE_SHA" ]]; then
+              echo "::error::Release $RELEASE_TAG already points to $tag_sha, not $SOURCE_SHA"
+              exit 1
+            fi
+
+            gh release upload "$RELEASE_TAG" "$ARCHIVE_PATH" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create "$RELEASE_TAG" "$ARCHIVE_PATH" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$SOURCE_SHA" \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi
