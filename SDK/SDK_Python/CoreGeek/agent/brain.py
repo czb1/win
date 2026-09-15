@@ -7,7 +7,7 @@ from .config import Config
 from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
-from .combat import assignments, defend, emergency_items
+from .combat import assignments, return_plan, defend, emergency_items
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation
 from .intelligence import Memory, Intelligence
 
@@ -37,7 +37,7 @@ class Agent:
         mem.observe(turn, self.cfg)
         towers, walls = layout(turn, self.cfg)
         ledger = Ledger(turn, self.cfg, towers, walls)
-        nav = Navigator(turn, started + self.cfg.decision_seconds)
+        nav = Navigator(turn, started + self.cfg.decision_seconds, mem.movement)
         intel = Intelligence(turn, self.cfg, mem)
         prompt, execute = "", ""
         try:
@@ -59,13 +59,44 @@ class Agent:
             hold_task = within_timeout and not danger and not first_watch and not mem.stop_reason
             if not turn.is_day:
                 emergency_items(turn, ledger)
-            pairs = assignments(turn, nav, ledger, excluded={h.id} if hold_task else ())
+            pairs = assignments(turn, nav, ledger, excluded={h.id} if hold_task else (),
+                                fixed=mem.return_targets if turn.is_day else None)
+            pairs, posts = (return_plan(turn, nav, pairs, walls, mem.return_targets, mem.return_posts)
+                            if turn.is_day else (pairs, {}))
+            ledger.return_pairs = pairs
+            ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
             returning = set()
             for hero, tower in pairs:
-                route = nav.approach(hero, [tower.pos], ledger.reserved)
-                length = route[0] if route else 130
-                if not turn.is_day or turn.day_left <= length + self.cfg.return_margin:
+                route = (nav.search(hero, {posts[hero.id][0]}, ledger.reserved) if hero.id in posts
+                         else nav.approach(hero, [tower.pos], ledger.reserved))
+                # Include today's congestion, not only the route with teammates
+                # removed. A blocked post needs time for its gatekeeper to yield.
+                length = (route[0] if route else posts[hero.id][1] + self.cfg.return_margin
+                          if hero.id in posts else 130)
+                if hero.id in mem.return_targets or not turn.is_day or turn.day_left <= length + self.cfg.return_margin:
                     returning.add(hero.id)
+                    mem.return_targets[hero.id] = tower.id
+                    if hero.id in posts:
+                        mem.return_posts[hero.id] = posts[hero.id][0]
+            # A nearby worker can block a distant operator's only entrance long
+            # before its own return deadline. Recall that helper now, so it can
+            # move to its assigned post or yield instead of idling in the gate.
+            if turn.is_day and posts and returning:
+                for hero, _ in pairs:
+                    if hero.id not in returning or nav.search(hero, {posts[hero.id][0]}) is not None:
+                        continue
+                    helpers = [(h, w) for h, w in pairs if h.id not in returning]
+                    original = turn.blocked
+                    try:
+                        turn.blocked = original - {h.pos for h, _ in helpers}
+                        can_clear = nav.search(hero, {posts[hero.id][0]}) is not None
+                    finally:
+                        turn.blocked = original
+                    if can_clear:
+                        for helper, weapon in helpers:
+                            returning.add(helper.id)
+                            mem.return_targets[helper.id] = weapon.id
+                            mem.return_posts[helper.id] = posts[helper.id][0]
             if h and turn.phase_task:
                 # Submit a ready answer before a return movement can cancel it.
                 # LLM/sandbox work holds the pioneer at the task point and gets
@@ -90,7 +121,7 @@ class Agent:
                 for hero, tower in pairs:
                     if hero.id in returning and hero.id not in ledger.used:
                         finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)
-                defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning])
+                defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning], ledger.operator_posts)
                 workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
                 if h and h.id not in ledger.used and h.id not in returning:
                     if turn.phase_task:
