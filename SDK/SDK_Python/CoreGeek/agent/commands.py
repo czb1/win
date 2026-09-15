@@ -24,6 +24,7 @@ class Ledger:
         self.purchases = set()
         self.upgrade_claims = set()
         self.repair_claims = set()
+        self.mine_claims = {}
 
     def add(self, uid, cmd):
         unit = self.turn.units.get(uid)

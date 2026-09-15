@@ -258,23 +258,23 @@ class TaskReliabilityTests(unittest.TestCase):
         self.assertIn("NameError", prompt)
 
     def test_night_without_own_threat_does_not_cancel_task(self):
-        p = task_payload(70, "query")
+        p = task_payload(199, "query")
         p["teamOur"]["roles"] += [unit(20, "rocket", 1, 1), unit(1, "worker", 1, 2), unit(13, "station", 2, 3)]
         p["robot"]["roles"] = [unit(90, "largeRobot", 7, 5, targetTeam="defender")]
         agent = Agent(Config(layout_mode="explicit"))
         agent.decide(p)
-        p.update(roundNo=71, llmResp="LIST .")
+        p.update(roundNo=200, llmResp="LIST .")
         response = agent.decide(p)
         self.assertTrue(response["executeCmd"])
         self.assertNotIn("11", response["roleCommandMap"])
         self.assertNotIn("20", response["roleCommandMap"])
 
     def test_actual_threat_stops_task_and_logs_reason(self):
-        p = task_payload(70, "query")
+        p = task_payload(199, "query")
         p["teamOur"]["roles"] += [unit(20, "rocket", 1, 1), unit(13, "station", 2, 3)]
         agent = Agent(Config(layout_mode="explicit"))
         agent.decide(p)
-        p.update(roundNo=71, llmResp="LIST .")
+        p.update(roundNo=200, llmResp="LIST .")
         p["robot"]["roles"] = [unit(90, "largeRobot", 7, 5, targetTeam="challenger")]
         response = agent.decide(p)
         self.assertFalse(response["executeCmd"])

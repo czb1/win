@@ -19,7 +19,7 @@ def role(uid, kind, x, y, **kw):
             "attackRange": 8, "attackPower": 40, "cooldown": 0, **kw}
 
 
-def simulate(Agent, Config, case="near", mirror=False, days=1):
+def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False):
     width, height = 41, 32
     def flip(p):
         return (width-1-p[0], height-1-p[1]) if mirror else p
@@ -53,6 +53,8 @@ def simulate(Agent, Config, case="near", mirror=False, days=1):
     if case == "remote_ore":
         deposits["copper"] = [(30, 12), (30, 16), (32, 12), (32, 16)]
         deposits["iron"] = [(14, 13), (14, 17), (16, 13), (16, 17)]
+    if case == "local_ore":
+        deposits["iron"] = [(2, 11), (2, 17), (1, 13), (1, 16)]
     deposits = {k: list(map(flip, ps)) for k, ps in deposits.items()}
     active = {ps[0]: [k, 10] for k, ps in deposits.items()}
     indices = {k: 0 for k in deposits}
@@ -74,6 +76,8 @@ def simulate(Agent, Config, case="near", mirror=False, days=1):
              "vendorShopList": [{"name": n, "price": p} for n, p in prices.items()]}
     invalid, income, spent, worst = 0, 0, 0, 0
     checkpoints, early_actions, first = {}, Counter(), {}
+    worker_actions, mined_by_kind = Counter(), Counter()
+    history, previous, reversals = [], {}, 0
     for rno in range(1, days * 130 + 1):
         state["roundNo"] = rno
         state["mapInfo"]["zones"] = [{"neutralType": kind, "pos": dict(zip(("x", "y"), p))}
@@ -84,6 +88,12 @@ def simulate(Agent, Config, case="near", mirror=False, days=1):
         commands = agent.decide(copy.deepcopy(state))["roleCommandMap"]
         worst = max(worst, (monotonic()-started)*1000)
         by_id = {str(r["id"]): r for r in roles}
+        if trace:
+            history.append({"round": rno, "gold": state["teamOur"]["goldNum"],
+                            "workers": [{"id": h["id"], "pos": h["pos"].copy(),
+                                         "inventory": dict(Counter(h["backpack"])),
+                                         "command": commands.get(str(h["id"]))}
+                                        for h in roles if h["roleType"] == "worker"]})
         results, collected = {}, Counter()
         for uid, cmd in commands.items():
             actor, action = by_id[uid], cmd["action"]
@@ -92,6 +102,13 @@ def simulate(Agent, Config, case="near", mirror=False, days=1):
                 early_actions[action] += 1
             target = tuple(cmd["targetPos"][0][k] for k in ("x", "y")) if cmd.get("targetPos") else None
             name, num = cmd.get("name"), cmd.get("num", 1)
+            if rno < 70 and actor["roleType"] == "worker":
+                worker_actions[action] += 1
+                if action == "move":
+                    reversals += int(previous.get(uid) == target)
+                    previous[uid] = point(actor)
+                else:
+                    previous.pop(uid, None)
             legal = False
             if action == "move":
                 legal = near(point(actor), target) and target not in occupied and 0 <= target[0] < width and 0 <= target[1] < height
@@ -104,6 +121,8 @@ def simulate(Agent, Config, case="near", mirror=False, days=1):
                 if legal:
                     actor["backpack"].append(active[target][0])
                     collected[target] += 1
+                    if rno < 70:
+                        mined_by_kind[active[target][0]] += 1
             elif action == "sell":
                 legal = near(point(actor), vendor) and name in prices and actor["backpack"].count(name) >= num
                 if legal:
@@ -123,7 +142,7 @@ def simulate(Agent, Config, case="near", mirror=False, days=1):
                     actor["backpack"] += [name]*num
                     purchases[name] += num
             elif action == "build":
-                legal = ((rno-1) % 130 < 70 and actor["roleType"] == "worker" and near(point(actor), target)
+                legal = (rno % 130 < 70 and actor["roleType"] == "worker" and near(point(actor), target)
                          and target not in occupied)
                 if name == "wall":
                     legal &= target in wall_sites and actor["backpack"].count("stone") >= cfg.wall_stones
@@ -173,7 +192,7 @@ def simulate(Agent, Config, case="near", mirror=False, days=1):
                 indices[kind] += 1
                 active[deposits[kind][indices[kind] % len(deposits[kind])]] = [kind, 10]
         state["lastRoundRoleActionResults"] = results
-        if (rno-1) % 130 in (39, 69):
+        if rno % 130 in (39, 40, 69, 70):
             guns = [r for r in roles if r["roleType"] in ("rocket", "gatling", "railgun")]
             heroes = [r for r in roles if r["roleType"] in ("worker", "pioneer")]
             crew = max((sum(near(point(h), point(w)) for h, w in zip(hs, guns))
@@ -187,16 +206,19 @@ def simulate(Agent, Config, case="near", mirror=False, days=1):
     return {"case": case, "mirror": mirror, "days": days, "checkpoints": checkpoints,
             "early_worker_actions": dict(early_actions), "actions": dict(actions),
             "purchases": dict(purchases), "first": first, "invalid_actions": invalid,
-            "worst_ms": round(worst, 2)}
+            "worker_actions_before_70": dict(worker_actions),
+            "mined_before_70": dict(mined_by_kind), "worker_reversals_before_70": reversals,
+            **({"trace": history} if trace else {}), "worst_ms": round(worst, 2)}
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent-root", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--case", choices=("near", "far_shop", "remote_ore"), default="near")
+    parser.add_argument("--case", choices=("near", "far_shop", "remote_ore", "local_ore"), default="near")
     parser.add_argument("--mirror", action="store_true")
     parser.add_argument("--days", type=int, default=1)
     parser.add_argument("--fixed-40", action="store_true", help="Control: disable adaptive preparation deadline")
+    parser.add_argument("--trace", action="store_true")
     args = parser.parse_args()
     sys.path.insert(0, str(args.agent_root / "SDK/SDK_Python/CoreGeek"))
     from agent.brain import Agent
@@ -204,4 +226,4 @@ if __name__ == "__main__":
     if args.fixed_40:
         import agent.economy
         agent.economy.preparation_start = lambda *a: 40
-    print(json.dumps(simulate(Agent, Config, args.case, args.mirror, args.days), ensure_ascii=False, indent=2))
+    print(json.dumps(simulate(Agent, Config, args.case, args.mirror, args.days, args.trace), ensure_ascii=False, indent=2))

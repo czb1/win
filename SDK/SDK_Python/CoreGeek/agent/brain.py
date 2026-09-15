@@ -8,7 +8,7 @@ from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
 from .combat import assignments, defend, emergency_items
-from .economy import workers, pioneer, walk, vacate_site, use_inventory
+from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation
 from .intelligence import Memory, Intelligence
 
 LOG = logging.getLogger(__name__)
@@ -44,16 +44,19 @@ class Agent:
             h = turn.pioneer
             within_timeout = bool(h and turn.phase_task and turn.round - mem.task_started <
                                   min(mem.task_timeout, self.cfg.task_max_rounds))
-            task_return = min((route[0] for w in turn.weapons
-                               if (route := nav.approach(h, w.cells)) is not None), default=0) if within_timeout else 0
+            home = [w.cells for w in turn.weapons] or ([turn.station.cells] if turn.station else [])
+            task_return = min((route[0] for cells in home
+                               if (route := nav.approach(h, cells)) is not None), default=130) if within_timeout else 0
             danger = bool(h and any(turn.threatens_us(r) and (
                 turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius,
                                                  task_return + self.cfg.return_margin + r.attack_range)
                 or distance(h.pos, r.pos) <= max(self.cfg.task_danger_radius, r.attack_range + 2))
                 for r in turn.robots))
-            # A night transition alone does not end a task. Workers return on
-            # schedule; the pioneer stays while no wave threatens it or the base.
-            hold_task = within_timeout and not danger and not mem.stop_reason
+            # First-wave readiness has a hard return deadline. On later nights
+            # a task may continue while no wave threatens the pioneer or base.
+            first_watch = (turn.day == 1 and bool(home)
+                           and turn.day_left <= task_return + self.cfg.return_margin)
+            hold_task = within_timeout and not danger and not first_watch and not mem.stop_reason
             if not turn.is_day:
                 emergency_items(turn, ledger)
             pairs = assignments(turn, nav, ledger, excluded={h.id} if hold_task else ())
@@ -73,7 +76,8 @@ class Agent:
                 if hold_task:
                     ledger.used.add(h.id)
                 elif not mem.stop_reason:
-                    mem.stop_reason = "defence_threat" if danger else "task_deadline"
+                    mem.stop_reason = ("defence_threat" if danger else
+                                       "first_wave_deadline" if first_watch else "task_deadline")
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             if not turn.is_day:
                 defend(turn, nav, ledger, pairs)
@@ -83,6 +87,9 @@ class Agent:
                     if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs} and turn.station:
                         walk(nav, ledger, hero, turn.station.cells)
             else:
+                for hero, tower in pairs:
+                    if hero.id in returning and hero.id not in ledger.used:
+                        finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)
                 defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning])
                 workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
                 if h and h.id not in ledger.used and h.id not in returning:

@@ -48,7 +48,7 @@ def setup_case(data, **kw):
 
 class ModelTests(unittest.TestCase):
     def test_day_boundaries(self):
-        for r, day, is_day in [(1,1,True),(70,1,True),(71,1,False),(130,1,False),(131,2,True),(1300,10,False)]:
+        for r, day, is_day in [(0,1,True),(69,1,True),(70,1,False),(129,1,False),(130,2,True),(1299,10,False)]:
             t = Turn(payload(r), Config())
             self.assertEqual((t.day,t.is_day),(day,is_day))
 
@@ -170,7 +170,7 @@ class CombatTests(unittest.TestCase):
         self.assertFalse(l.add(1,command("move",(3,6))))
 
     def test_cooldown_and_day_prevent_attack(self):
-        for p in (self.combat("rocket",cooldown=2), {**self.combat(),"roundNo":70}):
+        for p in (self.combat("rocket",cooldown=2), {**self.combat(),"roundNo":69}):
             t,c,n,l=setup_case(p)
             defend(t,n,l)
             self.assertNotIn("20",l.commands)

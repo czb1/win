@@ -8,7 +8,7 @@ import logging
 import re
 import shlex
 from .commands import command
-from .model import pos
+from .model import ORES, pos
 from .task_tools import parse_file_tool, document_path, file_code
 
 LOG = logging.getLogger(__name__)
@@ -155,6 +155,10 @@ class Memory:
     preparation_tick: int = 70
     preparation_workers: set = field(default_factory=set)
     sale_workers: set = field(default_factory=set)
+    mine_targets: dict = field(default_factory=dict)
+    mine_kinds: dict = field(default_factory=dict)
+    mine_collected: dict = field(default_factory=dict)
+    supply_worker: int | None = None
     last_response: dict | None = None
     last_digest: str = ""
 
@@ -163,6 +167,9 @@ class Memory:
             self.day, self.calls = turn.day, 0
             self.preparation_tick = 70
             self.preparation_workers.clear()
+            self.sale_workers.clear()
+            self.mine_targets.clear()
+            self.supply_worker = None
         news = turn.raw.get("worldNews") or {}
         record = {"day": turn.day, "officialNews": str(news.get("officialNews", ""))[:12000],
                   "folkLegends": str(news.get("folkLegends", ""))[:20000]}
@@ -207,6 +214,23 @@ class Memory:
         self.build_failures = {p: r for p, r in self.build_failures.items() if r > turn.round}
         self.collect_failures = {p: r for p, r in self.collect_failures.items() if r > turn.round}
         self.buy_failures = {p: r for p, r in self.buy_failures.items() if r > turn.round}
+        # The protocol exposes no remaining-deposit field. Count only confirmed
+        # collections and forget estimates when a deposit disappears/changes.
+        mines = {p: k for p, k in turn.zones.items() if k in ORES}
+        self.mine_collected = {p: n for p, n in self.mine_collected.items()
+                               if mines.get(p) == self.mine_kinds.get(p)}
+        if self.last_round == turn.round - 1:
+            for uid, cmd in self.last_commands.items():
+                if (cmd['action'] == 'collect'
+                        and results.get(uid, results.get(int(uid))) is True):
+                    p = pos(cmd['targetPos'][0])
+                    if p in mines and mines.get(p) == self.mine_kinds.get(p):
+                        self.mine_collected[p] = (self.mine_collected.get(p, 0) + 1) % 10
+        self.mine_targets = {uid: p for uid, p in self.mine_targets.items()
+                             if uid in turn.units and p in mines
+                             and mines[p] == self.mine_kinds.get(p)
+                             and p not in self.collect_failures}
+        self.mine_kinds = mines
         result = turn.raw.get("lastSummonTreasureResult", 0)
         if result in (1, 4):
             self.treasure_done = True
