@@ -1,6 +1,7 @@
 """Regressions for wall throughput, aligned geometry and weak-model replies."""
 import copy
 import json
+from itertools import product
 import sys
 from time import monotonic
 import unittest
@@ -8,7 +9,7 @@ import unittest
 from test_agent import payload, unit, setup_case, ROOT
 from agent.brain import Agent
 from agent.config import Config
-from agent.model import Turn, distance
+from agent.model import Turn, distance, neighbours
 from agent.navigation import layout, Navigator, DeadlineExceeded
 from agent.commands import command
 from agent.economy import worker, build, wall_keeps_access, mine
@@ -20,10 +21,36 @@ from fortification_benchmark import simulate_day
 
 
 class LayoutRegressionTests(unittest.TestCase):
+    def test_enemy_side_is_complete_in_all_four_corners(self):
+        for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
+            t = Turn(payload(roles=[unit(13, "station", x, y)]), Config())
+            _, walls = layout(t, Config())
+            front_x = x + 3 if x < 7 else x - 2
+            front = {(front_x, v) for v in range(y - 3, y + 3)}
+            self.assertTrue(front <= set(walls))
+            self.assertEqual(set(walls[:6]), front)
+
+    def test_sealed_blueprint_has_three_reachable_distinct_operator_spots(self):
+        for station in ((3, 11), (10, 4)):
+            p = payload(roles=[unit(13, "station", *station), unit(10, "worker", 0, 7)])
+            t = Turn(p, Config())
+            towers, walls = layout(t, Config())
+            p["teamOur"]["roles"] += [unit(100+i, "wall", *point) for i, point in enumerate(walls)]
+            p["teamOur"]["roles"] += [unit(20+i, "rocket", *point) for i, point in enumerate(towers)]
+            t, _, nav, _ = setup_case(p)
+            choices = [{point for point in neighbours(tower)
+                        if point not in t.blocked and nav.search(t.workers[0], {point}) is not None}
+                       for tower in towers]
+            self.assertTrue(any(len(set(crew)) == 3 for crew in product(*choices)), choices)
+            # Every inner walking cell remains reachable; no pocket forces a hole.
+            inner = {point for x in range(t.width) for y in range(t.height)
+                     if t.base_distance(point := (x, y)) == 1 and point not in t.blocked}
+            self.assertTrue(all(nav.search(t.workers[0], {point}) is not None for point in inner))
+
     def test_rectangle_is_anchored_to_entire_station_footprint(self):
         t, c, _, _ = setup_case(payload())
         towers, walls = layout(t, c)
-        self.assertEqual(len(walls), 16)
+        self.assertEqual(len(walls), 18)
         self.assertEqual(len(set(walls)), len(walls))
         self.assertTrue(all(t.base_distance(p) == 2 for p in walls))
         self.assertTrue(all(p[0] in (1, 6) or p[1] in (8, 13) for p in walls))
@@ -60,20 +87,19 @@ class LayoutRegressionTests(unittest.TestCase):
                                wall_cells=[[5, 5], [5, 5], [6, 5]], weapon_cells=[[2, 2]])
         self.assertEqual(layout(t, c), ([(2, 2)], [(5, 5), (6, 5)]))
 
-    def test_completed_default_walls_keep_direct_fire_lanes(self):
+    def test_completed_default_walls_allow_rocket_fire_without_slots(self):
         p = payload(71, roles=[unit(13, "station", 3, 11)])
         t = Turn(p, Config())
         towers, walls = layout(t, Config())
         p["teamOur"]["roles"] += [unit(100+i, "wall", *point) for i, point in enumerate(walls)]
-        # Default gatling faces right, railgun down.
-        for index, (kind, target) in enumerate((("gatling", (9, 11)), ("railgun", (3, 5)))):
+        for index, target in enumerate(((9, 11), (9, 12), (9, 8))):
             case = copy.deepcopy(p)
-            case["teamOur"]["roles"].append(unit(20, kind, *towers[index]))
+            case["teamOur"]["roles"].append(unit(20, "rocket", *towers[index]))
             case["robot"]["roles"] = [unit(80, "smallRobot", *target, health=40)]
             turn, _, nav, _ = setup_case(case)
             self.assertTrue(select_targets(turn, turn.weapons[0], {}, nav.deadline))
 
-    def test_diagonal_custom_railgun_has_a_clear_supercover_ray(self):
+    def test_custom_railgun_does_not_punch_holes_in_the_front(self):
         cfg = Config(loadout=["rocket", "rocket", "railgun"])
         p = payload(71, roles=[unit(13, "station", 3, 11)])
         towers, walls = layout(Turn(p, cfg), cfg)
@@ -81,7 +107,8 @@ class LayoutRegressionTests(unittest.TestCase):
         p["teamOur"]["roles"].append(unit(20, "railgun", *towers[2]))
         p["robot"]["roles"] = [unit(80, "smallRobot", 8, 6, health=40)]
         turn = Turn(p, cfg)
-        self.assertTrue(select_targets(turn, turn.weapons[0], {}, monotonic() + 3))
+        self.assertFalse(select_targets(turn, turn.weapons[0], {}, monotonic() + 3))
+        self.assertEqual(walls, layout(Turn(p, Config()), Config())[1])
 
     def test_complete_wall_ring_keeps_worker_route_to_base(self):
         p = payload(roles=[unit(13, "station", 3, 11), unit(10, "worker", 8, 10)])
@@ -94,6 +121,34 @@ class LayoutRegressionTests(unittest.TestCase):
 
 
 class ConstructionRegressionTests(unittest.TestCase):
+    def test_distant_enemy_side_precedes_nearby_rear_wall(self):
+        for station, worker_pos, front_x in (((3, 11), (0, 10), 6), ((10, 4), (14, 4), 8)):
+            p = payload(roles=[unit(13, "station", *station),
+                               unit(1, "worker", *worker_pos, backpack=["stone"])])
+            t, cfg, nav, ledger = setup_case(p)
+            _, walls = layout(t, cfg)
+            self.assertTrue(build(t, cfg, Memory(), nav, ledger, t.workers[0], walls, lambda _: "wall"))
+            self.assertEqual(next(iter(ledger.build_claims))[0], front_x)
+            # Explicit official coordinates follow the same threat priority.
+            t, cfg, nav, ledger = setup_case(p, layout_mode="explicit", wall_cells=list(reversed(walls)))
+            self.assertTrue(build(t, cfg, Memory(), nav, ledger, t.workers[0], layout(t, cfg)[1], lambda _: "wall"))
+            self.assertEqual(next(iter(ledger.build_claims))[0], front_x)
+
+    def test_repair_front_breach_before_extending_other_segments(self):
+        p = payload(roles=[unit(13, "station", 3, 11), unit(1, "worker", 5, 7, backpack=["stone"]),
+                           unit(40, "wall", 6, 8), unit(41, "wall", 6, 10)])
+        t, cfg, nav, ledger = setup_case(p)
+        self.assertTrue(build(t, cfg, Memory(), nav, ledger, t.workers[0], layout(t, cfg)[1], lambda _: "wall"))
+        self.assertIn((6, 9), ledger.build_claims)
+
+    def test_idle_pioneer_clears_planned_wall_site(self):
+        p = payload(roles=[unit(13, "station", 3, 11), unit(11, "pioneer", 6, 10)])
+        response = Agent(Config(llm_enabled=False)).decide(p)
+        cmd = response["roleCommandMap"]["11"]
+        self.assertEqual(cmd["action"], "move")
+        sites = sum(layout(Turn(p, Config()), Config()), [])
+        self.assertNotIn(tuple(cmd["targetPos"][0].values()), sites)
+
     def test_both_workers_build_after_old_day_one_cap(self):
         p = payload(roles=[unit(1, "worker", 3, 3, backpack=["stone"]),
                            unit(2, "worker", 7, 3, backpack=["stone"])]
@@ -167,11 +222,14 @@ class ConstructionRegressionTests(unittest.TestCase):
         self.assertIs(t.blocked, original)
 
     def test_first_day_replay_exceeds_six_walls_with_two_builders(self):
-        result = simulate_day(Agent, Config)
-        self.assertGreater(result["walls_day1"], 6, result)
-        self.assertEqual(result["invalid_actions"], 0, result)
-        self.assertEqual(len(result["walls_per_worker"]), 2, result)
-        print("\nControlled construction replay:", json.dumps(result))
+        for mirrored in (False, True):
+            result = simulate_day(Agent, Config, mirrored)
+            self.assertEqual(result["walls_day1"], 18, result)
+            self.assertFalse(result["front_missing"], result)
+            self.assertFalse(result["blueprint_missing"], result)
+            self.assertEqual(result["invalid_actions"], 0, result)
+            self.assertEqual(len(result["walls_per_worker"]), 2, result)
+            print("\nControlled construction replay:", json.dumps(result))
 
 
 class WeakModelRegressionTests(unittest.TestCase):
@@ -211,7 +269,7 @@ class WeakModelRegressionTests(unittest.TestCase):
             else:
                 self.assertNotIn("11", l.commands)
         self.assertEqual(mem.task_failures, 3)
-        self.assertEqual(Intelligence(t, c, mem).task(l), ("", ""))
+        self.assertEqual(mem.pending, ("task", 6))
 
     def test_ambiguous_and_invalid_python_replies_count_as_no_progress(self):
         for reply in ('{"python":"print(1)","answer":"1"}', "PYTHON\nfor", "nonsense"):
@@ -229,7 +287,7 @@ class WeakModelRegressionTests(unittest.TestCase):
         self.assertEqual(mem.task_failures, 0)
         self.assertFalse(mem.proposal_counts)
 
-    def test_three_malformed_replies_return_pioneer_toward_base(self):
+    def test_three_malformed_replies_retry_without_cancelling_task(self):
         cfg = Config(layout_mode="explicit")
         p = payload(roles=[unit(13, "station", 2, 12), unit(11, "pioneer", 10, 3)])
         p["phaseTask"] = "return a value"
@@ -238,9 +296,9 @@ class WeakModelRegressionTests(unittest.TestCase):
             p["roundNo"] = r
             p["llmResp"] = "nonsense"
             response = agent.decide(p)
-        self.assertFalse(response["prompt"])
+        self.assertTrue(response["prompt"])
         self.assertFalse(response["executeCmd"])
-        self.assertEqual(response["roleCommandMap"]["11"]["action"], "move")
+        self.assertNotIn("11", response["roleCommandMap"])
 
 
 if __name__ == "__main__":

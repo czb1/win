@@ -61,8 +61,8 @@ class Navigator:
 def layout(turn, cfg):
     """One fixed rectangle anchored to the station's full 2x2 footprint.
 
-    Default build regions remain demo-inferred. Gates and firing slots are
-    deliberate omissions on that rectangle, never shifted replacement cells.
+    Close the enemy-facing side first; only a two-cell rear logistics gate is
+    omitted. Default build regions remain demo-inferred, not official geometry.
     """
     if cfg.layout_mode == "explicit":
         return (list(dict.fromkeys(tuple(p) for p in cfg.weapon_cells if turn.inside(tuple(p)))),
@@ -77,32 +77,37 @@ def layout(turn, cfg):
     def world(p):
         return origin[0] + sx * p[0], origin[1] + sy * p[1]
 
-    def local(p):
-        return (p[0] - origin[0]) * sx, (p[1] - origin[1]) * sy
-
-    # Spread weapons across both centre-facing sides; mirror on side switches.
-    tower_order = [(2, 0), (0, 2), (2, 2)]
+    # Group towers along the front. Spreading them around the 2x2 base cuts
+    # the inner walking ring into pockets, forcing connectivity checks to
+    # leave extra wall holes. Keep both flanks connected to the rear gate.
+    # Leave (2, 1) as an operator/circulation cell; three consecutive towers
+    # would leave their middle tower without a usable controller position.
+    tower_order = [(2, 0), (2, -1), (2, 2)]
     towers = [world(p) for p in tower_order[:len(cfg.loadout)] if turn.inside(world(p))]
     perimeter = {(u, v) for u in range(-2, 4) for v in range(-2, 4)
                  if u in (-2, 3) or v in (-2, 3)}
-    # Prefer a two-cell rear gate. At map edges use the first in-bounds side.
-    gates = [((-2, 0), (-2, 1)), ((0, -2), (1, -2)),
-             ((3, 0), (3, 1)), ((0, 3), (1, 3))]
+    # Never punch a gate into the enemy-facing vertical side. If the rear is
+    # outside the map, use the rear end of an in-bounds horizontal side.
+    gates = [((-2, 0), (-2, 1)), ((0, -2), (1, -2)), ((0, 3), (1, 3))]
     openings = set(next((g for g in gates if all(turn.inside(world(p)) for p in g)), ()))
-    # Straight-fire weapons need a clear outward ray. Rockets can fire over walls.
-    planned = [(world(p), name) for p, name in zip(tower_order, cfg.loadout)]
-    existing = [(w.pos, w.kind) for w in turn.weapons]
-    for point, kind in planned + existing:
-        if kind not in ("gatling", "railgun"):
-            continue
-        u, v = local(point)
-        du = -1 if u < 0 else 1 if u > 1 else 0
-        dv = -1 if v < 0 else 1 if v > 1 else 0
-        slot = u + du, v + dv
-        if slot in perimeter:
-            openings.add(slot)
-            if du and dv:
-                # Supercover rays touch both side cells at a diagonal corner.
-                openings.update({(u + du, v), (u, v + dv)} & perimeter)
-    order = sorted(perimeter - openings, key=lambda p: (-max(p), -min(p), p))
-    return towers, [world(p) for p in order if turn.inside(world(p))]
+    # Grow one contiguous front from its centre, then extend both flanks back.
+    # x mirrors independently of team labels and of the map's y convention.
+    order = [(3, v) for v in (0, 1, -1, 2, -2, 3)]
+    order += [(u, v) for u in (2, 1, 0, -1, -2) for v in (-2, 3)]
+    order += [(-2, v) for v in (-1, 0, 1, 2)]
+    return towers, [world(p) for p in order if p in perimeter - openings and turn.inside(world(p))]
+
+
+def wall_priority(turn, cfg, sites, index):
+    """Strategic side and existing breaches precede walking distance."""
+    target = sites[index]
+    if not turn.station:
+        return (0, 0, index)
+    xs = [p[0] for p in turn.station.cells]
+    right = min(xs) + max(xs) < turn.width - 1
+    front_x = max(p[0] for p in sites) if right else min(p[0] for p in sites)
+    walls = {u.pos for u in turn.ours if u.kind == "wall"}
+    x, y = target
+    breach = ((x - 1, y) in walls and (x + 1, y) in walls or
+              (x, y - 1) in walls and (x, y + 1) in walls)
+    return (int(x != front_x), int(not breach), index)

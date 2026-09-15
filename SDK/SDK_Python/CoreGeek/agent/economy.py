@@ -1,7 +1,8 @@
 from collections import Counter
 from dataclasses import replace
 from .commands import command
-from .model import ORES, WEAPONS, HEROES, pos, distance
+from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
+from .navigation import wall_priority
 
 
 def walk(nav, ledger, hero, targets):
@@ -11,6 +12,15 @@ def walk(nav, ledger, hero, targets):
     if route[1] is not None:
         return ledger.add(hero.id, command("move", route[1]))
     return True
+
+
+def vacate_site(turn, nav, ledger, hero, sites):
+    """An idle actor on a blueprint cell must not create a permanent hole."""
+    if hero.pos not in sites:
+        return False
+    route = nav.search(hero, set(neighbours(hero.pos)) - set(sites), ledger.reserved)
+    return bool(route and route[1] is not None
+                and ledger.add(hero.id, command("move", route[1])))
 
 
 def visit(turn, nav, ledger, hero, kind, action):
@@ -84,8 +94,9 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for):
             continue
         route = nav.approach(hero, [target], ledger.reserved)
         if route:
-            options.append((route[0], index, target, route))
-    for _, index, target, route in sorted(options):
+            priority = wall_priority(turn, cfg, sites, index) if name_for(index) == "wall" else (0, 0, route[0])
+            options.append((priority, route[0], index, target, route))
+    for _, _, index, target, route in sorted(options):
         name = name_for(index)
         if name == "wall" and not wall_keeps_access(turn, nav, ledger, target):
             continue
@@ -239,3 +250,4 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
         elif ledger.add(hero.id, command("acceptTask")):
             mem.task_point = point
             mem.task_timeout = int(task.get("timeoutRounds", cfg.task_max_rounds))
+            mem.accepted_round = turn.round

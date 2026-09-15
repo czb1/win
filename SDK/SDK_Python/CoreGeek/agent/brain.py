@@ -8,7 +8,7 @@ from .model import Turn
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger, command
 from .combat import assignments, defend, emergency_items
-from .economy import worker, pioneer, walk
+from .economy import worker, pioneer, walk, vacate_site
 from .intelligence import Memory, Intelligence
 
 LOG = logging.getLogger(__name__)
@@ -45,11 +45,25 @@ class Agent:
                 emergency_items(turn, ledger)
             pairs = assignments(turn, nav, ledger)
             returning = set()
+            return_lengths = {}
             for hero, tower in pairs:
                 route = nav.approach(hero, [tower.pos], ledger.reserved)
                 length = route[0] if route else 130
+                return_lengths[hero.id] = length
                 if not turn.is_day or turn.day_left <= length + self.cfg.return_margin:
                     returning.add(hero.id)
+            h = turn.pioneer
+            if h and turn.phase_task:
+                elapsed = turn.round - mem.task_started
+                within_timeout = elapsed < min(mem.task_timeout, self.cfg.task_max_rounds)
+                # Submit a ready answer before a return movement can cancel it.
+                # LLM/sandbox work holds the pioneer at the task point and gets
+                # its own chance before expensive worker connectivity searches.
+                if within_timeout and (mem.answer is not None or turn.is_day and h.id not in returning):
+                    available = turn.day_left - return_lengths.get(h.id, 0) - self.cfg.return_margin
+                    prompt, execute = intel.task(ledger, available_rounds=available)
+                    if prompt or execute:
+                        ledger.used.add(h.id)
             if not turn.is_day:
                 defend(turn, nav, ledger, pairs)
                 for hero in turn.heroes:
@@ -59,17 +73,18 @@ class Agent:
                 defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning])
                 for hero in turn.workers:
                     if hero.id not in ledger.used and hero.id not in returning:
-                        worker(turn, self.cfg, mem, nav, ledger, hero, towers, walls, True)
-                h = turn.pioneer
+                        sites = towers + walls
+                        last_site = all(p in turn.blocked or p in ledger.reserved for p in sites)
+                        if not (last_site and vacate_site(turn, nav, ledger, hero, sites)):
+                            worker(turn, self.cfg, mem, nav, ledger, hero, towers, walls, True)
                 if h and h.id not in ledger.used and h.id not in returning:
                     if turn.phase_task:
-                        elapsed = turn.round - mem.task_started
-                        if elapsed < min(mem.task_timeout, self.cfg.task_max_rounds) and mem.task_failures < 3:
-                            prompt, execute = intel.task(ledger)
-                        elif turn.station:
+                        if not within_timeout and turn.station:
                             walk(nav, ledger, h, turn.station.cells)
                     else:
                         pioneer(turn, self.cfg, mem, nav, ledger, h)
+                        if h.id not in ledger.used:
+                            vacate_site(turn, nav, ledger, h, towers + walls)
                 if not prompt and not execute:
                     prompt = intel.news()
         except DeadlineExceeded:

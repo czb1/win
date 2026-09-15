@@ -17,7 +17,7 @@ def role(uid, kind, point, **kw):
             "attackRange": 8, "attackPower": 40, "cooldown": 0, **kw}
 
 
-def simulate_day(agent_class, config_class):
+def simulate_day(agent_class, config_class, mirrored=False):
     cfg = config_class(llm_enabled=False)
     agent = agent_class(cfg)
     # Deposits respawn in a fixed cycle outside both versions' building rings.
@@ -31,6 +31,24 @@ def simulate_day(agent_class, config_class):
                      "playerTasks": []},
          "teamEnemy": {"roles": []}, "robot": {"roles": []}, "phaseTask": "",
          "worldNews": {}, "llmResp": "", "lastCmdResult": "", "errors": []}
+    def mirror(point):
+        return (23 - point[0], 19 - point[1]) if mirrored else point
+
+    if mirrored:
+        deposits = list(map(mirror, deposits))
+        active = {mirror(point): count for point, count in active.items()}
+        for r in p["teamOur"]["roles"]:
+            x, y = mirror((r["pos"]["x"], r["pos"]["y"]))
+            if r["roleType"] == "station":
+                x, y = x - 1, y + 1
+            r["pos"] = {"x": x, "y": y}
+        p["teamOur"]["type"] = "defender"
+    front = {mirror((8, y)) for y in range(12, 18)}
+    # Independent expected geometry: complete 6x6 perimeter except rear gate.
+    expected = {mirror((x, y)) for x in range(3, 9) for y in range(12, 18)
+                if (x in (3, 8) or y in (12, 17)) and (x, y) not in ((3, 14), (3, 15))}
+    front_complete_round = None
+    first_wall = None
     walls_by_round, actions, invalid, worst = {}, Counter(), 0, 0.0
     builders = Counter()
     for round_no in range(1, 71):
@@ -72,7 +90,7 @@ def simulate_day(agent_class, config_class):
                     collected[target] += 1
             elif action == "build":
                 name = cmd["name"]
-                x, y = target
+                x, y = mirror(target)
                 # Explicitly model the demo-inferred ring, independent of layout().
                 base_distance = max(max(5 - x, 0, x - 6), max(14 - y, 0, y - 15))
                 legal = (adjacent and target not in occupied and destinations[target] == 1
@@ -84,6 +102,8 @@ def simulate_day(agent_class, config_class):
                         for _ in range(cfg.wall_stones):
                             r["backpack"].remove("stone")
                         builders[uid] += 1
+                        if first_wall is None:
+                            first_wall = target
                 else:
                     legal = (legal and name in ("gatling", "railgun", "rocket")
                              and p["teamOur"]["goldNum"] >= cfg.weapon_cost
@@ -105,7 +125,12 @@ def simulate_day(agent_class, config_class):
                 next_deposit += 1
         p["lastRoundRoleActionResults"] = results
         walls_by_round[round_no] = sum(r["roleType"] == "wall" for r in roles)
+        built = {(r["pos"]["x"], r["pos"]["y"]) for r in roles if r["roleType"] == "wall"}
+        if front <= built and front_complete_round is None:
+            front_complete_round = round_no
     return {"walls_day1": walls_by_round[70],
+            "first_wall_position": first_wall, "front_complete_round": front_complete_round,
+            "front_missing": sorted(front - built), "blueprint_missing": sorted(expected - built),
             "first_wall_round": next((r for r, n in walls_by_round.items() if n), None),
             "walls_round_30": walls_by_round[30], "walls_round_50": walls_by_round[50],
             "walls_per_worker": dict(builders), "invalid_actions": invalid,
@@ -115,11 +140,12 @@ def simulate_day(agent_class, config_class):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent-root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--mirror", action="store_true", help="Replay the right-side base with left-facing defence")
     args = parser.parse_args()
     sys.path.insert(0, str(args.agent_root / "SDK/SDK_Python/CoreGeek"))
     from agent.brain import Agent
     from agent.config import Config
-    print(json.dumps(simulate_day(Agent, Config), ensure_ascii=False, indent=2))
+    print(json.dumps(simulate_day(Agent, Config, args.mirror), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

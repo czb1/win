@@ -1,0 +1,115 @@
+test_attack_key_controller_lock_and_target_count (test_agent.CombatTests.test_attack_key_controller_lock_and_target_count) ... ok
+test_cooldown_and_day_prevent_attack (test_agent.CombatTests.test_cooldown_and_day_prevent_attack) ... ok
+test_emergency_healing_excludes_operator (test_agent.CombatTests.test_emergency_healing_excludes_operator) ... ok
+test_invalid_cone_rejected (test_agent.CombatTests.test_invalid_cone_rejected) ... ok
+test_rocket_ignores_wall_railgun_does_not (test_agent.CombatTests.test_rocket_ignores_wall_railgun_does_not) ... ok
+test_rocket_splash_and_railgun_energy (test_agent.CombatTests.test_rocket_splash_and_railgun_energy) ... ok
+test_unknown_range_never_assumed_infinite (test_agent.CombatTests.test_unknown_range_never_assumed_infinite) ... ok
+test_invalid_json_and_recovery (test_agent.HTTPTests.test_invalid_json_and_recovery) ... ok
+test_invalid_state_has_complete_fallback (test_agent.HTTPTests.test_invalid_state_has_complete_fallback) ... decision failed; sending protocol-compatible empty turn
+Traceback (most recent call last):
+  File "/workspace/scratch/c70900df9ffe/win/SDK/SDK_Python/CoreGeek/agent/server.py", line 74, in do_POST
+    response = self.server.agent.decide(data)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/c70900df9ffe/win/SDK/SDK_Python/CoreGeek/agent/brain.py", line 25, in decide
+    turn = Turn(data, self.cfg)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/c70900df9ffe/win/SDK/SDK_Python/CoreGeek/agent/model.py", line 68, in __init__
+    self.round = int(data["roundNo"])
+                     ~~~~^^^^^^^^^^^
+KeyError: 'roundNo'
+ok
+test_post_health_and_bad_path (test_agent.HTTPTests.test_post_health_and_bad_path) ... ok
+test_all_rounds_protocol_and_latency (test_agent.IntegrationTests.test_all_rounds_protocol_and_latency) ... ok
+test_duplicate_requests_do_not_spend_llm_twice (test_agent.IntegrationTests.test_duplicate_requests_do_not_spend_llm_twice) ... ok
+test_no_action_for_dead_team (test_agent.IntegrationTests.test_no_action_for_dead_team) ... ok
+test_repo_sample (test_agent.IntegrationTests.test_repo_sample) ... ok
+test_round_reset_and_side_switch (test_agent.IntegrationTests.test_round_reset_and_side_switch) ... ok
+test_daily_quota_and_task_exemption (test_agent.IntelligenceTests.test_daily_quota_and_task_exemption) ... ok
+test_failed_build_backoff (test_agent.IntelligenceTests.test_failed_build_backoff) ... ok
+test_json_only (test_agent.IntelligenceTests.test_json_only) ... ok
+test_llm_sandbox_answer_round_trip (test_agent.IntelligenceTests.test_llm_sandbox_answer_round_trip) ... ok
+test_malformed_news_retries_within_quota (test_agent.IntelligenceTests.test_malformed_news_retries_within_quota) ... ok
+test_skipped_turn_drops_stale_answer (test_agent.IntelligenceTests.test_skipped_turn_drops_stale_answer) ... ok
+test_task_death_clears_pending_work (test_agent.IntelligenceTests.test_task_death_clears_pending_work) ... ok
+test_treasure_requires_evidence (test_agent.IntelligenceTests.test_treasure_requires_evidence) ... ok
+test_build_limit_and_night (test_agent.LedgerTests.test_build_limit_and_night) ... ok
+test_no_collect_full_or_wrong_role (test_agent.LedgerTests.test_no_collect_full_or_wrong_role) ... ok
+test_shared_build_budget (test_agent.LedgerTests.test_shared_build_budget) ... ok
+test_treasure_requires_exact_inventory_counts (test_agent.LedgerTests.test_treasure_requires_exact_inventory_counts) ... ok
+test_unknown_action_and_missing_target (test_agent.LedgerTests.test_unknown_action_and_missing_target) ... ok
+test_configuration_rejects_bad_loadout (test_agent.ModelTests.test_configuration_rejects_bad_loadout) ... ok
+test_day_boundaries (test_agent.ModelTests.test_day_boundaries) ... ok
+test_dead_units_do_not_block (test_agent.ModelTests.test_dead_units_do_not_block) ... ok
+test_enemy_and_neutral_block (test_agent.ModelTests.test_enemy_and_neutral_block) ... ok
+test_explicit_empty_layout_builds_nothing (test_agent.ModelTests.test_explicit_empty_layout_builds_nothing) ... ok
+test_station_footprint (test_agent.ModelTests.test_station_footprint) ... ok
+test_two_cell_task_point (test_agent.ModelTests.test_two_cell_task_point) ... ok
+test_approach_not_onto_resource (test_agent.NavigationTests.test_approach_not_onto_resource) ... ok
+test_diagonal_corner_cut_is_legal (test_agent.NavigationTests.test_diagonal_corner_cut_is_legal) ... ok
+test_same_destination_and_swaps_rejected (test_agent.NavigationTests.test_same_destination_and_swaps_rejected) ... ok
+test_start_equals_goal (test_agent.NavigationTests.test_start_equals_goal) ... ok
+test_unreachable_and_deadline (test_agent.NavigationTests.test_unreachable_and_deadline) ... ok
+test_accept_execute_submit_and_reuse_observed_solution (test_evolution.EvolutionTests.test_accept_execute_submit_and_reuse_observed_solution) ... ok
+test_failure_then_corrected_code_recovers (test_evolution.EvolutionTests.test_failure_then_corrected_code_recovers) ... ok
+test_large_sandbox_output_keeps_traceback_tail (test_evolution.EvolutionTests.test_large_sandbox_output_keeps_traceback_tail) ... ok
+test_official_deadline_can_exceed_forty_rounds (test_evolution.EvolutionTests.test_official_deadline_can_exceed_forty_rounds) ... ok
+test_only_clean_explicit_final_output_is_auto_submitted (test_evolution.EvolutionTests.test_only_clean_explicit_final_output_is_auto_submitted) ... ok
+test_ready_answer_is_submitted_before_night_return (test_evolution.EvolutionTests.test_ready_answer_is_submitted_before_night_return) ... ok
+test_rejected_accept_does_not_keep_stale_task_origin (test_evolution.EvolutionTests.test_rejected_accept_does_not_keep_stale_task_origin) ... ok
+test_skipped_round_does_not_submit_stale_sandbox_output (test_evolution.EvolutionTests.test_skipped_round_does_not_submit_stale_sandbox_output) ... ok
+test_timeout_death_skips_and_wrong_answers_are_not_learned (test_evolution.EvolutionTests.test_timeout_death_skips_and_wrong_answers_are_not_learned) ... ok
+test_weak_model_format_variants (test_evolution.EvolutionTests.test_weak_model_format_variants) ... ok
+test_wrong_answer_feedback_survives_next_round (test_evolution.EvolutionTests.test_wrong_answer_feedback_survives_next_round) ... ok
+test_both_workers_build_after_old_day_one_cap (test_fortification.ConstructionRegressionTests.test_both_workers_build_after_old_day_one_cap) ... ok
+test_cached_routes_invalidate_when_occupancy_changes (test_fortification.ConstructionRegressionTests.test_cached_routes_invalidate_when_occupancy_changes) ... ok
+test_connectivity_deadline_restores_turn_obstacles (test_fortification.ConstructionRegressionTests.test_connectivity_deadline_restores_turn_obstacles) ... ok
+test_distant_enemy_side_precedes_nearby_rear_wall (test_fortification.ConstructionRegressionTests.test_distant_enemy_side_precedes_nearby_rear_wall) ... ok
+test_dusk_uses_partial_stone_batch (test_fortification.ConstructionRegressionTests.test_dusk_uses_partial_stone_batch) ... ok
+test_first_day_replay_exceeds_six_walls_with_two_builders (test_fortification.ConstructionRegressionTests.test_first_day_replay_exceeds_six_walls_with_two_builders) ... ok
+test_idle_pioneer_clears_planned_wall_site (test_fortification.ConstructionRegressionTests.test_idle_pioneer_clears_planned_wall_site) ... ok
+test_moving_builders_claim_different_work_destinations (test_fortification.ConstructionRegressionTests.test_moving_builders_claim_different_work_destinations) ... ok
+test_news_prediction_cannot_disable_a_visible_stone_deposit (test_fortification.ConstructionRegressionTests.test_news_prediction_cannot_disable_a_visible_stone_deposit) ... ok
+test_repair_front_breach_before_extending_other_segments (test_fortification.ConstructionRegressionTests.test_repair_front_breach_before_extending_other_segments) ... ok
+test_second_build_checks_combined_wall_occupancy (test_fortification.ConstructionRegressionTests.test_second_build_checks_combined_wall_occupancy) ... ok
+test_wall_must_preserve_shop_even_if_vendor_remains_reachable (test_fortification.ConstructionRegressionTests.test_wall_must_preserve_shop_even_if_vendor_remains_reachable) ... ok
+test_blueprint_does_not_shift_when_a_site_is_occupied (test_fortification.LayoutRegressionTests.test_blueprint_does_not_shift_when_a_site_is_occupied) ... ok
+test_complete_wall_ring_keeps_worker_route_to_base (test_fortification.LayoutRegressionTests.test_complete_wall_ring_keeps_worker_route_to_base) ... ok
+test_completed_default_walls_allow_rocket_fire_without_slots (test_fortification.LayoutRegressionTests.test_completed_default_walls_allow_rocket_fire_without_slots) ... ok
+test_custom_railgun_does_not_punch_holes_in_the_front (test_fortification.LayoutRegressionTests.test_custom_railgun_does_not_punch_holes_in_the_front) ... ok
+test_edge_layout_stays_inside_map (test_fortification.LayoutRegressionTests.test_edge_layout_stays_inside_map) ... ok
+test_enemy_side_is_complete_in_all_four_corners (test_fortification.LayoutRegressionTests.test_enemy_side_is_complete_in_all_four_corners) ... ok
+test_explicit_whitelist_preserves_order_without_duplicate_sites (test_fortification.LayoutRegressionTests.test_explicit_whitelist_preserves_order_without_duplicate_sites) ... ok
+test_rectangle_is_anchored_to_entire_station_footprint (test_fortification.LayoutRegressionTests.test_rectangle_is_anchored_to_entire_station_footprint) ... ok
+test_sealed_blueprint_has_three_reachable_distinct_operator_spots (test_fortification.LayoutRegressionTests.test_sealed_blueprint_has_three_reachable_distinct_operator_spots) ... ok
+test_side_switch_mirrors_the_entire_blueprint (test_fortification.LayoutRegressionTests.test_side_switch_mirrors_the_entire_blueprint) ... ok
+test_ambiguous_and_invalid_python_replies_count_as_no_progress (test_fortification.WeakModelRegressionTests.test_ambiguous_and_invalid_python_replies_count_as_no_progress) ... ok
+test_answer_body_preserves_json (test_fortification.WeakModelRegressionTests.test_answer_body_preserves_json) ... ok
+test_new_task_resets_failure_budget (test_fortification.WeakModelRegressionTests.test_new_task_resets_failure_budget) ... ok
+test_one_json_object_in_commentary_is_recovered (test_fortification.WeakModelRegressionTests.test_one_json_object_in_commentary_is_recovered) ... ok
+test_plain_code_avoids_json_string_escaping (test_fortification.WeakModelRegressionTests.test_plain_code_avoids_json_string_escaping) ... ok
+test_repeated_candidate_is_not_resubmitted_forever (test_fortification.WeakModelRegressionTests.test_repeated_candidate_is_not_resubmitted_forever) ... ok
+test_three_malformed_replies_retry_without_cancelling_task (test_fortification.WeakModelRegressionTests.test_three_malformed_replies_retry_without_cancelling_task) ... ok
+test_builder_collects_batch_before_leaving_mine (test_strategy.EconomyRegressionTests.test_builder_collects_batch_before_leaving_mine) ... ok
+test_builder_leaves_mine_when_batch_is_ready (test_strategy.EconomyRegressionTests.test_builder_leaves_mine_when_batch_is_ready) ... ok
+test_depleted_mines_allow_partial_batch_sale (test_strategy.EconomyRegressionTests.test_depleted_mines_allow_partial_batch_sale) ... ok
+test_failed_wall_sites_do_not_keep_worker_mining_stone (test_strategy.EconomyRegressionTests.test_failed_wall_sites_do_not_keep_worker_mining_stone) ... ok
+test_full_batch_sells_even_without_construction (test_strategy.EconomyRegressionTests.test_full_batch_sells_even_without_construction) ... ok
+test_short_batch_can_fund_missing_tower (test_strategy.EconomyRegressionTests.test_short_batch_can_fund_missing_tower) ... ok
+test_short_batch_that_cannot_fund_tower_keeps_mining (test_strategy.EconomyRegressionTests.test_short_batch_that_cannot_fund_tower_keeps_mining) ... ok
+test_zero_gold_does_not_force_one_ore_sale_when_towers_are_complete (test_strategy.EconomyRegressionTests.test_zero_gold_does_not_force_one_ore_sale_when_towers_are_complete) ... ok
+test_only_operator_chooses_ready_weapon_over_cooling_weapon (test_strategy.TargetingRegressionTests.test_only_operator_chooses_ready_weapon_over_cooling_weapon) ... ok
+test_railgun_spends_energy_on_current_health_not_planned_health (test_strategy.TargetingRegressionTests.test_railgun_spends_energy_on_current_health_not_planned_health) ... ok
+test_rocket_can_aim_between_robots (test_strategy.TargetingRegressionTests.test_rocket_can_aim_between_robots) ... ok
+test_rocket_splash_reaches_one_cell_beyond_aim_range (test_strategy.TargetingRegressionTests.test_rocket_splash_reaches_one_cell_beyond_aim_range) ... ok
+
+----------------------------------------------------------------------
+Ran 92 tests in 3.903s
+
+OK
+
+1300 static-state protocol turns: worst=7.78 ms (not an engine simulation)
+
+Controlled construction replay: {"walls_day1": 18, "first_wall_position": [8, 15], "front_complete_round": 30, "front_missing": [], "blueprint_missing": [], "first_wall_round": 16, "walls_round_30": 6, "walls_round_50": 13, "walls_per_worker": {"12": 8, "10": 10}, "invalid_actions": 0, "actions": {"move": 93, "build": 21, "collect": 18}, "worst_decision_ms": 20.69}
+
+Controlled construction replay: {"walls_day1": 18, "first_wall_position": [15, 4], "front_complete_round": 20, "front_missing": [], "blueprint_missing": [], "first_wall_round": 15, "walls_round_30": 9, "walls_round_50": 18, "walls_per_worker": {"12": 9, "10": 9}, "invalid_actions": 0, "actions": {"move": 91, "build": 21, "collect": 19}, "worst_decision_ms": 20.53}

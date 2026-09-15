@@ -2,7 +2,7 @@ name: Python strategy checks
 
 on:
   push:
-    branches: [main, codex/fortify-walls-and-weak-model]
+    branches: [main, 'codex/**']
   pull_request:
     branches: [main]
 
@@ -25,7 +25,7 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: First-day construction replay
         run: python tools/fortification_benchmark.py
-      - name: Compare historical construction baseline
+      - name: Compare pre-fix construction baseline
         run: |
-          git worktree add --detach "$RUNNER_TEMP/win-baseline" 11e8404d57674208b4938f748d3f26a179cb97a7
+          git worktree add --detach "$RUNNER_TEMP/win-baseline" 767b72d494fd5772eccd61d4df27bb4f17de1909
           python tools/fortification_benchmark.py --agent-root "$RUNNER_TEMP/win-baseline"
