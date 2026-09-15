@@ -26,9 +26,9 @@ def line_cells(start, end):
     return out
 
 
-def assignments(turn, nav, ledger):
+def assignments(turn, nav, ledger, excluded=()):
     towers = turn.weapons[:3]
-    heroes = [h for h in turn.heroes if h.id not in ledger.used]
+    heroes = [h for h in turn.heroes if h.id not in ledger.used and h.id not in excluded]
     count = min(len(towers), len(heroes))
     if not count:
         return []
@@ -55,6 +55,8 @@ def assignments(turn, nav, ledger):
 
 
 def threat(turn, robot):
+    if not turn.threatens_us(robot):
+        return 0.0
     score = 10.0 / (1 + turn.base_distance(robot.pos))
     if robot.target_team == turn.team:
         score *= 2
@@ -65,7 +67,9 @@ def select_targets(turn, tower, damage, deadline):
     if tower.attack_range <= 0:
         return []
     check_time(deadline)
-    targets = [r for r in turn.robots if distance(tower.pos, r.pos) <= tower.attack_range]
+    targets = [r for r in turn.robots if turn.threatens_us(r)
+               and distance(tower.pos, r.pos) <= tower.attack_range]
+    protected = {r.id for r in turn.robots if not turn.threatens_us(r)}
     # Shot origin follows upstream demo (weapon centre); confirm against official engine.
     barriers = {p for p, kind in turn.zones.items() if kind != "land"}
     for u in (*turn.ours, *turn.enemies):
@@ -80,16 +84,19 @@ def select_targets(turn, tower, damage, deadline):
         for r in targets:
             check_time(deadline)
             path = set(line_cells(tower.pos, r.pos))
-            energy, score, hits = max(0, tower.power), 0, {}
+            energy, score, hits, collateral = max(0, tower.power), 0, {}, False
             for hit in sorted((b for b in turn.robots if b.pos in path), key=lambda b: distance(tower.pos, b.pos)):
                 # All damage settles at turn end: earlier planned shots do NOT
                 # reduce the energy absorbed by a currently living blocker.
                 actual = min(energy, hit.health)
+                collateral |= actual > 0 and hit.id in protected
                 energy -= actual
                 amount = min(actual, remaining[hit.id])
                 hits[hit.id] = amount
                 score += amount * threat(turn, hit)
-            options.append((score, -r.id, r.pos, hits))
+            # Opponent-bound robots still absorb railgun energy physically.
+            if not collateral:
+                options.append((score, -r.id, r.pos, hits))
         if not options:
             return []
         score, _, target, hits = max(options, key=lambda x: x[:2])
@@ -114,6 +121,9 @@ def select_targets(turn, tower, damage, deadline):
             hit = min((b for b in turn.robots if b.pos in path),
                       key=lambda b: distance(tower.pos, b.pos), default=robot)
             shots[robot.pos] = {hit.id: 10}
+    # Filter physical hits, not just aim points: splash and first-hit blocking
+    # can otherwise help the opponent even when aiming at our own wave.
+    shots = {point: hits for point, hits in shots.items() if not protected.intersection(hits)}
     result = []
     for _ in range(tower.level):
         check_time(deadline)
@@ -164,7 +174,9 @@ def emergency_items(turn, ledger):
             continue
         if area_used:
             continue
-        threats = [r for r in turn.robots if turn.base_distance(r.pos) <= 4]
+        threats = [r for r in turn.robots if turn.threatens_us(r) and turn.base_distance(r.pos) <= 4]
+        threats = [r for r in threats if not any(not turn.threatens_us(b)
+                   and distance(r.pos, b.pos) <= 1 for b in turn.robots)]
         if not threats:
             continue
         target = max(threats, key=lambda r: sum(min(b.health,100) for b in threats if distance(r.pos,b.pos)<=1))

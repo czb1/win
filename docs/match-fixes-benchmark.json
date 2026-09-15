@@ -1,0 +1,155 @@
+{
+  "python": "3.12.14",
+  "baseline": "fd6a70d",
+  "progression_before": {
+    "scope": "controlled infinite deposits and fixed prices; no battle or win rate",
+    "days": 5,
+    "gold": 2660,
+    "invalid_actions": 0,
+    "weapon_levels": [
+      3,
+      3,
+      3
+    ],
+    "station_level": 3,
+    "walls": 6,
+    "first_rounds": {
+      "WeaponUpgradeVoucher1": 29,
+      "used_WeaponUpgradeVoucher1": 34,
+      "WeaponUpgradeVoucher2": 141,
+      "used_WeaponUpgradeVoucher2": 147,
+      "StationUpgradeVoucher1": 187,
+      "used_StationUpgradeVoucher1": 194,
+      "StationUpgradeVoucher2": 275,
+      "used_StationUpgradeVoucher2": 282
+    },
+    "purchases": {
+      "WeaponUpgradeVoucher1": 3,
+      "WeaponUpgradeVoucher2": 3,
+      "StationUpgradeVoucher1": 1,
+      "StationUpgradeVoucher2": 1
+    },
+    "upgrades": {
+      "WeaponUpgradeVoucher1": 3,
+      "WeaponUpgradeVoucher2": 3,
+      "StationUpgradeVoucher1": 1,
+      "StationUpgradeVoucher2": 1
+    },
+    "actions": {
+      "move": 220,
+      "collect": 380,
+      "build": 6,
+      "sell": 32,
+      "buy": 8,
+      "use": 8
+    },
+    "worst_ms": 4.42
+  },
+  "progression_after": {
+    "scope": "controlled infinite deposits and fixed prices; no battle or win rate",
+    "days": 5,
+    "gold": 1190,
+    "invalid_actions": 0,
+    "weapon_levels": [
+      3,
+      3,
+      3
+    ],
+    "station_level": 3,
+    "walls": 6,
+    "first_rounds": {
+      "WeaponUpgradeVoucher1": 17,
+      "Medicine": 21,
+      "used_WeaponUpgradeVoucher1": 22,
+      "StationUpgradeVoucher1": 57,
+      "used_StationUpgradeVoucher1": 63,
+      "WeaponUpgradeVoucher2": 151,
+      "used_WeaponUpgradeVoucher2": 156,
+      "StationUpgradeVoucher2": 284,
+      "used_StationUpgradeVoucher2": 290,
+      "WallUpgradeVoucher1": 296,
+      "used_WallUpgradeVoucher1": 299,
+      "WallUpgradeVoucher2": 302,
+      "used_WallUpgradeVoucher2": 305
+    },
+    "purchases": {
+      "WeaponUpgradeVoucher1": 3,
+      "Medicine": 3,
+      "StationUpgradeVoucher1": 1,
+      "WeaponUpgradeVoucher2": 3,
+      "StationUpgradeVoucher2": 1,
+      "WallUpgradeVoucher1": 6,
+      "WallUpgradeVoucher2": 6
+    },
+    "upgrades": {
+      "WeaponUpgradeVoucher1": 3,
+      "StationUpgradeVoucher1": 1,
+      "WeaponUpgradeVoucher2": 3,
+      "StationUpgradeVoucher2": 1,
+      "WallUpgradeVoucher1": 6,
+      "WallUpgradeVoucher2": 6
+    },
+    "actions": {
+      "move": 318,
+      "collect": 271,
+      "build": 6,
+      "sell": 21,
+      "buy": 23,
+      "use": 21
+    },
+    "worst_ms": 12.78
+  },
+  "strategy": {
+    "scope": "controlled fixtures; not official engine or win rate",
+    "economy": {
+      "rounds": 70,
+      "gold": 120,
+      "carried_copper": 6,
+      "actions": {
+        "collect": 30,
+        "move": 33,
+        "sell": 2,
+        "idle": 5
+      }
+    },
+    "combat": {
+      "static_robots": 740,
+      "samples": 20,
+      "worst_ms": 50.25,
+      "min_attacking_towers": 3
+    }
+  },
+  "replay": {
+    "roleCommandMap": {
+      "10012": {
+        "action": "move",
+        "targetPos": [
+          {
+            "x": 9,
+            "y": 17
+          }
+        ]
+      },
+      "10011": {
+        "action": "move",
+        "targetPos": [
+          {
+            "x": 9,
+            "y": 13
+          }
+        ]
+      },
+      "10010": {
+        "action": "move",
+        "targetPos": [
+          {
+            "x": 6,
+            "y": 23
+          }
+        ]
+      }
+    },
+    "prompt": "",
+    "executeCmd": ""
+  }
+}

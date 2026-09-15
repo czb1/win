@@ -35,27 +35,136 @@ def visit(turn, nav, ledger, hero, kind, action):
     return ledger.add(hero.id, command("move", route[1]))
 
 
-def use_inventory(turn, nav, ledger, hero):
-    if hero.health < (110 if hero.kind == "worker" else 100) and "Medicine" in hero.inventory:
+def upgrade_order(turn, building):
+    """First double weapon projectiles, then strengthen the base, then level 3.
+
+    A damaged base gets the full-heal benefit immediately. Wall upgrades are
+    deliberately last: upgrading every wall first would starve the guns.
+    """
+    if building.kind == "station":
+        return (-1 if building.health < 750 else 1 if building.level == 1 else 3, building.id)
+    if building.kind in WEAPONS:
+        return (0 if building.level == 1 else 2, building.id)
+    xs = [u.pos[0] for u in turn.ours if u.kind == "wall"]
+    front = (max(xs) if turn.station and turn.station.pos[0] < turn.width / 2 else min(xs)) if xs else 0
+    return (4, int(building.pos[0] != front), building.health, building.id)
+
+
+def voucher_for(building):
+    prefix = ("Weapon" if building.kind in WEAPONS else "Station" if building.kind == "station"
+              else "Wall" if building.kind == "wall" else None)
+    return f"{prefix}UpgradeVoucher{building.level}" if prefix and building.level < 3 else None
+
+
+def use_inventory(turn, nav, ledger, hero, local_only=False):
+    if hero.health <= (165 if hero.kind == "worker" else 150) and hero.inventory["Medicine"]:
         return ledger.add(hero.id, command("use", name="Medicine"))
     upgrades = []
     for building in turn.ours:
-        prefix = "Weapon" if building.kind in WEAPONS else "Station" if building.kind == "station" else "Wall" if building.kind == "wall" else None
-        if not prefix:
-            continue
-        name = f"{prefix}UpgradeVoucher{building.level}"
-        if building.level < 3 and hero.inventory[name]:
+        name = voucher_for(building)
+        if name and hero.inventory[name] and building.id not in ledger.upgrade_claims:
             route = nav.approach(hero, building.cells, ledger.reserved)
-            if route:
-                upgrades.append((route[0], building.id, name, building, route))
-        if building.kind == "wall" and hero.inventory["WallFixer"] and building.health < 500:
-            if turn.adjacent(hero.pos, building.pos):
-                return ledger.add(hero.id, command("use", building.pos, name="WallFixer"))
+            if route and (not local_only or route[0] == 0):
+                upgrades.append((upgrade_order(turn, building), route[0], name, building, route))
+        if (building.kind == "wall" and hero.inventory["WallFixer"] and building.health < 500
+                and building.id not in ledger.repair_claims):
+            route = nav.approach(hero, building.cells, ledger.reserved)
+            if route and (not local_only or route[0] == 0):
+                upgrades.append(((1.5, building.health, building.id), route[0], "WallFixer", building, route))
     if upgrades:
-        _, _, name, building, route = min(upgrades)
+        _, _, name, building, route = min(upgrades, key=lambda option: option[:2])
         if route[1] is None:
             return ledger.add(hero.id, command("use", building.pos, name=name))
-        return ledger.add(hero.id, command("move", route[1]))
+        if ledger.add(hero.id, command("move", route[1])):
+            (ledger.repair_claims if name == "WallFixer" else ledger.upgrade_claims).add(building.id)
+            return True
+    return False
+
+
+def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False):
+    """Return an affordable, applicable purchase and its shopping route.
+
+    Routes are checked before committing to shopping. A full backpack can be
+    emptied by the worker before buying, and duplicate walking buyers reserve
+    both their item and the shared gold for this decision.
+    """
+    shops = [p for p, k in turn.zones.items() if k == "weaponShop"]
+    routes = [(r[0], p, r) for p in shops
+              if (r := nav.approach(hero, [p], ledger.reserved)) is not None]
+    if not routes:
+        return None
+    candidates = []
+    wounded = hero.health <= (165 if hero.kind == "worker" else 150)
+    if not hero.inventory["Medicine"] and (wounded or turn.weapons and not urgent_only):
+        candidates.append(((-2 if hero.health <= 110 else -.5,), "Medicine", hero.cells))
+    if not urgent_only:
+        carried = Counter(item for h in turn.heroes for item in h.backpack)
+        for building in sorted(turn.ours, key=lambda b: upgrade_order(turn, b)):
+            name = voucher_for(building)
+            if not name or building.id in ledger.upgrade_claims:
+                continue
+            if building.kind == "wall" and any(b.level < 3 and b.kind in (*WEAPONS, "station") for b in turn.ours):
+                continue
+            if carried[name]:
+                carried[name] -= 1
+                continue
+            candidates.append((upgrade_order(turn, building), name, building.cells))
+        damaged = [w for w in turn.ours if w.kind == "wall" and w.health < 500]
+        if damaged and not any(h.inventory["WallFixer"] for h in turn.heroes):
+            candidates.append(((1.5,), "WallFixer", damaged[0].cells))
+    for _, name, destinations in sorted(candidates, key=lambda c: c[0]):
+        price = turn.shop.get(name)
+        if (price is None or price < 0 or name in ledger.purchases
+                or (hero.id, name) in mem.buy_failures):
+            continue
+        options = []
+        for _, shop, _ in routes:
+            arrival = nav.approach(hero, destinations, ledger.reserved)
+            if arrival is None:
+                continue
+            # Evaluate from an actual reachable shop-adjacent tile, with the
+            # original actor position vacated, rather than a straight-line guess.
+            for cell in neighbours(shop):
+                if (not turn.inside(cell) or cell in turn.blocked and cell != hero.pos
+                        or cell in ledger.reserved):
+                    continue
+                to_shop = nav.search(hero, {cell}, ledger.reserved)
+                original = turn.blocked
+                turn.blocked = original - {hero.pos}
+                try:
+                    proxy = replace(hero, pos=cell)
+                    delivery = nav.approach(proxy, destinations, ledger.reserved) if name != "Medicine" else (0, None)
+                    home = min((r[0] for w in turn.weapons
+                                if (r := nav.approach(proxy, w.cells, ledger.reserved)) is not None), default=0)
+                finally:
+                    turn.blocked = original
+                if to_shop and delivery:
+                    # Building supplies end at the base; Medicine ends at the
+                    # shop. Include the remaining walk back to an operator spot.
+                    after_delivery = (home if name == "Medicine" else min(
+                        (distance(p, w.pos) for p in destinations for w in turn.weapons), default=0))
+                    cost = to_shop[0] + 2 + delivery[0] + after_delivery + cfg.return_margin
+                    if cost < turn.day_left:
+                        options.append((cost, to_shop))
+        if options:
+            # Save for the next useful upgrade instead of spending every small
+            # balance on cheap wall vouchers and never reaching 100/150 gold.
+            if price > ledger.gold - reserve:
+                return None
+            return name, min(options, key=lambda o: o[0])[1]
+    return None
+
+
+def buy_supply(turn, ledger, hero, plan):
+    if not plan or not hero.space:
+        return False
+    name, route = plan
+    if route[1] is None:
+        return ledger.add(hero.id, command("buy", name=name, num=1))
+    if ledger.add(hero.id, command("move", route[1])):
+        ledger.purchases.add(name)
+        ledger.gold -= turn.shop[name]
+        return True
     return False
 
 
@@ -147,6 +256,17 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder):
     if missing_towers and ledger.gold >= cfg.weapon_cost:
         if build(turn, cfg, mem, nav, ledger, hero, tower_sites, lambda i: cfg.loadout[i % len(cfg.loadout)]):
             return
+    reserve = missing_towers * cfg.weapon_cost
+    plan = supplies(turn, cfg, mem, nav, ledger, hero, reserve)
+    if plan:
+        if not hero.space:
+            sale = [k for k in ORES if hero.inventory[k] and turn.prices.get(k, 0) > 0]
+            if sale:
+                kind = max(sale, key=lambda k: hero.inventory[k] * turn.prices[k])
+                if visit(turn, nav, ledger, hero, "vendor", command("sell", name=kind, num=hero.inventory[kind])):
+                    return
+        elif buy_supply(turn, ledger, hero, plan):
+            return
     available_walls = [p for p in wall_sites if p not in turn.blocked
                        and p not in ledger.reserved and p not in ledger.build_claims
                        and p not in mem.build_failures]
@@ -179,15 +299,6 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder):
     if need_walls and hero.inventory["stone"] >= cfg.wall_stones:
         if build(turn, cfg, mem, nav, ledger, hero, wall_sites, lambda _: "wall"):
             return
-    reserve = missing_towers * cfg.weapon_cost
-    # Buy only a currently applicable voucher, without duplicating one already carried by the team.
-    if not any("UpgradeVoucher" in item for h in turn.heroes for item in h.backpack):
-        upgrade = next((f"WeaponUpgradeVoucher{w.level}" for w in sorted(turn.weapons, key=lambda w: (w.level, w.id)) if w.level < 3), None)
-        if not upgrade and turn.station and turn.station.level < 3:
-            upgrade = f"StationUpgradeVoucher{turn.station.level}"
-        if upgrade in turn.shop and upgrade not in ledger.purchases and hero.space and ledger.gold - reserve >= turn.shop[upgrade]:
-            if visit(turn, nav, ledger, hero, "weaponShop", command("buy", name=upgrade, num=1)):
-                return
     counts = hero.inventory
     ore_count = sum(counts[k] for k in ORES)
     sellable = [k for k in ORES if counts[k] and turn.prices.get(k, 0) > 0
@@ -210,6 +321,11 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder):
 def pioneer(turn, cfg, mem, nav, ledger, hero):
     if use_inventory(turn, nav, ledger, hero):
         return
+    # The pioneer can carry its own medicine; there is no transfer action.
+    if not hero.inventory["Medicine"] and hero.health <= 150:
+        plan = supplies(turn, cfg, mem, nav, ledger, hero, urgent_only=True)
+        if buy_supply(turn, ledger, hero, plan):
+            return
     t = mem.treasure
     if t and not mem.treasure_done and not mem.treasure_attempted and turn.round <= t["endRound"]:
         required = Counter(t["items"])

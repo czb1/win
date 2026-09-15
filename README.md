@@ -4,7 +4,9 @@
 
 **交付状态：可启动和测试的策略基线。** 建筑区域及部分建筑参数在任务书的内网图片中，当前无法读取。默认布局、建造费用沿用或推导自仓库 demo，正式比赛前需核对。未获得完整判题器，尚未验证比赛胜率、连续生存十天或完整计分表现。
 
-最新修复：迎敌侧优先、连续防线与补缺、三座越墙火箭台及可达操控位；自进化按任务期限运行，格式错误可恢复，沙盒明确输出最终答案时直接提交，并记录有完成迹象的历史解法。说明与实测见 [自进化与连续防线修复](docs/自进化与连续防线修复.md)。
+最新修复：持续采矿收入、主动买药与分阶段升级、购买与使用去重；按 `targetTeam` 隔离两路机器人，同时过滤误伤对手路线的溅射和穿透。自进化增加固定 `READ` / `LIST` 工具、明确文档路径自动读取、接口证据和失败代码保留，按实际威胁决定夜间回防。说明、取舍与回放对比见 [实战采购与自进化改进](docs/实战采购与自进化改进.md)。
+
+此前连续防线和布局修复见 [自进化与连续防线修复](docs/自进化与连续防线修复.md)。
 
 默认左侧基地先建右墙，右侧基地先建左墙。外围 20 格只保留背敌侧两格运输通道，共 18 个墙位；迎敌面不再挖射击口。通道供采矿、购物和回防使用，因此这不是完全封闭的城墙。自定义直射武器请配套显式布局，否则连续墙会挡住其弹道。
 
@@ -48,6 +50,7 @@ python3 -m unittest discover -s tests -v
 python3 tools/replay.py examples/request.json
 python3 tools/replay.py examples/request.json --output examples/local-response.json
 python3 tools/strategy_benchmark.py
+python3 tools/progression_benchmark.py
 python3 tools/fortification_benchmark.py
 python3 tools/fortification_benchmark.py --mirror
 ```
@@ -92,7 +95,9 @@ bash run.sh 8080 --config config/default.json
 
 LLM 由判题器通过响应中的 `prompt` 调用，程序本身不需要 API Key，也不访问外部模型服务。`executeCmd` 中的 Python 交给官方任务沙盒执行；本地 HTTP 服务只做字符串构造与语法检查。
 
-任务模型可返回 `ANSWER` 加答案，或 `PYTHON` 加代码。代码成功执行且输出第一行 `FINAL_ANSWER`、后续行只包含最终答案时，程序下一回合直接提交；失败、超时和截断的输出会进入修复流程。历史解法仅在合法提交后任务正常消失等条件成立时保存为有完成迹象的参考，不把动作合法性当成判题正确率。
+任务模型可返回 `READ 路径`、`LIST 路径`、`ANSWER` 加答案，或 `PYTHON` 加代码。文件分页可用 `READ 路径 字符偏移`。代码成功执行且输出第一行 `FINAL_ANSWER`、后续行只包含最终答案时，程序下一回合直接提交；失败、超时和截断的输出会进入修复流程。历史解法仅在合法提交后任务正常消失等条件成立时保存为有完成迹象的参考，不把动作合法性当成判题正确率。
+
+`SDK/main3.py` 已转接正式实现，与 `SDK/SDK_Python/CoreGeek/main3.py` 共用同一智能体；`demo/` 仍是历史示例，请使用上述正式入口。模型工具代码只在官方沙盒执行。
 
 使用旧配置时请同步更新：默认 `loadout` 现为三座 `rocket`，`task_max_rounds` 改为 1300（整局上限）。实际任务仍受官方 `timeoutRounds` 和回防时间约束；手动保留的 40 回合配置仍会提前限制长任务。
 

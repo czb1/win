@@ -18,7 +18,8 @@ class Config:
     stone_batch: int = 6
     sell_batch: int = 12
     return_margin: int = 5
-    task_min_rounds: int = 8
+    task_min_rounds: int = 12
+    task_danger_radius: int = 6
     llm_enabled: bool = True
     daily_llm_limit: int = 3
     max_python_chars: int = 12000
@@ -43,7 +44,7 @@ class Config:
                 x not in ("gatling", "railgun", "rocket") for x in cfg.loadout):
             raise ValueError("loadout must contain 1..3 weapons")
         for name in ("weapon_cost", "wall_stones", "stone_batch", "sell_batch",
-                     "return_margin", "task_min_rounds", "max_body_bytes",
+                     "return_margin", "task_min_rounds", "task_danger_radius", "max_body_bytes",
                      "build_retry_rounds", "task_max_rounds", "max_python_chars"):
             if type(getattr(cfg, name)) is not int or getattr(cfg, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
