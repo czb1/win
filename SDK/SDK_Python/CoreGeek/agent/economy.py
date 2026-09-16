@@ -3,7 +3,7 @@ from dataclasses import replace
 from .commands import command
 from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
 from .navigation import wall_priority
-from .mining import mine, earn
+from .mining import mine, earn, sale_inventory
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites
 
 
@@ -215,7 +215,14 @@ def wall_keeps_access(turn, nav, ledger, target):
     try:
         reachable = [(h, ds) for h in heroes for ds in destinations if nav.approach(h, ds)]
         turn.blocked = turn.blocked | {target}
-        return all(nav.approach(h, ds) is not None for h, ds in reachable)
+        if not all(nav.approach(h, ds) is not None for h, ds in reachable):
+            return False
+        positions = {h.id: h for h in heroes}
+        # A late wall must leave every assigned operator time to get inside,
+        # including operators whose movement was already planned this turn.
+        return all((route := (nav.search(positions[h.id], {ledger.operator_posts[h.id]})
+                             if h.id in ledger.operator_posts else nav.approach(positions[h.id], w.cells))) is not None
+                   and turn.day_left > route[0] + 2 for h, w in ledger.return_pairs)
     finally:
         turn.blocked = original
 
@@ -224,42 +231,54 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for):
     options = []
     for index, target in enumerate(sites):
         if (target in turn.blocked or target in ledger.reserved
-                or target in ledger.build_claims or target in mem.build_failures):
+                or target in ledger.build_claims or target in mem.build_failures
+                or mem.movement.avoids(hero.id, target)):
             continue
         route = nav.approach(hero, [target], ledger.reserved)
         if route:
             priority = wall_priority(turn, cfg, sites, index) if name_for(index) == "wall" else (0, 0, route[0])
-            options.append((priority, route[0], index, target, route))
-    for _, _, index, target, route in sorted(options):
+            if name_for(index) == "wall":
+                priority = priority[:2] + (0, target != mem.build_targets.get(hero.id))
+            previous = mem.build_targets.get(hero.id)
+            continuity = distance(target, previous) if name_for(index) == "wall" and previous else 0
+            options.append((priority, route[0], continuity, index, target, route))
+    for _, _, _, index, target, route in sorted(options):
         name = name_for(index)
         if name == "wall" and not wall_keeps_access(turn, nav, ledger, target):
             continue
         action = command("move", route[1]) if route[1] is not None else command("build", target, name=name)
         if ledger.add(hero.id, action):
             ledger.build_claims[target] = (hero.id, name)
+            mem.build_targets[hero.id] = target
             return True
     return False
 
 
 def finish_preparation(turn, cfg, mem, nav, ledger, hero, tower, wall_sites):
     """Spend one local preparation action only with a checked route to a gun."""
-    route = nav.approach(hero, tower.cells, ledger.reserved)
+    route = (nav.search(hero, {ledger.operator_posts[hero.id]}, ledger.reserved)
+             if hero.id in ledger.operator_posts else nav.approach(hero, tower.cells, ledger.reserved))
     if route is None or turn.day_left <= route[0] + 2:
         return False
     if use_inventory(turn, nav, ledger, hero, local_only=True):
         return True
     if hero.kind != "worker" or hero.inventory["stone"] < cfg.wall_stones:
         return False
-    for target in front_sites(turn, wall_sites):
+    front = set(front_sites(turn, wall_sites))
+    for target in wall_sites:
         if not turn.adjacent(hero.pos, target) or target in turn.blocked:
+            continue
+        margin = 2 if target in front else cfg.return_margin
+        if turn.day_left <= route[0] + margin:
             continue
         original = turn.blocked
         try:
             turn.blocked = original | {target}
-            after = nav.approach(hero, tower.cells, ledger.reserved)
+            after = (nav.search(hero, {ledger.operator_posts[hero.id]}, ledger.reserved)
+                     if hero.id in ledger.operator_posts else nav.approach(hero, tower.cells, ledger.reserved))
         finally:
             turn.blocked = original
-        if after and turn.day_left > after[0] + 2:
+        if after and turn.day_left > after[0] + margin:
             if build(turn, cfg, mem, nav, ledger, hero, [target], lambda _: "wall"):
                 return True
     return False
@@ -307,10 +326,10 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
             return
     if plan:
         if not hero.space:
-            sale = [k for k in ORES if hero.inventory[k] and turn.prices.get(k, 0) > 0]
+            sale = sale_inventory(turn, mem, hero)
             if sale:
-                kind = max(sale, key=lambda k: hero.inventory[k] * turn.prices[k])
-                if visit(turn, nav, ledger, hero, "vendor", command("sell", name=kind, num=hero.inventory[kind])):
+                kind = max(sale, key=lambda k: sale[k] * turn.prices[k])
+                if visit(turn, nav, ledger, hero, "vendor", command("sell", name=kind, num=sale[kind])):
                     return
         elif buy_supply(turn, ledger, hero, plan):
             return
@@ -369,6 +388,14 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     free = [h for h in free if h.id not in ledger.used]
     if not free:
         return
+    structures = {p for r in (*turn.ours, *turn.enemies) if r.kind not in HEROES for p in r.cells}
+    missing = [p for p in wall_sites if p not in structures and p not in mem.build_failures
+               and turn.zones.get(p, "land") == "land"]
+    stone_need = len(missing) * cfg.wall_stones
+    mem.stone_reserves.clear()
+    for h in sorted(turn.workers, key=lambda h: (-h.inventory["stone"], h.id)):
+        mem.stone_reserves[h.id] = min(stone_need, h.inventory["stone"])
+        stone_need -= mem.stone_reserves[h.id]
     trading = {h.id for h in free if trade_available(turn, mem, nav, h)}
     planned = planned_weapons(turn, cfg, mem, tower_sites)
     built_walls = {w.pos for w in turn.ours if w.kind == "wall"}
@@ -383,10 +410,10 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     for h in free:
         if h.id in developing and h.id not in mem.preparation_workers:
             mem.preparation_workers.add(h.id)
-            if h.id in trading and any(h.inventory[k] and turn.prices.get(k, 0) > 0 for k in ORES):
+            if h.id in trading and sale_inventory(turn, mem, h):
                 mem.sale_workers.add(h.id)
         if h.id in developing and h.id in mem.sale_workers:
-            if any(h.inventory[k] and turn.prices.get(k, 0) > 0 for k in ORES):
+            if sale_inventory(turn, mem, h):
                 earn(turn, cfg, mem, nav, ledger, h, cutoff, allow_spare=False)
             else:
                 mem.sale_workers.discard(h.id)
@@ -411,11 +438,9 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     buyer = (mem.supply_worker if mem.supply_worker in eligible or carrying
              else min(buyers)[1] if buyers else None)
     mem.supply_worker = buyer
-    # Economic maps first need the continuous enemy-facing segment. Optional
-    # rear construction waits for the weapon programme; no-commerce maps keep
-    # the full defensive fallback because there is no income to sacrifice.
-    selected_walls = (front_sites(turn, wall_sites) if trading and any(w.level < 3 for w in planned)
-                      else wall_sites)
+    # Close the front first, then keep building the flanks and rear regardless
+    # of weapon level. Batch size limits transport, never the daily wall count.
+    selected_walls = wall_sites
     builders = [h for h in free if h.id in developing and h.id != buyer]
     if trading:
         builders.sort(key=lambda h: (-h.inventory["stone"],

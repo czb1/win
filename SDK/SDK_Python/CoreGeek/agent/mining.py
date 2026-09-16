@@ -1,6 +1,7 @@
 """Persistent mining runs and deadline-driven sales, independent of the LLM."""
 import logging
 from collections import Counter
+from dataclasses import replace
 from .commands import command
 from .model import ORES, distance, neighbours
 from .economy_plan import via
@@ -22,34 +23,47 @@ def mining_home(turn, nav, hero, reserved=()):
     return list(turn.station.cells) if turn.station else []
 
 
+def return_destination(turn, nav, ledger, hero):
+    if hero.id in ledger.operator_posts:
+        return [ledger.operator_posts[hero.id]], True
+    tower = next((w for h, w in ledger.return_pairs if h.id == hero.id), None)
+    return (tower.cells if tower else mining_home(turn, nav, hero, ledger.reserved)), False
+
+
 def spare_mine(turn, cfg, mem, nav, ledger, hero):
     """Use otherwise idle daylight near ore; carry it to a later day's sale."""
     if not turn.is_day or not hero.space:
         LOG.debug("round=%s worker=%s spare_mining=unavailable day=%s free_space=%s",
                   turn.round, hero.id, turn.is_day, hero.space)
         return False
-    home = ledger.return_targets.get(hero.id) or mining_home(turn, nav, hero, ledger.reserved)
+    home, exact = return_destination(turn, nav, ledger, hero)
     if not home:
         LOG.debug("round=%s worker=%s spare_mining=no_return_destination", turn.round, hero.id)
         return False
-    home_dist = nav.distances_to(home, {hero.pos}, ledger.reserved)
     options = []
     for target, kind in turn.zones.items():
-        if kind not in ORES or turn.prices.get(kind, 0) <= 0 or target in mem.collect_failures:
+        if (kind not in ORES or turn.prices.get(kind, 0) <= 0 or target in mem.collect_failures
+                or mem.movement.avoids(hero.id, target)):
             continue
         if distance(hero.pos, target) > 3:
             continue
         # Check the return from the actual collection tile, not from a
         # different side of the deposit. At most two steps start a spare trip.
         for cell in neighbours(target):
-            if cell not in home_dist:
-                continue
             route = nav.search(hero, {cell}, ledger.reserved)
             if route is None or route[0] > 2:
                 continue
-            if route[0] + 1 + home_dist[cell] + cfg.return_margin > turn.day_left:
+            original = turn.blocked
+            try:
+                turn.blocked = original - {hero.pos}
+                proxy = replace(hero, pos=cell)
+                back = (nav.search(proxy, home, ledger.reserved) if exact
+                        else nav.approach(proxy, home, ledger.reserved))
+            finally:
+                turn.blocked = original
+            if back is None or route[0] + 1 + back[0] + cfg.return_margin > turn.day_left:
                 continue
-            options.append((route[0], -turn.prices[kind], home_dist[cell], target, cell, route))
+            options.append((route[0], -turn.prices[kind], back[0], target, cell, route))
     if not options:
         LOG.debug("round=%s worker=%s spare_mining=no_safe_mine_within_two_steps day_left=%s",
                   turn.round, hero.id, turn.day_left)
@@ -62,6 +76,13 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero):
         record_target(turn, hero, target, route, "carry_for_later")
         return True
     return False
+
+
+def sale_inventory(turn, mem, hero):
+    """Only surplus stone can be sold while the wall blueprint needs material."""
+    counts = hero.inventory
+    counts["stone"] = max(0, counts["stone"] - mem.stone_reserves.get(hero.id, 0))
+    return {k: counts[k] for k in ORES if counts[k] and turn.prices.get(k, 0) > 0}
 
 
 def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
@@ -96,6 +117,9 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
             continue
         if p in mem.collect_failures:
             skipped["recent_collect_failure"] += 1
+            continue
+        if mem.movement.avoids(hero.id, p):
+            skipped["movement_retry_cooldown"] += 1
             continue
         if want_stone and kind != "stone":
             skipped["needs_stone"] += 1
@@ -164,18 +188,23 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
 
 
 def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, funding_goal=0, allow_spare=True):
-    counts = hero.inventory
-    ores = [k for k in ORES if counts[k] and turn.prices.get(k, 0) > 0]
+    counts = sale_inventory(turn, mem, hero)
+    ores = list(counts)
     total = sum(counts[k] for k in ores)
     if not total:
         mem.sale_workers.discard(hero.id)
+        mem.sale_targets.pop(hero.id, None)
     vendors = [p for p, k in turn.zones.items() if k == "vendor"]
-    route = nav.approach(hero, vendors, ledger.reserved) if vendors else None
+    options = [(r[0] != 0, p != mem.sale_targets.get(hero.id), r[0], p, r) for p in vendors
+               if not mem.movement.avoids(hero.id, p)
+               and (r := nav.approach(hero, [p], ledger.reserved)) is not None]
+    choice = min(options, default=None)
+    vendor, route = (choice[3], choice[4]) if choice else (None, None)
     due = False
     sale_fits = False
-    home = ledger.return_targets.get(hero.id) or mining_home(turn, nav, hero, ledger.reserved)
+    home, exact = return_destination(turn, nav, ledger, hero)
     if route:
-        trip = via(nav, hero, [vendors, home], ledger.reserved) if home else route[0]
+        trip = via(nav, hero, [[vendor], home], ledger.reserved, final_exact=exact) if home else route[0]
         sale_fits = trip is not None and trip + len(ores) + cfg.return_margin <= turn.day_left
         due = (deadline is not None and turn.tick <= deadline
                and deadline - turn.tick <= route[0] + len(ores)
@@ -193,6 +222,7 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, funding_goal=0, allow
                   else command("move", route[1]))
         if ledger.add(hero.id, action):
             mem.sale_workers.add(hero.id)
+            mem.sale_targets[hero.id] = vendor
             mem.mine_targets.pop(hero.id, None)
             return True
         return False
@@ -204,12 +234,16 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, funding_goal=0, allow
         return True
     if sell():
         return True
-    if allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero):
+    # A pause before a scheduled build/shop phase is not spare time: even one
+    # extra trip can change who reaches a narrow construction entrance first.
+    spare_allowed = allow_spare and (deadline is None or deadline >= 70 or turn.tick >= deadline)
+    if spare_allowed and spare_mine(turn, cfg, mem, nav, ledger, hero):
         return True
     # When today's sale is impossible, keep the load and head home. This also
     # covers workers left without a reachable weapon assignment.
     if allow_spare and total and not sale_fits and home:
-        back = nav.approach(hero, home, ledger.reserved)
+        back = (nav.search(hero, home, ledger.reserved) if exact
+                else nav.approach(hero, home, ledger.reserved))
         if back and back[1] is not None:
             return ledger.add(hero.id, command("move", back[1]))
     return False

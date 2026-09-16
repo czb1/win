@@ -1,5 +1,5 @@
 """Defence assignment and weapon-specific targeting. No simulated enemy moves."""
-from itertools import permutations
+from itertools import permutations, product
 from .model import distance, dump, neighbours
 from .commands import command
 from .navigation import check_time
@@ -26,13 +26,35 @@ def line_cells(start, end):
     return out
 
 
-def assignments(turn, nav, ledger, excluded=()):
+def assignments(turn, nav, ledger, excluded=(), fixed=None):
     towers = turn.weapons[:3]
     heroes = [h for h in turn.heroes if h.id not in ledger.used and h.id not in excluded]
+    routes = {(h.id, w.id): nav.approach(h, [w.pos], ledger.reserved) for h in heroes for w in towers}
+    # Preserve main's cooperative return: a teammate can yield, while a wall
+    # enclosing a gun cannot. Only the latter should release its operator.
+    reachable = {key for key, route in routes.items() if route is not None}
+    original = turn.blocked
+    try:
+        turn.blocked = original - {h.pos for h in heroes}
+        for h in heroes:
+            for w in towers:
+                if (h.id, w.id) not in reachable and nav.approach(h, [w.pos], ledger.reserved) is not None:
+                    reachable.add((h.id, w.id))
+    finally:
+        turn.blocked = original
+    fixed = fixed or {}
+    committed = []
+    assigned = set()
+    for h in heroes:
+        w = next((w for w in towers if w.id == fixed.get(h.id) and w.id not in assigned), None)
+        if w and (h.id, w.id) in reachable:
+            committed.append((h, w))
+            assigned.add(w.id)
+    towers = [w for w in towers if w.id not in assigned]
+    heroes = [h for h in heroes if h.id not in {actor.id for actor, _ in committed}]
     count = min(len(towers), len(heroes))
     if not count:
-        return []
-    routes = {(h.id, w.id): nav.approach(h, [w.pos], ledger.reserved) for h in heroes for w in towers}
+        return committed
     # When an operator heals/dies, tower IDs must not decide which gun stays idle.
     firepower = {}
     for w in towers:
@@ -46,14 +68,70 @@ def assignments(turn, nav, ledger, excluded=()):
             check_time(nav.deadline)
             # An unreachable gun must not reserve a worker for an impossible
             # return trip. Keep the best reachable partial crew instead.
-            pairs = [(h, w) for h, w in zip(crew, selected) if routes[h.id, w.id] is not None]
-            travel = sum(routes[h.id, w.id][0] for h, w in pairs)
+            pairs = [(h, w) for h, w in zip(crew, selected) if (h.id, w.id) in reachable]
+            travel = sum(routes[h.id, w.id][0] if routes[h.id, w.id] else 10000 for h, w in pairs)
             immediate = sum(firepower[w.id] for h, w in pairs
                             if routes[h.id, w.id] and routes[h.id, w.id][0] == 0)
             cost = (-immediate, -len(pairs), travel)
             if best is None or cost < best:
                 best, result = cost, pairs
-    return sorted(result, key=lambda pair: (-firepower[pair[1].id], pair[1].id))
+    return committed + sorted(result, key=lambda pair: (-firepower[pair[1].id], pair[1].id))
+
+
+def operator_posts(turn, nav, pairs, wall_sites=(), fixed=None):
+    """Plan distinct control cells before recalling the crew, including detours.
+
+    Teammates can move during the return trip; buildings cannot. Actual movement
+    still checks current occupancy. Never park on a future wall or let two guns
+    count the same control cell as their independently nearest destination.
+    """
+    if not pairs:
+        return {}
+    fixed = fixed or {}
+    original = turn.blocked
+    turn.blocked = original - {h.pos for h, _ in pairs}
+    options = []
+    try:
+        for h, w in pairs:
+            candidates = []
+            for p in sorted(set(neighbours(w.pos)) - set(wall_sites)):
+                route = nav.search(h, {p})
+                if route is not None:
+                    candidates.append((p, route[0]))
+            if not candidates:
+                return {}
+            options.append(candidates)
+        best, result = None, {}
+        for choice in product(*options):
+            check_time(nav.deadline)
+            if len({p for p, _ in choice}) != len(choice):
+                continue
+            changes = sum(h.id in fixed and fixed[h.id] != p
+                          for (h, _), (p, _) in zip(pairs, choice))
+            cost = (changes, sum(length for _, length in choice), max(length for _, length in choice))
+            if best is None or cost < best:
+                best = cost
+                result = {h.id: option for (h, _), option in zip(pairs, choice)}
+        return result
+    finally:
+        turn.blocked = original
+
+
+def return_plan(turn, nav, pairs, wall_sites, fixed_targets, fixed_posts):
+    """Choose the crew and their distinct posts together, before committing."""
+    best, result = None, (pairs, {})
+    for crew in permutations([h for h, _ in pairs]):
+        candidate = list(zip(crew, [w for _, w in pairs]))
+        if any(h.id in fixed_targets and fixed_targets[h.id] != w.id for h, w in candidate):
+            continue
+        posts = operator_posts(turn, nav, candidate, wall_sites, fixed_posts)
+        if not posts:
+            continue
+        cost = (sum(h.id in fixed_posts and fixed_posts[h.id] != posts[h.id][0] for h, _ in candidate),
+                sum(length for _, length in posts.values()), max(length for _, length in posts.values()))
+        if best is None or cost < best:
+            best, result = cost, (candidate, posts)
+    return result
 
 
 def threat(turn, robot):
@@ -150,12 +228,17 @@ def select_targets(turn, tower, damage, deadline):
     return result
 
 
-def defend(turn, nav, ledger, pairs=None):
+def defend(turn, nav, ledger, pairs=None, posts=None):
     damage = {}
-    for hero, tower in (pairs if pairs is not None else assignments(turn, nav, ledger)):
+    pairs = pairs if pairs is not None else assignments(turn, nav, ledger)
+    for hero, tower in pairs:
         if hero.id in ledger.used:
             continue
-        route = nav.approach(hero, [tower.pos], ledger.reserved)
+        route = (nav.search(hero, {posts[hero.id]}, ledger.reserved) if posts and hero.id in posts
+                 else nav.approach(hero, [tower.pos], ledger.reserved))
+        if turn.is_day and posts and hero.id in posts:
+            if yield_operator(turn, nav, ledger, hero, pairs, posts, route):
+                continue
         if route and route[1] is not None:
             ledger.add(hero.id, command("move", route[1]))
         elif route and not turn.is_day and not tower.cooldown:
@@ -165,6 +248,41 @@ def defend(turn, nav, ledger, pairs=None):
                 if ledger.add(tower.id, {"action": "attack", "controllerId": str(hero.id),
                                         "targetPos": [dump(p) for p in targets]}):
                     damage = planned
+
+
+def yield_operator(turn, nav, ledger, hero, pairs, posts, route):
+    """Occupy a narrow control cell only after the other operators pass it."""
+    target = posts[hero.id]
+    if hero.pos != target and (route is None or route[1] != target):
+        return False
+    waiting = [h for h, _ in pairs if h.id != hero.id and h.id in posts and h.pos != posts[h.id]]
+    if not waiting:
+        return False
+    original = turn.blocked
+    static = original - {h.pos for h, _ in pairs}
+    try:
+        turn.blocked = static
+        reachable = [h for h in waiting if nav.search(h, {posts[h.id]}) is not None]
+        turn.blocked = static | {target}
+        obstructed = [h for h in reachable if nav.search(h, {posts[h.id]}) is None]
+        if not obstructed:
+            return False
+        choices = []
+        for p in [hero.pos, *neighbours(hero.pos)]:
+            if (not turn.inside(p) or p == target or p in original and p != hero.pos
+                    or p in ledger.reserved or nav.memory and p in nav.memory.blocked(hero.id)):
+                continue
+            turn.blocked = static | {p}
+            lengths = [r[0] if (r := nav.search(h, {posts[h.id]})) else 10000 for h in obstructed]
+            choices.append((sum(lengths), p != hero.pos, distance(p, target), p))
+    finally:
+        turn.blocked = original
+    if choices:
+        p = min(choices)[-1]
+        if p != hero.pos:
+            ledger.add(hero.id, command("move", p))
+        return True
+    return False
 
 
 def emergency_items(turn, ledger):

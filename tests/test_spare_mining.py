@@ -48,6 +48,11 @@ class UnreachableDefenceTests(unittest.TestCase):
         result = Agent(Config(layout_mode="explicit", llm_enabled=False)).decide(p)
         self.assertEqual(result["roleCommandMap"]["1"], command("collect", (6, 5)))
 
+    def test_fixed_assignment_is_released_when_wall_blocks_the_gun(self):
+        t, _, nav, ledger = setup_case(blocked_tower_case())
+        pairs = assignments(t, nav, ledger, fixed={1: 20})
+        self.assertEqual([w.id for _, w in pairs], [21])
+
 
 class SpareMiningTests(unittest.TestCase):
     def test_late_adjacent_ore_is_collected_without_a_sale_trip(self):
@@ -59,6 +64,11 @@ class SpareMiningTests(unittest.TestCase):
         t, cfg, nav, ledger = setup_case(late_case(inventory=["iron"] * 40))
         self.assertTrue(earn(t, cfg, Memory(sale_workers={1}), nav, ledger, t.workers[0]))
         self.assertEqual(ledger.commands["1"], command("collect", (6, 5)))
+
+    def test_wait_before_preparation_does_not_start_an_extra_mining_trip(self):
+        t, cfg, nav, ledger = setup_case(late_case(rno=39))
+        self.assertFalse(earn(t, cfg, Memory(), nav, ledger, t.workers[0], deadline=40))
+        self.assertFalse(ledger.commands)
 
     def test_two_step_mine_is_allowed_but_long_trip_is_not(self):
         for target, expected in (((8, 5), True), ((10, 5), False)):
@@ -76,7 +86,7 @@ class SpareMiningTests(unittest.TestCase):
 
     def test_assigned_gun_controls_return_budget(self):
         t, cfg, nav, ledger = setup_case(late_case())
-        ledger.return_targets[1] = {(14, 14)}
+        ledger.operator_posts[1] = (14, 14)
         self.assertFalse(spare_mine(t, cfg, Memory(), nav, ledger, t.workers[0]))
 
     def test_no_spare_mining_when_full_failed_or_night(self):
@@ -91,6 +101,19 @@ class SpareMiningTests(unittest.TestCase):
     def test_no_collection_without_a_known_return_destination(self):
         t, cfg, nav, ledger = setup_case(mining_case())
         self.assertFalse(spare_mine(t, cfg, Memory(), nav, ledger, t.workers[0]))
+
+    def test_spare_mining_does_not_revisit_a_cyclic_movement_target(self):
+        t, cfg, nav, ledger = setup_case(late_case())
+        mem = Memory()
+        mem.movement.targets[1, (6, 5)] = 68
+        self.assertFalse(spare_mine(t, cfg, mem, nav, ledger, t.workers[0]))
+
+    def test_spare_return_respects_observed_blocked_cells(self):
+        t, cfg, nav, ledger = setup_case(late_case())
+        mem = Memory()
+        mem.movement.failures = {(1, p): 68 for p in neighbours((4, 8))}
+        nav.memory = mem.movement
+        self.assertFalse(spare_mine(t, cfg, mem, nav, ledger, t.workers[0]))
 
     def test_carry_ore_home_before_night_and_sell_next_day(self):
         p = late_case()

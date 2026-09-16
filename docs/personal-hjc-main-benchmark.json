@@ -1,0 +1,302 @@
+{
+  "baseline": "0bd97af",
+  "scope": "same finite-deposit replay; no official combat or task income",
+  "cases": [
+    {
+      "case": "near",
+      "mirror": false,
+      "before": {
+        "gold": 60,
+        "income": 360,
+        "spent": 375,
+        "weapon_levels": [
+          2,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 7,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 6
+      },
+      "after": {
+        "gold": 60,
+        "income": 360,
+        "spent": 375,
+        "weapon_levels": [
+          2,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 7,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 6
+      },
+      "collect_before": 49,
+      "collect_after": 49,
+      "invalid_actions": 0
+    },
+    {
+      "case": "near",
+      "mirror": true,
+      "before": {
+        "gold": 80,
+        "income": 380,
+        "spent": 375,
+        "weapon_levels": [
+          2,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 6,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 6
+      },
+      "after": {
+        "gold": 80,
+        "income": 380,
+        "spent": 375,
+        "weapon_levels": [
+          2,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 6,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 6
+      },
+      "collect_before": 50,
+      "collect_after": 50,
+      "invalid_actions": 0
+    },
+    {
+      "case": "local_ore",
+      "mirror": false,
+      "before": {
+        "gold": 14,
+        "income": 314,
+        "spent": 375,
+        "weapon_levels": [
+          2,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 7,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 7
+      },
+      "after": {
+        "gold": 14,
+        "income": 314,
+        "spent": 375,
+        "weapon_levels": [
+          2,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 7,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 10
+      },
+      "collect_before": 53,
+      "collect_after": 56,
+      "invalid_actions": 0
+    },
+    {
+      "case": "local_ore",
+      "mirror": true,
+      "before": {
+        "gold": 30,
+        "income": 330,
+        "spent": 375,
+        "weapon_levels": [
+          2,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 7,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 5
+      },
+      "after": {
+        "gold": 30,
+        "income": 330,
+        "spent": 375,
+        "weapon_levels": [
+          2,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 7,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 5
+      },
+      "collect_before": 53,
+      "collect_after": 53,
+      "invalid_actions": 0
+    },
+    {
+      "case": "remote_ore",
+      "mirror": false,
+      "before": {
+        "gold": 16,
+        "income": 216,
+        "spent": 275,
+        "weapon_levels": [
+          1,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 7,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 3
+      },
+      "after": {
+        "gold": 16,
+        "income": 216,
+        "spent": 275,
+        "weapon_levels": [
+          1,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 7,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 3
+      },
+      "collect_before": 46,
+      "collect_after": 46,
+      "invalid_actions": 0
+    },
+    {
+      "case": "remote_ore",
+      "mirror": true,
+      "before": {
+        "gold": 28,
+        "income": 228,
+        "spent": 275,
+        "weapon_levels": [
+          1,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 6,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 3
+      },
+      "after": {
+        "gold": 28,
+        "income": 228,
+        "spent": 275,
+        "weapon_levels": [
+          1,
+          2,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 6,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 3
+      },
+      "collect_before": 47,
+      "collect_after": 47,
+      "invalid_actions": 0
+    },
+    {
+      "case": "far_shop",
+      "mirror": false,
+      "before": {
+        "gold": 40,
+        "income": 140,
+        "spent": 175,
+        "weapon_levels": [
+          1,
+          1,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 7,
+        "front_walls": 5,
+        "carried_vouchers": 0,
+        "carried_ore_value": 8
+      },
+      "after": {
+        "gold": 40,
+        "income": 140,
+        "spent": 175,
+        "weapon_levels": [
+          1,
+          1,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 7,
+        "front_walls": 5,
+        "carried_vouchers": 0,
+        "carried_ore_value": 8
+      },
+      "collect_before": 29,
+      "collect_after": 29,
+      "invalid_actions": 0
+    },
+    {
+      "case": "far_shop",
+      "mirror": true,
+      "before": {
+        "gold": 40,
+        "income": 140,
+        "spent": 175,
+        "weapon_levels": [
+          1,
+          1,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 8,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 7
+      },
+      "after": {
+        "gold": 40,
+        "income": 140,
+        "spent": 175,
+        "weapon_levels": [
+          1,
+          1,
+          2
+        ],
+        "operators_ready": 3,
+        "walls": 8,
+        "front_walls": 6,
+        "carried_vouchers": 0,
+        "carried_ore_value": 7
+      },
+      "collect_before": 29,
+      "collect_after": 29,
+      "invalid_actions": 0
+    }
+  ]
+}

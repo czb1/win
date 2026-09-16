@@ -19,7 +19,7 @@ def role(uid, kind, x, y, **kw):
             "attackRange": 8, "attackPower": 40, "cooldown": 0, **kw}
 
 
-def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False):
+def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, damage_walls=False):
     width, height = 41, 32
     def flip(p):
         return (width-1-p[0], height-1-p[1]) if mirror else p
@@ -77,9 +77,17 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False):
     invalid, income, spent, worst = 0, 0, 0, 0
     checkpoints, early_actions, first = {}, Counter(), {}
     worker_actions, mined_by_kind = Counter(), Counter()
+    daily_worker_actions = {}
+    destroyed_walls = 0
+    next_build_id = 1000 + len(roles)
     history, previous, reversals = [], {}, 0
-    for rno in range(1, days * 130 + 1):
+    for rno in range(1, days * 130):
         state["roundNo"] = rno
+        if damage_walls and rno >= 130 and rno % 130 == 0:
+            victims = [r for r in roles if r["roleType"] == "wall" and point(r) in front][:2]
+            for victim in victims:
+                roles.remove(victim)
+            destroyed_walls += len(victims)
         state["mapInfo"]["zones"] = [{"neutralType": kind, "pos": dict(zip(("x", "y"), p))}
                                       for kind, p in [("vendor", vendor), ("weaponShop", shop)]
                                       + [(k, p) for p, (k, _) in active.items()]]
@@ -100,6 +108,8 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False):
             actions[action] += 1
             if rno <= 40 and actor["roleType"] == "worker":
                 early_actions[action] += 1
+            if rno % 130 < 70 and actor["roleType"] == "worker":
+                daily_worker_actions.setdefault(str(rno // 130 + 1), Counter())[action] += 1
             target = tuple(cmd["targetPos"][0][k] for k in ("x", "y")) if cmd.get("targetPos") else None
             name, num = cmd.get("name"), cmd.get("num", 1)
             if rno < 70 and actor["roleType"] == "worker":
@@ -157,7 +167,8 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False):
                         spent += cfg.weapon_cost
                         state["teamOur"]["goldNum"] -= cfg.weapon_cost
                 if legal:
-                    roles.append(role(1000+len(roles), name, *target, health=1000))
+                    roles.append(role(next_build_id, name, *target, health=1000))
+                    next_build_id += 1
                     occupied.add(target)
             elif action == "use":
                 legal = name in actor["backpack"]
@@ -208,6 +219,8 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False):
             "purchases": dict(purchases), "first": first, "invalid_actions": invalid,
             "worker_actions_before_70": dict(worker_actions),
             "mined_before_70": dict(mined_by_kind), "worker_reversals_before_70": reversals,
+            "daily_worker_actions": {d: dict(c) for d, c in daily_worker_actions.items()},
+            "destroyed_walls": destroyed_walls,
             **({"trace": history} if trace else {}), "worst_ms": round(worst, 2)}
 
 
@@ -219,6 +232,7 @@ if __name__ == "__main__":
     parser.add_argument("--days", type=int, default=1)
     parser.add_argument("--fixed-40", action="store_true", help="Control: disable adaptive preparation deadline")
     parser.add_argument("--trace", action="store_true")
+    parser.add_argument("--damage-walls", action="store_true", help="Remove two front walls at later dawns; no combat simulation")
     args = parser.parse_args()
     sys.path.insert(0, str(args.agent_root / "SDK/SDK_Python/CoreGeek"))
     from agent.brain import Agent
@@ -226,4 +240,5 @@ if __name__ == "__main__":
     if args.fixed_40:
         import agent.economy
         agent.economy.preparation_start = lambda *a: 40
-    print(json.dumps(simulate(Agent, Config, args.case, args.mirror, args.days, args.trace), ensure_ascii=False, indent=2))
+    print(json.dumps(simulate(Agent, Config, args.case, args.mirror, args.days, args.trace,
+                              args.damage_walls), ensure_ascii=False, indent=2))
