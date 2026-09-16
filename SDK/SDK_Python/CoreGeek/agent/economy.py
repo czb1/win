@@ -414,7 +414,7 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
                 mem.sale_workers.add(h.id)
         if h.id in developing and h.id in mem.sale_workers:
             if sale_inventory(turn, mem, h):
-                earn(turn, cfg, mem, nav, ledger, h, cutoff)
+                earn(turn, cfg, mem, nav, ledger, h, cutoff, allow_spare=False)
             else:
                 mem.sale_workers.discard(h.id)
     free = [h for h in free if h.id not in ledger.used]

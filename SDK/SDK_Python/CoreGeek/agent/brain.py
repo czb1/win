@@ -34,7 +34,13 @@ class Agent:
         self.sessions.move_to_end(key)
         while len(self.sessions) > 8:
             self.sessions.popitem(last=False)
+        previous_mines = mem.mine_kinds.copy()
         mem.observe(turn, self.cfg)
+        if mem.last_round < 0 or previous_mines != mem.mine_kinds:
+            LOG.info("round=%s source=mapInfo.zones mines_received=%s mines=%s", turn.round,
+                     len(mem.mine_kinds), json.dumps(
+                         [{"type": kind, "pos": list(p)} for p, kind in sorted(mem.mine_kinds.items())],
+                         ensure_ascii=False))
         towers, walls = layout(turn, self.cfg)
         ledger = Ledger(turn, self.cfg, towers, walls)
         nav = Navigator(turn, started + self.cfg.decision_seconds, mem.movement)
@@ -71,13 +77,16 @@ class Agent:
                          else nav.approach(hero, [tower.pos], ledger.reserved))
                 # Include today's congestion, not only the route with teammates
                 # removed. A blocked post needs time for its gatekeeper to yield.
-                length = (route[0] if route else posts[hero.id][1] + self.cfg.return_margin
-                          if hero.id in posts else 130)
+                if route is None and hero.id not in posts:
+                    continue
+                length = route[0] if route else posts[hero.id][1] + self.cfg.return_margin
                 if hero.id in mem.return_targets or not turn.is_day or turn.day_left <= length + self.cfg.return_margin:
                     returning.add(hero.id)
                     mem.return_targets[hero.id] = tower.id
                     if hero.id in posts:
                         mem.return_posts[hero.id] = posts[hero.id][0]
+                    LOG.debug("round=%s worker_or_pioneer=%s return_to_tower=%s steps=%s day_left=%s",
+                              turn.round, hero.id, tower.id, length, turn.day_left)
             # A nearby worker can block a distant operator's only entrance long
             # before its own return deadline. Recall that helper now, so it can
             # move to its assigned post or yield instead of idling in the gate.
@@ -138,6 +147,11 @@ class Agent:
         response = ledger.response(prompt, execute)
         mem.last_round, mem.last_digest, mem.last_response = turn.round, digest, response
         mem.last_commands = response["roleCommandMap"]
+        if turn.is_day:
+            for worker in turn.workers:
+                LOG.debug("round=%s worker=%s position=%s free_space=%s mining_target=%s command=%s",
+                          turn.round, worker.id, worker.pos, worker.space, mem.mine_targets.get(worker.id),
+                          response["roleCommandMap"].get(str(worker.id)))
         LOG.info("round=%s day=%s phase=%s commands=%s latency_ms=%.2f", turn.round, turn.day,
                  "day" if turn.is_day else "night", len(ledger.commands), (monotonic()-started)*1000)
         return json.loads(json.dumps(response))
