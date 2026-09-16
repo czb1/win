@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - develop
 
 permissions:
   contents: write
@@ -25,7 +26,7 @@ jobs:
         id: archive
         shell: bash
         env:
-          RELEASE_TAG: v1.0.${{ github.run_number }}
+          RELEASE_TAG: ${{ github.ref_name == 'main' && format('v1.0.{0}', github.run_number) || format('v1.0.dev.{0}', github.run_number) }}
         run: |
           set -euo pipefail
 
@@ -51,6 +52,7 @@ jobs:
           RELEASE_TAG: ${{ steps.archive.outputs.tag }}
           ARCHIVE_PATH: ${{ steps.archive.outputs.path }}
           SOURCE_SHA: ${{ github.sha }}
+          SOURCE_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -67,9 +69,13 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --clobber
           else
+            release_flags=()
+            if [[ "$SOURCE_BRANCH" == "develop" ]]; then
+              release_flags+=(--prerelease)
+            fi
             gh release create "$RELEASE_TAG" "$ARCHIVE_PATH" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$SOURCE_SHA" \
               --title "$RELEASE_TAG" \
-              --generate-notes
+              --generate-notes "${release_flags[@]}"
           fi
