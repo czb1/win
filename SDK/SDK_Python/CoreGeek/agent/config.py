@@ -16,8 +16,8 @@ class Config:
     # Rockets can fire over the continuous front wall; direct-fire guns cannot.
     loadout: list = field(default_factory=lambda: ["rocket", "rocket", "rocket"])
     stone_batch: int = 10
-    sell_batch: int = 40
-    sell_batch_max: int = 80
+    sell_batch: int = 20
+    sell_batch_max: int = 40
     economy_rounds: int = 40
     night_economy_enabled: bool = True
     return_margin: int = 5

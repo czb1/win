@@ -16,7 +16,7 @@ from agent.config import Config
 from agent.economy import worker, use_inventory
 from agent.intelligence import Memory, Intelligence, parse_task_reply
 from agent.model import Turn, distance
-from agent.task_tools import file_code, document_path
+from agent.task_tools import file_code, document_code, document_path
 
 sys.path.insert(0, str(ROOT / "tools"))
 from progression_benchmark import simulate
@@ -216,8 +216,8 @@ class TaskReliabilityTests(unittest.TestCase):
             agent = Agent(Config(layout_mode="explicit"))
             first = agent.decide(p)
             self.assertFalse(first["prompt"])
-            self.assertEqual(shlex.split(first["executeCmd"])[-1], file_code("read", "api.md"))
-            p.update(roundNo=2, lastCmdResult=self.run_fixed_tool(file_code("read", "api.md"), directory))
+            self.assertEqual(shlex.split(first["executeCmd"])[-1], document_code("api.md"))
+            p.update(roundNo=2, lastCmdResult=self.run_fixed_tool(document_code("api.md"), directory))
             self.assertIn("values.csv", agent.decide(p)["prompt"])
             p.update(roundNo=3, lastCmdResult="", llmResp="READ values.csv")
             self.assertTrue(agent.decide(p)["executeCmd"])

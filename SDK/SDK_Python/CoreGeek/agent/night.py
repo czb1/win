@@ -149,7 +149,7 @@ def safe_trip(turn, cfg, mem, nav, hero, post, length=0, endpoint=None, reserved
                    for r in (*turn.robots, *turn.enemies) if r.kind not in ("wall", "station"))
 
 
-def night_plan(turn, cfg, mem, nav, ledger, wall_sites, excluded=()):
+def night_plan(turn, cfg, mem, nav, ledger, wall_sites, excluded=(), defence_guns=None):
     crew = shared_crew(turn, cfg, mem, nav, ledger, wall_sites, excluded)
     mem.night_mode, mem.night_reason, mem.night_miner = "full", "no_shared_crew", None
     if crew is None:
@@ -161,6 +161,11 @@ def night_plan(turn, cfg, mem, nav, ledger, wall_sites, excluded=()):
         mem.night_reason = "threat_recall"
         return crew_pairs(turn, crew)
     pairs, posts = crew_pairs(turn, crew, shared=True)
+    if defence_guns is not None and crew["solo"] not in defence_guns:
+        # Preserve main's clear-night release: a gun with no local defence
+        # demand does not keep its worker stationary for the shared handoff.
+        pairs = [(h, w) for h, w in pairs if h.id != crew["operator"]]
+        posts.pop(crew["operator"])
     if any(h.pos != posts[h.id] for h, _ in pairs):
         mem.night_reason = "handoff_not_ready"
         return None

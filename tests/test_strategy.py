@@ -2,12 +2,22 @@
 import unittest
 from test_agent import payload, unit, setup_case
 from agent.model import distance
-from agent.combat import select_targets, defend
+from agent.combat import select_targets, defend, threat
 from agent.economy import worker
 from agent.intelligence import Memory
 
 
 class TargetingRegressionTests(unittest.TestCase):
+    def test_large_robot_at_base_outweighs_small_robot(self):
+        p = payload(71, roles=[unit(13, "station", 3, 5, health=1500),
+                               unit(20, "rocket", 5, 5)])
+        p["robot"]["roles"] = [unit(31, "smallRobot", 7, 4, health=20),
+                                unit(32, "smallRobot", 7, 3, health=20),
+                                unit(33, "largeRobot", 7, 6, health=500)]
+        t, _, nav, _ = setup_case(p)
+        self.assertGreater(threat(t, t.robots[-1]), threat(t, t.robots[0]))
+        self.assertEqual(select_targets(t, t.weapons[0], {}, nav.deadline), [(7, 6)])
+
     def test_railgun_spends_energy_on_current_health_not_planned_health(self):
         p = payload(71, roles=[unit(1, "worker", 4, 6), unit(20, "railgun", 5, 5)])
         p["robot"]["roles"] = [unit(31, "smallRobot", 7, 5, health=40),
@@ -59,8 +69,8 @@ class EconomyRegressionTests(unittest.TestCase):
         worker(t, c, Memory(), n, l, t.workers[0], list(map(tuple, tower_sites or [])), [], False)
         return l.commands["1"]
 
-    def test_short_batch_can_fund_missing_tower(self):
-        self.assertEqual(self.trade_case(["copper"] * 5, tower_sites=[[9, 9]])["action"], "sell")
+    def test_small_funding_gap_does_not_trigger_early_sale(self):
+        self.assertEqual(self.trade_case(["copper"] * 5, tower_sites=[[9, 9]])["action"], "collect")
 
     def test_short_batch_that_cannot_fund_tower_keeps_mining(self):
         self.assertEqual(self.trade_case(["copper"], tower_sites=[[9, 9]])["action"], "collect")
@@ -68,8 +78,8 @@ class EconomyRegressionTests(unittest.TestCase):
     def test_depleted_mines_allow_partial_batch_sale(self):
         self.assertEqual(self.trade_case(["copper"], has_mine=False)["action"], "sell")
 
-    def test_full_batch_sells_even_without_construction(self):
-        self.assertEqual(self.trade_case(["copper"] * 40)["action"], "sell")
+    def test_old_batch_threshold_does_not_trigger_early_sale(self):
+        self.assertEqual(self.trade_case(["copper"] * 40)["action"], "collect")
 
     def test_zero_gold_does_not_force_one_ore_sale_when_towers_are_complete(self):
         p = payload(roles=[unit(1, "worker", 5, 5, backpack=["copper"]),

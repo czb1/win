@@ -108,7 +108,14 @@ def operator_posts(turn, nav, pairs, wall_sites=(), fixed=None):
                 continue
             changes = sum(h.id in fixed and fixed[h.id] != p
                           for (h, _), (p, _) in zip(pairs, choice))
-            cost = (changes, sum(length for _, length in choice), max(length for _, length in choice))
+            # Controller deaths preceded both late-wave collapses.  Prefer the
+            # base-side control ring before shaving a step off the daytime walk.
+            exposure = sum(turn.base_distance(p) for p, _ in choice)
+            hostile_distance = sum(-min((distance(p, r.pos) for r in turn.robots
+                                         if turn.threatens_us(r)), default=turn.width + turn.height)
+                                   for p, _ in choice)
+            cost = (changes, exposure, hostile_distance,
+                    sum(length for _, length in choice), max(length for _, length in choice))
             if best is None or cost < best:
                 best = cost
                 result = {h.id: option for (h, _), option in zip(pairs, choice)}
@@ -137,10 +144,14 @@ def return_plan(turn, nav, pairs, wall_sites, fixed_targets, fixed_posts):
 def threat(turn, robot):
     if not turn.threatens_us(robot):
         return 0.0
-    score = 10.0 / (1 + turn.base_distance(robot.pos))
+    base_distance = turn.base_distance(robot.pos)
+    score = 10.0 / (1 + base_distance)
     if robot.target_team == turn.team:
         score *= 2
-    return score + {"bossRobot": 2, "largeRobot": 1, "middleRobot": .5}.get(robot.kind, .2)
+    kind = {"bossRobot": 8, "largeRobot": 4, "middleRobot": 1}.get(robot.kind, .2)
+    if base_distance <= 2 and robot.kind in ("bossRobot", "largeRobot"):
+        kind *= 2
+    return score + kind
 
 
 def select_targets(turn, tower, damage, deadline):
@@ -263,7 +274,13 @@ def yield_operator(turn, nav, ledger, hero, pairs, posts, route):
     """Occupy a narrow control cell only after the other operators pass it."""
     target = posts[hero.id]
     if hero.pos != target and (route is None or route[1] != target):
-        return False
+        if route is not None:
+            return False
+        # During a handoff, two operators can occupy each other's posts.
+        # A blocked actor must also yield its current cell before either moves.
+        obstruction = hero.pos
+    else:
+        obstruction = target
     waiting = [h for h, _ in pairs if h.id != hero.id and h.id in posts and h.pos != posts[h.id]]
     if not waiting:
         return False
@@ -272,13 +289,13 @@ def yield_operator(turn, nav, ledger, hero, pairs, posts, route):
     try:
         turn.blocked = static
         reachable = [h for h in waiting if nav.search(h, {posts[h.id]}) is not None]
-        turn.blocked = static | {target}
+        turn.blocked = static | {obstruction}
         obstructed = [h for h in reachable if nav.search(h, {posts[h.id]}) is None]
         if not obstructed:
             return False
         choices = []
         for p in [hero.pos, *neighbours(hero.pos)]:
-            if (not turn.inside(p) or p == target or p in original and p != hero.pos
+            if (not turn.inside(p) or p == obstruction or p in original and p != hero.pos
                     or p in ledger.reserved or nav.memory and p in nav.memory.blocked(hero.id)):
                 continue
             turn.blocked = static | {p}

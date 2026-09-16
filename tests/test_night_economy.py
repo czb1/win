@@ -68,7 +68,7 @@ def apply_turn(p, response):
 
 
 class NightEconomyTests(unittest.TestCase):
-    def test_default_and_mirrored_layout_release_one_worker(self):
+    def test_default_and_mirrored_clear_night_preserves_both_worker_mining(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):
                 agent = Agent(Config(llm_enabled=False))
@@ -77,7 +77,7 @@ class NightEconomyTests(unittest.TestCase):
                 self.assertEqual((mem.night_mode, mem.night_miner), ("shared", 10))
                 self.assertEqual(result["roleCommandMap"]["10"]["action"], "move")
                 self.assertNotIn("11", result["roleCommandMap"])
-                self.assertNotIn("12", result["roleCommandMap"])
+                self.assertEqual(result["roleCommandMap"]["12"]["action"], "move")
                 self.assertFalse(any(c["action"] in ("build", "buy") for c in result["roleCommandMap"].values()))
 
     def test_three_separate_day_posts_prepare_shared_operator_even_with_task(self):
@@ -106,6 +106,27 @@ class NightEconomyTests(unittest.TestCase):
         hero, tower = next((h, w) for h, w in pairs if h.id == 10)
         self.assertTrue(finish_preparation(t, cfg, mem, nav, ledger, hero, tower, walls))
         self.assertEqual(ledger.commands["10"], command("build", (10, 19), name="wall"))
+
+    def test_day_handoff_yields_when_operators_occupy_each_others_routes(self):
+        p = night_case(rno=60)
+        t, cfg, nav, ledger = setup_case(p)
+        mem = Memory(day=1)
+        crew = shared_crew(t, cfg, mem, nav, ledger, layout(t, cfg)[1])
+        pairs, posts = crew_pairs(t, crew)
+        mem.return_targets = {h.id: w.id for h, w in pairs}
+        mem.return_posts = posts.copy()
+        for role in p["teamOur"]["roles"]:
+            if role["id"] == 11:
+                role["pos"] = dict(zip(("x", "y"), crew["solo_post"]))
+            elif role["id"] == crew["operator"]:
+                role["pos"] = dict(zip(("x", "y"), crew["miner_post"]))
+            elif role["id"] == crew["miner"]:
+                role["pos"] = {"x": 6, "y": 18}
+        turn = Turn(p, cfg)
+        agent = Agent(cfg)
+        agent.sessions[(*turn.key, turn.station.pos)] = mem
+        result = agent.decide(p)
+        self.assertEqual(result["roleCommandMap"].get("11", {}).get("action"), "move")
 
     def test_courier_stones_do_not_stop_builder_from_collecting_breach_material(self):
         p = night_case(rno=170)

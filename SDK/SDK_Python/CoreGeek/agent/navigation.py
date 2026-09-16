@@ -86,11 +86,7 @@ class Navigator:
 
 
 def layout(turn, cfg):
-    """One fixed rectangle anchored to the station's full 2x2 footprint.
-
-    Close the enemy-facing side first; only a two-cell rear logistics gate is
-    omitted. Default build regions remain demo-inferred, not official geometry.
-    """
+    """Twelve-cell front and flanks; explicit layouts remain authoritative."""
     if cfg.layout_mode == "explicit":
         return (list(dict.fromkeys(tuple(p) for p in cfg.weapon_cells if turn.inside(tuple(p)))),
                 list(dict.fromkeys(tuple(p) for p in cfg.wall_cells if turn.inside(tuple(p)))))
@@ -111,18 +107,12 @@ def layout(turn, cfg):
     # would leave their middle tower without a usable controller position.
     tower_order = [(2, 0), (2, -1), (2, 2)]
     towers = [world(p) for p in tower_order[:len(cfg.loadout)] if turn.inside(world(p))]
-    perimeter = {(u, v) for u in range(-2, 4) for v in range(-2, 4)
-                 if u in (-2, 3) or v in (-2, 3)}
-    # Never punch a gate into the enemy-facing vertical side. If the rear is
-    # outside the map, use the rear end of an in-bounds horizontal side.
-    gates = [((-2, 0), (-2, 1)), ((0, -2), (1, -2)), ((0, 3), (1, 3))]
-    openings = set(next((g for g in gates if all(turn.inside(world(p)) for p in g)), ()))
-    # Grow one contiguous front from its centre, then extend both flanks back.
-    # x mirrors independently of team labels and of the map's y convention.
+    # Close the six-cell front first, then add three cells on each flank.
+    # Leave the rear open for mining, deliveries and operator circulation.
     order = [(3, v) for v in (0, 1, -1, 2, -2, 3)]
-    order += [(u, v) for u in (2, 1, 0, -1, -2) for v in (-2, 3)]
-    order += [(-2, v) for v in (-1, 0, 1, 2)]
-    return towers, [world(p) for p in order if p in perimeter - openings and turn.inside(world(p))]
+    order += [(u, v) for u in (2, 1, 0) for v in (-2, 3)]
+    return towers, [world(p) for p in order if turn.inside(world(p))]
+
 
 
 def wall_priority(turn, cfg, sites, index, hits=None):

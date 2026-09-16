@@ -1,5 +1,6 @@
 """Multi-turn judger fixtures; no external LLM or live task API is required."""
 from pathlib import Path
+import json
 import shlex
 import subprocess
 import sys
@@ -10,6 +11,7 @@ from test_agent import payload, unit, setup_case
 from agent.brain import Agent
 from agent.config import Config
 from agent.intelligence import Memory, Intelligence, parse_task_reply, sandbox_result
+from agent.task_tools import document_code
 from agent.model import Turn
 
 
@@ -23,6 +25,68 @@ def task_payload(round_no=1, description=""):
 
 
 class EvolutionTests(unittest.TestCase):
+    def test_relative_task_document_is_discovered_under_rotating_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory, "tmp", "selfEvolutionTask", "3-fixed", "ws_9")
+            root.mkdir(parents=True)
+            Path(root, "task_3_gamma.md").write_text("CURRENT TASK", encoding="utf-8")
+            code = document_code("task_3_gamma.md").replace(
+                "root = '/tmp/selfEvolutionTask'", f"root = {str(Path(directory, 'tmp', 'selfEvolutionTask'))!r}")
+            result = subprocess.run([sys.executable, "-c", code], cwd=directory,
+                                    capture_output=True, text=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RESOLVED_DOCUMENT", result.stdout)
+        self.assertIn("CURRENT TASK", result.stdout)
+
+    def test_old_task_document_is_not_injected_into_new_task(self):
+        p = task_payload(20, "读取 task_3_gamma.md，获取任务信息")
+        mem = Memory(task_text=p["phaseTask"], task_started=10, task_point=(6, 5),
+                     bootstrap_done=True, knowledge=[{"point": (6, 5), "path": "/tmp/old/ws_2/spec.md",
+                                                     "output": "STALE", "evidence": "old"}])
+        t, cfg, _, ledger = setup_case(p)
+        prompt, _ = Intelligence(t, cfg, mem).task(ledger)
+        self.assertNotIn("/tmp/old/ws_2", prompt)
+        self.assertNotIn("previousDocuments", prompt)
+
+    def test_deadline_forces_final_python_or_answer(self):
+        p = task_payload(14, "query")
+        mem = Memory(task_text="query", task_started=1, task_timeout=15,
+                     bootstrap_done=True, pending=("task", 13))
+        p["llmResp"] = "READ another.md"
+        t, cfg, _, ledger = setup_case(p)
+        mem.observe(t, cfg)
+        self.assertIsNone(mem.python)
+        self.assertGreater(mem.task_failures, 0)
+        prompt, _ = Intelligence(t, cfg, mem).task(ledger)
+        self.assertIn("临近截止", prompt)
+        self.assertNotIn("读取文件：READ", prompt)
+
+    def test_full_task_question_is_kept_while_attempt_logs_are_bounded(self):
+        question = "完整题目信息：" + "要求" * 1200
+        agent = Agent(Config(layout_mode="explicit"))
+        p = task_payload(1, question)
+        with self.assertLogs("agent.intelligence", "INFO") as captured:
+            agent.decide(p)
+        self.assertIn(json.dumps(question, ensure_ascii=False), "\n".join(captured.output))
+
+        reply = "PYTHON\n# " + "x" * 3000 + "\nprint(missing)"
+        p.update(roundNo=2, llmResp=reply)
+        with self.assertLogs("agent.intelligence", "INFO") as captured:
+            agent.decide(p)
+        line = next(line for line in captured.output if "task_llm " in line)
+        self.assertIn("kind=python", line)
+        self.assertIn(f"chars={len(reply)}", line)
+        self.assertLess(len(line), 500)
+        self.assertNotIn("x" * 500, line)
+
+        p.update(roundNo=3, llmResp="", lastCmdResult="[exitCode:1]\n" + "y" * 3000
+                 + "\nValueError: useful tail")
+        with self.assertLogs("agent.intelligence", "INFO") as captured:
+            agent.decide(p)
+        line = next(line for line in captured.output if "task_sandbox " in line)
+        self.assertIn("ValueError: useful tail", line)
+        self.assertLess(len(line), 800)
+
     def test_rejected_accept_does_not_keep_stale_task_origin(self):
         p = task_payload(2)
         p["lastRoundRoleActionResults"] = {"11": False}

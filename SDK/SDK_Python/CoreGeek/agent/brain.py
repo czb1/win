@@ -1,22 +1,25 @@
 import hashlib
 import json
 import logging
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from time import monotonic
 from .config import Config
-from .model import Turn, distance
+from .model import Turn, distance, ORES
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
 from .combat import assignments, return_plan, defend, emergency_items
-from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector
+from .economy import (workers, pioneer, walk, vacate_site, use_inventory, finish_preparation,
+                      upgrade_order, voucher_for, front_sites)
+from .economy_plan import via
 from .intelligence import Memory, Intelligence
 from .night import shared_crew, crew_pairs, day_return, night_plan, night_earn
+from .mining import night_mine
 
 LOG = logging.getLogger(__name__)
 
 
 def battle_diagnostics(turn, mem, pairs, response):
-    """One compact line per night/transition with actual actions and obstacles."""
+    """One bounded summary at transitions, intervals, damage, or shot failure."""
     if not turn.station:
         return
     commands = response["roleCommandMap"]
@@ -54,16 +57,19 @@ def battle_diagnostics(turn, mem, pairs, response):
                        "targetPos": action.get("targetPos") if action else None})
     results = turn.raw.get("lastRoundRoleActionResults") or {}
     previous_shots = [{"tower": uid, "result": results.get(uid, results.get(int(uid)))}
-                      for uid, action in mem.last_commands.items() if action.get("action") == "attack"]
-    walls = [{"pos": wall.pos, "sector": wall_sector(turn, wall), "level": wall.level,
-              "health": wall.health, "hits": mem.wall_hits.get(wall.pos, 0)}
-             for wall in turn.ours if wall.kind == "wall"]
+                      for uid, action in mem.last_commands.items()
+                      if action.get("action") == "attack"
+                      and results.get(uid, results.get(int(uid))) is not True]
+    walls = [wall for wall in turn.ours if wall.kind == "wall"]
+    levels = Counter(wall.level for wall in walls)
     LOG.info("round=%s battle_state=%s", turn.round, json.dumps({
         "baseHealth": turn.station.health, "heroes": len(turn.heroes), "gold": turn.gold,
         "nightEconomy": {"mode": mem.night_mode, "miner": mem.night_miner, "reason": mem.night_reason},
         "hostileTotal": len(hostile), "hostileWithin6": len(near),
         "hostileNear": [{"id": r.id, "kind": r.kind, "pos": r.pos, "health": r.health}
-                        for r in near[:12]], "walls": walls, "towers": towers,
+                        for r in near[:4]],
+        "walls": {"count": len(walls), "damaged": sum(w.health < 1000 for w in walls),
+                  "levels": dict(sorted(levels.items()))}, "towers": towers,
         "previousShots": previous_shots}, ensure_ascii=False, separators=(",", ":")))
 
 
@@ -78,6 +84,12 @@ class Agent:
         turn = Turn(data, self.cfg)
         digest = hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         key = (*turn.key, turn.station.pos if turn.station else None)
+        if not turn.station:
+            previous = next(((k, m) for k, m in reversed(self.sessions.items())
+                             if k[:2] == turn.key and m.last_round == turn.round - 1
+                             and m.station_health is not None), None)
+            if previous:
+                key = previous[0]
         mem = self.sessions.get(key)
         if mem and mem.last_round == turn.round and mem.last_digest == digest:
             return json.loads(json.dumps(mem.last_response))
@@ -88,24 +100,64 @@ class Agent:
         while len(self.sessions) > 8:
             self.sessions.popitem(last=False)
         previous_mines = mem.mine_kinds.copy()
+        previous_walls = mem.wall_health.copy()
+        previous_heroes = mem.hero_count
         mem.observe(turn, self.cfg)
-        if mem.last_round < 0 or previous_mines != mem.mine_kinds:
-            LOG.info("round=%s source=mapInfo.zones mines_received=%s mines=%s", turn.round,
-                     len(mem.mine_kinds), json.dumps(
-                         [{"type": kind, "pos": list(p)} for p, kind in sorted(mem.mine_kinds.items())],
-                         ensure_ascii=False))
+        if mem.last_round < 0:
+            LOG.info("round=%s mine_map=%s", turn.round, json.dumps({
+                "count": len(mem.mine_kinds),
+                "byType": dict(sorted(Counter(mem.mine_kinds.values()).items())),
+                "mines": [{"type": kind, "pos": list(p)}
+                          for p, kind in sorted(mem.mine_kinds.items())]},
+                ensure_ascii=False, separators=(",", ":")))
+        elif previous_mines != mem.mine_kinds:
+            added = [{"type": kind, "pos": list(p)} for p, kind in sorted(mem.mine_kinds.items())
+                     if p not in previous_mines]
+            removed = [{"type": kind, "pos": list(p)} for p, kind in sorted(previous_mines.items())
+                       if p not in mem.mine_kinds]
+            changed = [{"pos": list(p), "from": previous_mines[p], "to": mem.mine_kinds[p]}
+                       for p in sorted(previous_mines.keys() & mem.mine_kinds.keys())
+                       if previous_mines[p] != mem.mine_kinds[p]]
+            LOG.info("round=%s mine_map_delta=%s", turn.round, json.dumps({
+                "count": len(mem.mine_kinds), "added": added, "removed": removed, "changed": changed},
+                ensure_ascii=False, separators=(",", ":")))
         results = turn.raw.get("lastRoundRoleActionResults") or {}
         if mem.last_round == turn.round - 1:
             for uid, action in mem.last_commands.items():
-                if action["action"] == "build" or (action["action"] in ("buy", "use")
-                                                   and "UpgradeVoucher" in action.get("name", "")):
-                    LOG.info("round=%s previous_defence_result=%s", turn.round,
-                             json.dumps({"actor": uid, "action": action,
-                                         "result": results.get(uid, results.get(int(uid)))}, ensure_ascii=False))
+                important_item = (action["action"] in ("buy", "use") and (
+                    "UpgradeVoucher" in action.get("name", "")
+                    or action.get("name") in ("WallFixer", "Bomb", "DizzyWeapon")))
+                if action["action"] == "build" or important_item:
+                    result = results.get(uid, results.get(int(uid)))
+                    target = action.get("targetPos", [None])[0]
+                    record = {"actor": uid, "action": action["action"],
+                              "name": action.get("name"), "target": target, "result": result}
+                    log = LOG.warning if result is False else LOG.info
+                    log("round=%s defence_result=%s", turn.round,
+                        json.dumps(record, ensure_ascii=False, separators=(",", ":")))
         if turn.station and mem.station_health is not None and turn.station.health < mem.station_health:
             LOG.warning("round=%s base_damage=%s health=%s", turn.round,
                         mem.station_health - turn.station.health, turn.station.health)
+        if not turn.station and mem.station_health is not None:
+            team = turn.raw.get("teamOur", {})
+            LOG.warning("round=%s match_end=%s", turn.round, json.dumps({
+                "result": "eliminated", "lastBaseHealth": mem.station_health,
+                "gold": turn.gold, "score": team.get("score", team.get("scoreNum")),
+                "heroes": len(turn.heroes)}, ensure_ascii=False, separators=(",", ":")))
         mem.station_health = turn.station.health if turn.station else None
+        if previous_heroes is not None and previous_heroes != len(turn.heroes):
+            LOG.warning("round=%s hero_delta=%s", turn.round, json.dumps({
+                "before": previous_heroes, "after": len(turn.heroes)}, separators=(",", ":")))
+        mem.hero_count = len(turn.heroes)
+        if previous_walls != mem.wall_health and mem.last_round >= 0:
+            added = [list(p) for p in sorted(mem.wall_health.keys() - previous_walls.keys())]
+            removed = [list(p) for p in sorted(previous_walls.keys() - mem.wall_health.keys())]
+            damaged = [{"pos": list(p), "from": previous_walls[p][1], "to": mem.wall_health[p][1]}
+                       for p in sorted(previous_walls.keys() & mem.wall_health.keys())
+                       if mem.wall_health[p][1] < previous_walls[p][1]]
+            LOG.info("round=%s wall_delta=%s", turn.round, json.dumps({
+                "count": len(mem.wall_health), "added": added[:8], "removed": removed[:8],
+                "damaged": damaged[:8]}, ensure_ascii=False, separators=(",", ":")))
         towers, walls = layout(turn, self.cfg)
         ledger = Ledger(turn, self.cfg, towers, walls)
         nav = Navigator(turn, started + self.cfg.decision_seconds, mem.movement)
@@ -136,10 +188,25 @@ class Agent:
             preferred = None
             if turn.is_day:
                 crew = shared_crew(turn, self.cfg, mem, nav, ledger, walls)
-                if crew:
+                if crew and all(p in mem.wall_health for p in front_sites(turn, walls)):
                     preferred = day_return(turn, mem, nav, ledger, crew, {h.id} if hold_task else ())
             pairs, posts = (preferred or return_plan(turn, nav, pairs, walls, mem.return_targets, mem.return_posts)
                             if turn.is_day else (pairs, {}))
+            if not turn.is_day:
+                # Recall from the current position early enough for an approaching
+                # wave, but release workers immediately when local danger ends.
+                def needs_defence(hero, tower):
+                    if hero.kind != "worker":
+                        return True
+                    route = nav.approach(hero, [tower.pos])
+                    lead = (route[0] if route else 130) + self.cfg.return_margin
+                    return any(turn.threatens_us(r) and (
+                        turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius, lead + r.attack_range)
+                        or distance(tower.pos, r.pos) <= tower.attack_range + 1)
+                        or distance(hero.pos, r.pos) <= r.attack_range + 2 for r in turn.robots)
+                pairs = [(hero, tower) for hero, tower in pairs if needs_defence(hero, tower)]
+                mem.return_targets.clear()
+                mem.return_posts.clear()
             ledger.return_pairs = pairs
             ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
             returning = set()
@@ -152,6 +219,19 @@ class Agent:
                     continue
                 length = route[0] if route else posts[hero.id][1] + self.cfg.return_margin
                 if hero.id in mem.return_targets or not turn.is_day or turn.day_left <= length + self.cfg.return_margin:
+                    sellable = [kind for kind in ORES
+                                if hero.inventory[kind] and turn.prices.get(kind, 0) > 0]
+                    vendors = [p for p, kind in turn.zones.items() if kind == "vendor"]
+                    post = {posts[hero.id][0]} if hero.id in posts else set(tower.cells)
+                    liquidation = (via(nav, hero, [vendors, post], ledger.reserved,
+                                       final_exact=hero.id in posts) if sellable and vendors else None)
+                    # preparation_start normally begins this trip well before
+                    # recall.  This guard closes the one-round ordering gap in
+                    # which recall used to strand a small profitable load.
+                    if (turn.is_day and hero.kind == "worker" and liquidation is not None
+                            and turn.day_left > liquidation + len(sellable) + self.cfg.return_margin):
+                        mem.sale_workers.add(hero.id)
+                        continue
                     returning.add(hero.id)
                     mem.return_targets[hero.id] = tower.id
                     if hero.id in posts:
@@ -191,7 +271,8 @@ class Agent:
                                        "first_wave_deadline" if first_watch else "task_deadline")
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             if not turn.is_day:
-                reduced = night_plan(turn, self.cfg, mem, nav, ledger, walls, {h.id} if hold_task else ())
+                reduced = night_plan(turn, self.cfg, mem, nav, ledger, walls, {h.id} if hold_task else (),
+                                     defence_guns={tower.id for _, tower in pairs})
                 night_posts = {}
                 if reduced is not None:
                     pairs, night_posts = reduced
@@ -218,8 +299,11 @@ class Agent:
                         continue
                     if hero.id == mem.night_miner:
                         continue
-                    if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs} and turn.station:
-                        walk(nav, ledger, hero, turn.station.cells)
+                    if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs}:
+                        if hero.kind == "worker":
+                            night_mine(turn, self.cfg, mem, nav, ledger, hero)
+                        elif turn.station:
+                            walk(nav, ledger, hero, turn.station.cells)
             else:
                 for hero, tower in pairs:
                     if hero.id in returning and hero.id not in ledger.used:
@@ -239,14 +323,42 @@ class Agent:
         except DeadlineExceeded:
             LOG.warning("round=%s budget reached; returning %s validated actions", turn.round, len(ledger.commands))
         response = ledger.response(prompt, execute)
-        if not turn.is_day or turn.tick in (0, 69):
+        if turn.tick == 69 and turn.station:
+            inventory = Counter(item for hero in turn.heroes for item in hero.backpack)
+            candidates = []
+            for building in turn.ours:
+                name = voucher_for(building)
+                if name:
+                    candidates.append((upgrade_order(turn, building, mem), name))
+            next_upgrade = min(candidates, default=(None, None), key=lambda item: item[0])[1]
+            price = turn.shop.get(next_upgrade) if next_upgrade else None
+            blocked = ("unavailable" if next_upgrade and price is None else
+                       "insufficient_gold" if price is not None and price > turn.gold else None)
+            LOG.info("round=%s day_summary=%s", turn.round, json.dumps({
+                "day": turn.day, "baseHealth": turn.station.health, "stationLevel": turn.station.level,
+                "gold": turn.gold, "inventory": dict(sorted(inventory.items())),
+                "towerLevels": [w.level for w in turn.weapons],
+                "walls": len(mem.wall_health),
+                "damagedWalls": sum(health < 1000 for _, health in mem.wall_health.values()),
+                "nextUpgrade": next_upgrade, "nextPrice": price, "upgradeBlocked": blocked},
+                ensure_ascii=False, separators=(",", ":")))
+        previous_shot_failed = any(
+            action.get("action") == "attack"
+            and results.get(uid, results.get(int(uid))) is not True
+            for uid, action in mem.last_commands.items())
+        battle_due = (turn.tick in (0, 69, 70)
+                      or not turn.is_day and ((turn.tick - 70) % 10 == 0
+                                              or previous_shot_failed
+                                              or mem.last_round < 0))
+        if battle_due:
             battle_diagnostics(turn, mem, pairs, response)
         for uid, action in response["roleCommandMap"].items():
             if action["action"] == "build" or (action["action"] in ("buy", "use")
                                                 and ("UpgradeVoucher" in action.get("name", "")
                                                      or action.get("name") in ("WallFixer", "Bomb", "DizzyWeapon"))):
-                LOG.info("round=%s defence_action=%s", turn.round,
-                         json.dumps({"actor": uid, **action}, ensure_ascii=False))
+                LOG.debug("round=%s defence_action=%s", turn.round,
+                          json.dumps({"actor": uid, **action}, ensure_ascii=False,
+                                     separators=(",", ":")))
         mem.last_round, mem.last_digest, mem.last_response = turn.round, digest, response
         mem.last_commands = response["roleCommandMap"]
         if turn.is_day:
