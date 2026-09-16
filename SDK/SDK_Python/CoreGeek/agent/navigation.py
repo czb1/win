@@ -86,7 +86,7 @@ class Navigator:
 
 
 def layout(turn, cfg):
-    """Default to the enemy-facing wall only; explicit layouts remain authoritative."""
+    """Twelve-cell front and flanks; explicit layouts remain authoritative."""
     if cfg.layout_mode == "explicit":
         return (list(dict.fromkeys(tuple(p) for p in cfg.weapon_cells if turn.inside(tuple(p)))),
                 list(dict.fromkeys(tuple(p) for p in cfg.wall_cells if turn.inside(tuple(p)))))
@@ -107,14 +107,15 @@ def layout(turn, cfg):
     # would leave their middle tower without a usable controller position.
     tower_order = [(2, 0), (2, -1), (2, 2)]
     towers = [world(p) for p in tower_order[:len(cfg.loadout)] if turn.inside(world(p))]
-    # Spend stone and walking time only on the approach lane. Side/rear cells
-    # remain open for mining, deliveries and operator circulation.
+    # Close the six-cell front first, then add three cells on each flank.
+    # Leave the rear open for mining, deliveries and operator circulation.
     order = [(3, v) for v in (0, 1, -1, 2, -2, 3)]
+    order += [(u, v) for u in (2, 1, 0) for v in (-2, 3)]
     return towers, [world(p) for p in order if turn.inside(world(p))]
 
 
 
-def wall_priority(turn, cfg, sites, index):
+def wall_priority(turn, cfg, sites, index, hits=None):
     """Strategic side and existing breaches precede walking distance."""
     target = sites[index]
     if not turn.station:
@@ -126,4 +127,9 @@ def wall_priority(turn, cfg, sites, index):
     x, y = target
     breach = ((x - 1, y) in walls and (x + 1, y) in walls or
               (x, y - 1) in walls and (x, y + 1) in walls)
-    return (int(x != front_x), int(not breach), index)
+    hits = hits or {}
+    # Reclose a damaged flank before extending untouched wall segments.
+    # Keep the urgent set narrow: rebuilding the observed destroyed cell comes
+    # first, while neighbouring expansion keeps its normal front/breach order.
+    urgent = turn.day >= 2 and x != front_x and hits.get(target, 0)
+    return (int(not urgent), int(x != front_x), int(not breach), index)

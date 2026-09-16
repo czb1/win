@@ -29,12 +29,25 @@ def line_cells(start, end):
 def assignments(turn, nav, ledger, excluded=(), fixed=None):
     towers = turn.weapons[:3]
     heroes = [h for h in turn.heroes if h.id not in ledger.used and h.id not in excluded]
+    routes = {(h.id, w.id): nav.approach(h, [w.pos], ledger.reserved) for h in heroes for w in towers}
+    # Preserve main's cooperative return: a teammate can yield, while a wall
+    # enclosing a gun cannot. Only the latter should release its operator.
+    reachable = {key for key, route in routes.items() if route is not None}
+    original = turn.blocked
+    try:
+        turn.blocked = original - {h.pos for h in heroes}
+        for h in heroes:
+            for w in towers:
+                if (h.id, w.id) not in reachable and nav.approach(h, [w.pos], ledger.reserved) is not None:
+                    reachable.add((h.id, w.id))
+    finally:
+        turn.blocked = original
     fixed = fixed or {}
     committed = []
     assigned = set()
     for h in heroes:
         w = next((w for w in towers if w.id == fixed.get(h.id) and w.id not in assigned), None)
-        if w:
+        if w and (h.id, w.id) in reachable:
             committed.append((h, w))
             assigned.add(w.id)
     towers = [w for w in towers if w.id not in assigned]
@@ -42,7 +55,6 @@ def assignments(turn, nav, ledger, excluded=(), fixed=None):
     count = min(len(towers), len(heroes))
     if not count:
         return committed
-    routes = {(h.id, w.id): nav.approach(h, [w.pos], ledger.reserved) for h in heroes for w in towers}
     # When an operator heals/dies, tower IDs must not decide which gun stays idle.
     firepower = {}
     for w in towers:
@@ -54,11 +66,13 @@ def assignments(turn, nav, ledger, excluded=(), fixed=None):
     for selected in permutations(towers, count):
         for crew in permutations(heroes, count):
             check_time(nav.deadline)
-            pairs = list(zip(crew, selected))
+            # An unreachable gun must not reserve a worker for an impossible
+            # return trip. Keep the best reachable partial crew instead.
+            pairs = [(h, w) for h, w in zip(crew, selected) if (h.id, w.id) in reachable]
             travel = sum(routes[h.id, w.id][0] if routes[h.id, w.id] else 10000 for h, w in pairs)
             immediate = sum(firepower[w.id] for h, w in pairs
                             if routes[h.id, w.id] and routes[h.id, w.id][0] == 0)
-            cost = (-immediate, travel)
+            cost = (-immediate, -len(pairs), travel)
             if best is None or cost < best:
                 best, result = cost, pairs
     return committed + sorted(result, key=lambda pair: (-firepower[pair[1].id], pair[1].id))

@@ -8,11 +8,59 @@ from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
 from .combat import assignments, return_plan, defend, emergency_items
-from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation
+from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
 
 LOG = logging.getLogger(__name__)
+
+
+def battle_diagnostics(turn, mem, pairs, response):
+    """One compact line per night/transition with actual actions and obstacles."""
+    if not turn.station:
+        return
+    commands = response["roleCommandMap"]
+    crew = {tower.id: hero for hero, tower in pairs}
+    hostile = [r for r in turn.robots if turn.threatens_us(r)]
+    near = [r for r in hostile if turn.base_distance(r.pos) <= 6]
+    towers = []
+    for tower in turn.weapons:
+        hero = crew.get(tower.id)
+        action = commands.get(str(tower.id))
+        if action and action["action"] == "attack":
+            reason = "fired"
+        elif tower.cooldown:
+            reason = "cooldown"
+        elif hero is None:
+            reason = "no_operator"
+        elif distance(hero.pos, tower.pos) > 1:
+            reason = "operator_en_route"
+        elif commands.get(str(hero.id)):
+            reason = "operator_other_action"
+        elif tower.attack_range <= 0:
+            reason = "unknown_range"
+        elif not any(distance(tower.pos, r.pos) <= tower.attack_range for r in hostile):
+            reason = "out_of_range"
+        else:
+            reason = "no_safe_target_or_command"
+        towers.append({"id": tower.id, "pos": tower.pos, "kind": tower.kind,
+                       "level": tower.level, "attackPower": tower.power,
+                       "attackRange": tower.attack_range, "cooldown": tower.cooldown,
+                       "operator": hero.id if hero else None,
+                       "operatorPos": hero.pos if hero else None, "reason": reason,
+                       "targetPos": action.get("targetPos") if action else None})
+    results = turn.raw.get("lastRoundRoleActionResults") or {}
+    previous_shots = [{"tower": uid, "result": results.get(uid, results.get(int(uid)))}
+                      for uid, action in mem.last_commands.items() if action.get("action") == "attack"]
+    walls = [{"pos": wall.pos, "sector": wall_sector(turn, wall), "level": wall.level,
+              "health": wall.health, "hits": mem.wall_hits.get(wall.pos, 0)}
+             for wall in turn.ours if wall.kind == "wall"]
+    LOG.info("round=%s battle_state=%s", turn.round, json.dumps({
+        "baseHealth": turn.station.health, "heroes": len(turn.heroes), "gold": turn.gold,
+        "hostileTotal": len(hostile), "hostileWithin6": len(near),
+        "hostileNear": [{"id": r.id, "kind": r.kind, "pos": r.pos, "health": r.health}
+                        for r in near[:12]], "walls": walls, "towers": towers,
+        "previousShots": previous_shots}, ensure_ascii=False, separators=(",", ":")))
 
 
 class Agent:
@@ -35,12 +83,31 @@ class Agent:
         self.sessions.move_to_end(key)
         while len(self.sessions) > 8:
             self.sessions.popitem(last=False)
+        previous_mines = mem.mine_kinds.copy()
         mem.observe(turn, self.cfg)
+        if mem.last_round < 0 or previous_mines != mem.mine_kinds:
+            LOG.info("round=%s source=mapInfo.zones mines_received=%s mines=%s", turn.round,
+                     len(mem.mine_kinds), json.dumps(
+                         [{"type": kind, "pos": list(p)} for p, kind in sorted(mem.mine_kinds.items())],
+                         ensure_ascii=False))
+        results = turn.raw.get("lastRoundRoleActionResults") or {}
+        if mem.last_round == turn.round - 1:
+            for uid, action in mem.last_commands.items():
+                if action["action"] == "build" or (action["action"] in ("buy", "use")
+                                                   and "UpgradeVoucher" in action.get("name", "")):
+                    LOG.info("round=%s previous_defence_result=%s", turn.round,
+                             json.dumps({"actor": uid, "action": action,
+                                         "result": results.get(uid, results.get(int(uid)))}, ensure_ascii=False))
+        if turn.station and mem.station_health is not None and turn.station.health < mem.station_health:
+            LOG.warning("round=%s base_damage=%s health=%s", turn.round,
+                        mem.station_health - turn.station.health, turn.station.health)
+        mem.station_health = turn.station.health if turn.station else None
         towers, walls = layout(turn, self.cfg)
         ledger = Ledger(turn, self.cfg, towers, walls)
         nav = Navigator(turn, started + self.cfg.decision_seconds, mem.movement)
         intel = Intelligence(turn, self.cfg, mem)
         prompt, execute = "", ""
+        pairs = []
         try:
             h = turn.pioneer
             within_timeout = bool(h and turn.phase_task and turn.round - mem.task_started <
@@ -87,13 +154,16 @@ class Agent:
                          else nav.approach(hero, [tower.pos], ledger.reserved))
                 # Include today's congestion, not only the route with teammates
                 # removed. A blocked post needs time for its gatekeeper to yield.
-                length = (route[0] if route else posts[hero.id][1] + self.cfg.return_margin
-                          if hero.id in posts else 130)
+                if route is None and hero.id not in posts:
+                    continue
+                length = route[0] if route else posts[hero.id][1] + self.cfg.return_margin
                 if hero.id in mem.return_targets or not turn.is_day or turn.day_left <= length + self.cfg.return_margin:
                     returning.add(hero.id)
                     mem.return_targets[hero.id] = tower.id
                     if hero.id in posts:
                         mem.return_posts[hero.id] = posts[hero.id][0]
+                    LOG.debug("round=%s worker_or_pioneer=%s return_to_tower=%s steps=%s day_left=%s",
+                              turn.round, hero.id, tower.id, length, turn.day_left)
             # A nearby worker can block a distant operator's only entrance long
             # before its own return deadline. Recall that helper now, so it can
             # move to its assigned post or yield instead of idling in the gate.
@@ -129,7 +199,7 @@ class Agent:
             if not turn.is_day:
                 defend(turn, nav, ledger, pairs)
                 for hero in turn.heroes:
-                    if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True):
+                    if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
                         continue
                     if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs}:
                         if hero.kind == "worker":
@@ -155,8 +225,21 @@ class Agent:
         except DeadlineExceeded:
             LOG.warning("round=%s budget reached; returning %s validated actions", turn.round, len(ledger.commands))
         response = ledger.response(prompt, execute)
+        if not turn.is_day or turn.tick in (0, 69):
+            battle_diagnostics(turn, mem, pairs, response)
+        for uid, action in response["roleCommandMap"].items():
+            if action["action"] == "build" or (action["action"] in ("buy", "use")
+                                                and ("UpgradeVoucher" in action.get("name", "")
+                                                     or action.get("name") in ("WallFixer", "Bomb", "DizzyWeapon"))):
+                LOG.info("round=%s defence_action=%s", turn.round,
+                         json.dumps({"actor": uid, **action}, ensure_ascii=False))
         mem.last_round, mem.last_digest, mem.last_response = turn.round, digest, response
         mem.last_commands = response["roleCommandMap"]
-        LOG.info("round=%s day=%s phase=%s commands=%s latency_ms=%.2f", turn.round, turn.day,
+        if turn.is_day:
+            for worker in turn.workers:
+                LOG.debug("round=%s worker=%s position=%s free_space=%s mining_target=%s command=%s",
+                          turn.round, worker.id, worker.pos, worker.space, mem.mine_targets.get(worker.id),
+                          response["roleCommandMap"].get(str(worker.id)))
+        LOG.debug("round=%s day=%s phase=%s commands=%s latency_ms=%.2f", turn.round, turn.day,
                  "day" if turn.is_day else "night", len(ledger.commands), (monotonic()-started)*1000)
         return json.loads(json.dumps(response))

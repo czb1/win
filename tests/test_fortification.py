@@ -50,7 +50,7 @@ class LayoutRegressionTests(unittest.TestCase):
     def test_front_is_anchored_to_entire_station_footprint(self):
         t, c, _, _ = setup_case(payload())
         towers, walls = layout(t, c)
-        self.assertEqual(len(walls), 6)
+        self.assertEqual(len(walls), 12)
         self.assertEqual(len(set(walls)), len(walls))
         self.assertTrue(all(t.base_distance(p) == 2 for p in walls))
         self.assertTrue(all(p[0] in (1, 6) or p[1] in (8, 13) for p in walls))
@@ -224,7 +224,8 @@ class ConstructionRegressionTests(unittest.TestCase):
     def test_first_day_replay_completes_front_with_two_builders(self):
         for mirrored in (False, True):
             result = simulate_day(Agent, Config, mirrored)
-            self.assertEqual(result["walls_day1"], 6, result)
+            self.assertEqual(result["walls_day1"], 12, result)
+            self.assertEqual(result["disconnected_builds"], 0, result)
             self.assertFalse(result["front_missing"], result)
             self.assertFalse(result["blueprint_missing"], result)
             self.assertEqual(result["invalid_actions"], 0, result)

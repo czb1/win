@@ -404,6 +404,60 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(status,200)
         self.assertEqual(data,{"roleCommandMap":{},"prompt":"","executeCmd":""})
 
+    def test_received_mine_coordinates_drive_movement_collection_and_refresh(self):
+        # The deposit starts eight cells from both friendly units, outside
+        # their four-cell vision. Its request coordinate must still be used.
+        p = payload(1, [unit(1, "worker", 2, 2), unit(20, "rocket", 2, 4, level=3)])
+        p["teamOur"]["teamId"] = "http-mining-coordinates"
+        p["mapInfo"]["zones"] = [
+            {"neutralType": "iron", "pos": {"x": 10, "y": 2}},
+            {"neutralType": "vendor", "pos": {"x": 3, "y": 5}},
+        ]
+        p["vendorShopList"] = [{"name": "iron", "price": 6}]
+        hero = p["teamOur"]["roles"][0]
+        moves = collections = 0
+        with self.assertLogs("agent", level="INFO") as captured:
+            for rno in range(1, 11):
+                p["roundNo"] = rno
+                status, response = self.request(body=json.dumps(p))
+                self.assertEqual(status, 200)
+                cmd = response["roleCommandMap"]["1"]
+                target = cmd["targetPos"][0]
+                if cmd["action"] == "move":
+                    self.assertEqual(distance((hero["pos"]["x"], hero["pos"]["y"]),
+                                              (target["x"], target["y"])), 1)
+                    self.assertNotIn(target, [z["pos"] for z in p["mapInfo"]["zones"]])
+                    hero["pos"] = target.copy()
+                    moves += 1
+                else:
+                    self.assertEqual(cmd["action"], "collect")
+                    self.assertEqual(target, p["mapInfo"]["zones"][0]["pos"])
+                    self.assertEqual(distance((hero["pos"]["x"], hero["pos"]["y"]),
+                                              (target["x"], target["y"])), 1)
+                    hero["backpack"].append("iron")
+                    collections += 1
+                p["lastRoundRoleActionResults"] = {"1": True}
+        self.assertEqual((moves, collections), (7, 3))
+        self.assertIn("source=mapInfo.zones mines_received=1", "\n".join(captured.output))
+        self.assertIn("target=(10, 2) steps=0 action=collect", "\n".join(captured.output))
+
+        # Replacing the deposit in the next request must replace the target.
+        p["roundNo"] = 11
+        p["mapInfo"]["zones"][0]["pos"] = {"x": 13, "y": 3}
+        with self.assertLogs("agent", level="INFO") as captured:
+            status, response = self.request(body=json.dumps(p))
+        self.assertEqual(status, 200)
+        self.assertIn('"pos": [13, 3]', "\n".join(captured.output))
+        self.assertIn("target=(13, 3)", "\n".join(captured.output))
+
+        p["roundNo"] = 12
+        p["mapInfo"]["zones"] = p["mapInfo"]["zones"][1:]
+        with self.assertLogs("agent", level="INFO") as captured:
+            status, response = self.request(body=json.dumps(p))
+        self.assertEqual(status, 200)
+        self.assertIn("mines_received=0 mines=[]", "\n".join(captured.output))
+        self.assertFalse(any(cmd["action"] == "collect" for cmd in response["roleCommandMap"].values()))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

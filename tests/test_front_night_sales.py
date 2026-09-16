@@ -9,6 +9,7 @@ from agent.intelligence import Memory
 from agent.mining import earn
 from agent.model import Turn
 from agent.navigation import layout
+from agent.economy import build, wall_keeps_access
 
 
 class DailySaleTests(unittest.TestCase):
@@ -27,6 +28,16 @@ class DailySaleTests(unittest.TestCase):
             earn(t, cfg, mem, nav, ledger, t.workers[0], deadline=40)
             self.assertEqual(ledger.commands.get('1', {}).get('action'), expected)
             mem.last_round, mem.last_commands = rno, ledger.commands
+
+    def test_sold_worker_does_not_start_another_daytime_mining_trip(self):
+        p = mining_case(45, zones=[('iron', 9, 5), ('vendor', 4, 5)])
+        t, cfg, nav, ledger = setup_case(p)
+        self.assertFalse(earn(t, cfg, Memory(day=1, sold_workers={1}), nav, ledger, t.workers[0]))
+        self.assertFalse(ledger.commands)
+        p['roundNo'] = 80
+        t, cfg, nav, ledger = setup_case(p)
+        self.assertTrue(earn(t, cfg, Memory(day=1, sold_workers={1}), nav, ledger, t.workers[0]))
+        self.assertEqual(ledger.commands['1']['action'], 'move')
 
     def test_failed_sale_retries_same_visit(self):
         p = mining_case(39, ['iron'], zones=[('iron', 6, 5), ('vendor', 4, 5)])
@@ -105,13 +116,62 @@ class NightMiningTests(unittest.TestCase):
 
 
 class FrontOnlyTests(unittest.TestCase):
-    def test_all_default_walls_are_on_enemy_side_in_each_corner(self):
+    def test_twelve_walls_keep_front_first_and_rear_open_in_each_corner(self):
         for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
             cfg = Config()
             t = Turn(payload(roles=[unit(13, 'station', x, y)]), cfg)
             _, walls = layout(t, cfg)
-            self.assertEqual(len(walls), 6)
-            self.assertEqual({p[0] for p in walls}, {x + 3 if x < 7 else x - 2})
+            self.assertEqual(len(walls), 12)
+            self.assertEqual({p[0] for p in walls[:6]}, {x + 3 if x < 7 else x - 2})
+            self.assertEqual(len(set(walls)), 12)
+            self.assertEqual(sorted(sum(p[1] == y0 for p in walls[6:])
+                                    for y0 in {p[1] for p in walls[6:]}), [3, 3])
+            rear_x = x - 2 if x < 7 else x + 3
+            self.assertNotIn(rear_x, {p[0] for p in walls})
+
+    def test_wall_preserves_short_access_until_gun_is_built(self):
+        roles = [unit(1, 'worker', 1, 1)] + [unit(100+y, 'wall', 3, y)
+                  for y in range(15) if y not in (2, 10)]
+        p = payload(45, roles)
+        t, cfg, nav, ledger = setup_case(p, layout_mode='explicit',
+                                         weapon_cells=[[5, 1]], wall_cells=[[3, 2]])
+        self.assertFalse(wall_keeps_access(t, nav, ledger, (3, 2)))
+        p['teamOur']['roles'].append(unit(20, 'rocket', 5, 1))
+        t, cfg, nav, ledger = setup_case(p, layout_mode='explicit',
+                                         weapon_cells=[[5, 1]], wall_cells=[[3, 2]])
+        self.assertTrue(wall_keeps_access(t, nav, ledger, (3, 2)))
+
+    def test_nearby_isolated_site_cannot_override_connected_extension(self):
+        p = payload(45, [unit(13, 'station', 3, 11),
+                         unit(1, 'worker', 5, 8, backpack=['stone']),
+                         unit(90, 'wall', 6, 11)])
+        t, cfg, nav, ledger = setup_case(p)
+        self.assertTrue(build(t, cfg, Memory(), nav, ledger, t.workers[0],
+                              layout(t, cfg)[1], lambda _: 'wall'))
+        target = next(iter(ledger.build_claims))
+        self.assertEqual(abs(target[0]-6) + abs(target[1]-11), 1)
+
+    def test_moving_builder_does_not_seed_a_second_wall(self):
+        p = payload(45, [unit(13, 'station', 3, 11),
+                         unit(1, 'worker', 0, 0, backpack=['stone']),
+                         unit(2, 'worker', 0, 2, backpack=['stone'])])
+        t, cfg, nav, ledger = setup_case(p)
+        walls = layout(t, cfg)[1]
+        self.assertTrue(build(t, cfg, Memory(), nav, ledger, t.workers[0], walls, lambda _: 'wall'))
+        self.assertEqual(ledger.commands['1']['action'], 'move')
+        self.assertFalse(build(t, cfg, Memory(), nav, ledger, t.workers[1], walls, lambda _: 'wall'))
+
+    def test_second_builder_can_extend_same_turn_actual_build(self):
+        p = payload(45, [unit(13, 'station', 3, 11),
+                         unit(1, 'worker', 5, 8, backpack=['stone']),
+                         unit(2, 'worker', 5, 9, backpack=['stone'])])
+        t, cfg, nav, ledger = setup_case(p)
+        walls = layout(t, cfg)[1]
+        for hero in t.workers:
+            self.assertTrue(build(t, cfg, Memory(), nav, ledger, hero, walls, lambda _: 'wall'))
+        self.assertTrue(all(c['action'] == 'build' for c in ledger.commands.values()))
+        a, b = ledger.build_claims
+        self.assertEqual(abs(a[0]-b[0]) + abs(a[1]-b[1]), 1)
 
 
 if __name__ == '__main__':

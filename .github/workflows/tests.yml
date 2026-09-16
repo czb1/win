@@ -2,9 +2,9 @@ name: Python strategy checks
 
 on:
   push:
-    branches: [main, 'codex/**']
+    branches: [main, develop, 'codex/**']
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 permissions:
   contents: read

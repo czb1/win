@@ -45,7 +45,8 @@ def simulate_day(agent_class, config_class, mirrored=False):
         p["teamOur"]["type"] = "defender"
     front = {mirror((8, y)) for y in range(12, 18)}
     # Independent expected geometry: complete 6x6 perimeter except rear gate.
-    expected = set(front)
+    expected = front | {mirror((x, y)) for x in (5, 6, 7) for y in (12, 17)}
+    disconnected_builds = 0
     front_complete_round = None
     first_wall = None
     walls_by_round, actions, invalid, worst = {}, Counter(), 0, 0.0
@@ -100,6 +101,9 @@ def simulate_day(agent_class, config_class, mirrored=False):
                     if legal:
                         for _ in range(cfg.wall_stones):
                             r["backpack"].remove("stone")
+                        existing = {(w["pos"]["x"], w["pos"]["y"]) for w in roles if w["roleType"] == "wall"}
+                        if existing and not any(abs(target[0]-q[0]) + abs(target[1]-q[1]) == 1 for q in existing):
+                            disconnected_builds += 1
                         builders[uid] += 1
                         if first_wall is None:
                             first_wall = target
@@ -127,7 +131,7 @@ def simulate_day(agent_class, config_class, mirrored=False):
         built = {(r["pos"]["x"], r["pos"]["y"]) for r in roles if r["roleType"] == "wall"}
         if front <= built and front_complete_round is None:
             front_complete_round = round_no
-    return {"walls_day1": walls_by_round[70],
+    return {"walls_day1": walls_by_round[70], "disconnected_builds": disconnected_builds,
             "first_wall_position": first_wall, "front_complete_round": front_complete_round,
             "front_missing": sorted(front - built), "blueprint_missing": sorted(expected - built),
             "first_wall_round": next((r for r, n in walls_by_round.items() if n), None),
