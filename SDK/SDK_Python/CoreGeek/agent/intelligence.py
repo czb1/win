@@ -10,6 +10,7 @@ import shlex
 from .commands import command
 from .model import ORES, pos
 from .task_tools import parse_file_tool, document_path, file_code
+from .movement import MovementMemory
 
 LOG = logging.getLogger(__name__)
 
@@ -155,21 +156,33 @@ class Memory:
     preparation_tick: int = 70
     preparation_workers: set = field(default_factory=set)
     sale_workers: set = field(default_factory=set)
+    sale_targets: dict = field(default_factory=dict)
     mine_targets: dict = field(default_factory=dict)
     mine_kinds: dict = field(default_factory=dict)
     mine_collected: dict = field(default_factory=dict)
     supply_worker: int | None = None
+    build_targets: dict = field(default_factory=dict)
+    stone_reserves: dict = field(default_factory=dict)
+    return_targets: dict = field(default_factory=dict)
+    return_posts: dict = field(default_factory=dict)
+    movement: MovementMemory = field(default_factory=MovementMemory)
     last_response: dict | None = None
     last_digest: str = ""
 
     def observe(self, turn, cfg):
+        self.movement.observe(turn, self)
         if self.day != turn.day:
             self.day, self.calls = turn.day, 0
             self.preparation_tick = 70
             self.preparation_workers.clear()
             self.sale_workers.clear()
+            self.sale_targets.clear()
             self.mine_targets.clear()
             self.supply_worker = None
+            self.build_targets.clear()
+            self.stone_reserves.clear()
+            self.return_targets.clear()
+            self.return_posts.clear()
         news = turn.raw.get("worldNews") or {}
         record = {"day": turn.day, "officialNews": str(news.get("officialNews", ""))[:12000],
                   "folkLegends": str(news.get("folkLegends", ""))[:20000]}

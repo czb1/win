@@ -4,6 +4,13 @@ from .model import ORES, distance, neighbours
 from .economy_plan import via
 
 
+def sale_inventory(turn, mem, hero):
+    """Only surplus stone can be sold while the wall blueprint needs material."""
+    counts = hero.inventory
+    counts["stone"] = max(0, counts["stone"] - mem.stone_reserves.get(hero.id, 0))
+    return {k: counts[k] for k in ORES if counts[k] and turn.prices.get(k, 0) > 0}
+
+
 def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
          deadline=None):
     if not hero.space:
@@ -30,7 +37,8 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
               deadline if deadline is not None and turn.tick < deadline else 70)
     options = []
     for p, kind in turn.zones.items():
-        if kind not in ORES or p in mem.collect_failures or want_stone and kind != "stone":
+        if (kind not in ORES or p in mem.collect_failures or want_stone and kind != "stone"
+                or mem.movement.avoids(hero.id, p)):
             continue
         if local_only and not turn.adjacent(hero.pos, p):
             continue
@@ -87,17 +95,22 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
 
 
 def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, funding_goal=0):
-    counts = hero.inventory
-    ores = [k for k in ORES if counts[k] and turn.prices.get(k, 0) > 0]
+    counts = sale_inventory(turn, mem, hero)
+    ores = list(counts)
     total = sum(counts[k] for k in ores)
     if not total:
         mem.sale_workers.discard(hero.id)
+        mem.sale_targets.pop(hero.id, None)
     vendors = [p for p, k in turn.zones.items() if k == "vendor"]
-    route = nav.approach(hero, vendors, ledger.reserved) if vendors else None
+    options = [(r[0] != 0, p != mem.sale_targets.get(hero.id), r[0], p, r) for p in vendors
+               if not mem.movement.avoids(hero.id, p)
+               and (r := nav.approach(hero, [p], ledger.reserved)) is not None]
+    choice = min(options, default=None)
+    vendor, route = (choice[3], choice[4]) if choice else (None, None)
     due = False
     if route:
         home = [w.pos for w in turn.weapons] or (list(turn.station.cells) if turn.station else [])
-        trip = via(nav, hero, [vendors, home], ledger.reserved) if home else route[0]
+        trip = via(nav, hero, [[vendor], home], ledger.reserved) if home else route[0]
         due = (deadline is not None and turn.tick <= deadline
                and deadline - turn.tick <= route[0] + len(ores)
                or trip is not None and turn.day_left <= trip + len(ores) + cfg.return_margin)
@@ -114,6 +127,7 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, funding_goal=0):
                   else command("move", route[1]))
         if ledger.add(hero.id, action):
             mem.sale_workers.add(hero.id)
+            mem.sale_targets[hero.id] = vendor
             mem.mine_targets.pop(hero.id, None)
             return True
         return False

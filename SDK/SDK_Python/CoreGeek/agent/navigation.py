@@ -14,8 +14,9 @@ def check_time(deadline):
 
 
 class Navigator:
-    def __init__(self, turn, deadline):
+    def __init__(self, turn, deadline, memory=None):
         self.turn, self.deadline = turn, deadline
+        self.memory = memory
         self._trees = {}
         self._distances = {}
 
@@ -45,7 +46,8 @@ class Navigator:
 
     def search(self, hero, goals, reserved=()):
         check_time(self.deadline)
-        blocked = frozenset((self.turn.blocked | set(reserved)) - {hero.pos})
+        avoided = self.memory.blocked(hero.id) if self.memory else set()
+        blocked = frozenset((self.turn.blocked | set(reserved) | avoided) - {hero.pos})
         goals = {g for g in goals if self.turn.inside(g) and g not in blocked}
         if not goals:
             return None

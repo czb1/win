@@ -6,7 +6,7 @@
   "weapon_cells": [],
   "wall_cells": [],
   "loadout": ["rocket", "rocket", "rocket"],
-  "stone_batch": 6,
+  "stone_batch": 10,
   "sell_batch": 40,
   "sell_batch_max": 80,
   "economy_rounds": 40,
