@@ -60,7 +60,9 @@ def exposed_wall(turn, wall, mem):
     sector = wall_sector(turn, wall)
     if sector is None:
         return False
-    if wall.health < 800 or mem.wall_hits.get(wall.pos, 0):
+    # A destroyed cell keeps its hit history after rebuilding. Do not turn a
+    # fresh full-health replacement into an immediate shopping detour.
+    if wall.health < 800 or (wall.health < 1000 and mem.wall_hits.get(wall.pos, 0)):
         return True
     return (turn.day >= 3 and not any(w.kind == "wall" and w.level > 1
                                      and wall_sector(turn, w) == sector for w in turn.ours))
