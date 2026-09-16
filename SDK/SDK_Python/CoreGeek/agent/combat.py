@@ -108,7 +108,14 @@ def operator_posts(turn, nav, pairs, wall_sites=(), fixed=None):
                 continue
             changes = sum(h.id in fixed and fixed[h.id] != p
                           for (h, _), (p, _) in zip(pairs, choice))
-            cost = (changes, sum(length for _, length in choice), max(length for _, length in choice))
+            # Controller deaths preceded both late-wave collapses.  Prefer the
+            # base-side control ring before shaving a step off the daytime walk.
+            exposure = sum(turn.base_distance(p) for p, _ in choice)
+            hostile_distance = sum(-min((distance(p, r.pos) for r in turn.robots
+                                         if turn.threatens_us(r)), default=turn.width + turn.height)
+                                   for p, _ in choice)
+            cost = (changes, exposure, hostile_distance,
+                    sum(length for _, length in choice), max(length for _, length in choice))
             if best is None or cost < best:
                 best = cost
                 result = {h.id: option for (h, _), option in zip(pairs, choice)}
@@ -137,10 +144,14 @@ def return_plan(turn, nav, pairs, wall_sites, fixed_targets, fixed_posts):
 def threat(turn, robot):
     if not turn.threatens_us(robot):
         return 0.0
-    score = 10.0 / (1 + turn.base_distance(robot.pos))
+    base_distance = turn.base_distance(robot.pos)
+    score = 10.0 / (1 + base_distance)
     if robot.target_team == turn.team:
         score *= 2
-    return score + {"bossRobot": 2, "largeRobot": 1, "middleRobot": .5}.get(robot.kind, .2)
+    kind = {"bossRobot": 8, "largeRobot": 4, "middleRobot": 1}.get(robot.kind, .2)
+    if base_distance <= 2 and robot.kind in ("bossRobot", "largeRobot"):
+        kind *= 2
+    return score + kind
 
 
 def select_targets(turn, tower, damage, deadline):
