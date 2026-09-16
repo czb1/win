@@ -125,7 +125,7 @@ def layout(turn, cfg):
     return towers, [world(p) for p in order if p in perimeter - openings and turn.inside(world(p))]
 
 
-def wall_priority(turn, cfg, sites, index):
+def wall_priority(turn, cfg, sites, index, hits=None):
     """Strategic side and existing breaches precede walking distance."""
     target = sites[index]
     if not turn.station:
@@ -137,4 +137,9 @@ def wall_priority(turn, cfg, sites, index):
     x, y = target
     breach = ((x - 1, y) in walls and (x + 1, y) in walls or
               (x, y - 1) in walls and (x, y + 1) in walls)
-    return (int(x != front_x), int(not breach), index)
+    hits = hits or {}
+    # Reclose a damaged flank before extending untouched wall segments.
+    # Keep the urgent set narrow: rebuilding the observed destroyed cell comes
+    # first, while neighbouring expansion keeps its normal front/breach order.
+    urgent = turn.day >= 2 and x != front_x and hits.get(target, 0)
+    return (int(not urgent), int(x != front_x), int(not breach), index)

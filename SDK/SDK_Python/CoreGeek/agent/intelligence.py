@@ -168,9 +168,19 @@ class Memory:
     movement: MovementMemory = field(default_factory=MovementMemory)
     last_response: dict | None = None
     last_digest: str = ""
+    wall_health: dict = field(default_factory=dict)
+    wall_hits: dict = field(default_factory=dict)
+    station_health: int | None = None
 
     def observe(self, turn, cfg):
         self.movement.observe(turn, self)
+        current_walls = {wall.pos: (wall.id, wall.health) for wall in turn.ours if wall.kind == "wall"}
+        if self.last_round == turn.round - 1:
+            for location, (uid, health) in self.wall_health.items():
+                next_wall = current_walls.get(location)
+                if next_wall is None or next_wall[0] == uid and next_wall[1] < health:
+                    self.wall_hits[location] = min(10, self.wall_hits.get(location, 0) + 1)
+        self.wall_health = current_walls
         if self.day != turn.day:
             self.day, self.calls = turn.day, 0
             self.preparation_tick = 70
@@ -248,9 +258,10 @@ class Memory:
         if result in (1, 4):
             self.treasure_done = True
         if turn.phase_task != self.task_text:
-            LOG.info("round=%s task=%s reason=%s retries=%s", turn.round,
-                     "started" if turn.phase_task else "ended",
-                     self.stop_reason or ("judger_error" if errors else "no_error_reported"), self.task_failures)
+            LOG.info("round=%s task_event=%s point=%s reason=%s retries=%s errors=%s", turn.round,
+                     "started" if turn.phase_task else "ended", self.task_point,
+                     self.stop_reason or ("judger_error" if errors else "unknown"), self.task_failures,
+                     json.dumps(errors, ensure_ascii=False))
             self.task_text = turn.phase_task
             self.task_started = (self.accepted_round if self.accepted_round is not None else turn.round) if turn.phase_task else 0
             self.accepted_round = None
@@ -261,7 +272,11 @@ class Memory:
                 if active:
                     self.task_point = pos(active["taskPosition"])
                     self.task_timeout = int(active.get("timeoutRounds", cfg.task_max_rounds))
-            if not turn.phase_task:
+            if turn.phase_task:
+                # Log the full question once per task so downloadable runner logs can diagnose failures.
+                LOG.info("round=%s task_point=%s task_question=%s", turn.round, self.task_point,
+                         json.dumps(turn.phase_task, ensure_ascii=False))
+            else:
                 self.task_point = None
                 self.task_timeout = cfg.task_max_rounds
             self.answer = self.python = None
@@ -281,6 +296,9 @@ class Memory:
         self.task_feedback = excerpt(json.dumps(errors, ensure_ascii=False)) if errors else ""
         if self.submitted and turn.round > self.submitted[0]:
             # Persist rejection beyond the one round in which errors is present.
+            LOG.info("round=%s task_submission_feedback=%s", turn.round,
+                     json.dumps({"actionResult": results.get(str(turn.pioneer.id)) if turn.pioneer else None,
+                                 "errors": errors, "stillActive": bool(turn.phase_task)}, ensure_ascii=False))
             self.submission_feedback = ("上次答案：" + excerpt(self.submitted[1], 2000) + "\n反馈："
                                         + (self.task_feedback or "任务仍在进行；上次提交尚未完成任务。"))
             self.history.append({"submission_feedback": self.submission_feedback})
@@ -299,7 +317,8 @@ class Memory:
         if purpose == "cmd":
             raw = turn.raw.get("lastCmdResult") or ""
             status, body, answer = sandbox_result(raw)
-            LOG.info("round=%s sandbox_status=%s final_answer=%s", turn.round, status, answer is not None)
+            LOG.info("round=%s task_sandbox_status=%s final_answer=%s output=%s", turn.round,
+                     status, answer is not None, json.dumps(excerpt(str(raw), 12000), ensure_ascii=False))
             self.cmd_result = excerpt(str(raw), 12000)
             self.history.append({"sandbox": self.cmd_result})
             self.last_attempt = {"python": excerpt(self.running_python, 5000),
@@ -330,6 +349,9 @@ class Memory:
             self.running_python = ""
             self.running_tool = None
             return
+        if purpose == "task":
+            LOG.info("round=%s task_llm_reply=%s", turn.round,
+                     json.dumps(excerpt(str(turn.raw.get("llmResp") or ""), 16000), ensure_ascii=False))
         parsed = (parse_task_reply(turn.raw.get("llmResp")) if purpose == "task"
                   else parse_object(turn.raw.get("llmResp")))
         if parsed is None:
@@ -413,7 +435,8 @@ class Memory:
     def reject(self, message):
         self.task_failures += 1
         self.history.append({"error": message[:1000]})
-        LOG.info("task_retry=%s", self.task_failures)
+        LOG.info("task_reject=%s retries=%s", json.dumps(message[:1000], ensure_ascii=False),
+                 self.task_failures)
 
     def task_active(self, turn):
         return bool(turn.phase_task and turn.pioneer)
@@ -443,7 +466,8 @@ class Intelligence:
             return "", ""
         if self.mem.answer is not None:
             if ledger.add(pioneer.id, command("submitAnswer", taskAnswer=self.mem.answer)):
-                LOG.info("round=%s task_answer=submitted", self.turn.round)
+                LOG.info("round=%s task_answer=submitted value=%s", self.turn.round,
+                         json.dumps(excerpt(self.mem.answer, 4000), ensure_ascii=False))
                 self.mem.submitted = (self.turn.round, self.mem.answer)
                 self.mem.answer = None
             return "", ""

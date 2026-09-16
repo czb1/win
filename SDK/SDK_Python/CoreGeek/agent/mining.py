@@ -9,10 +9,11 @@ from .economy_plan import via
 LOG = logging.getLogger(__name__)
 
 
-def record_target(turn, hero, target, route, mode):
-    LOG.info("round=%s worker=%s mining_mode=%s ore=%s target=%s steps=%s action=%s",
-             turn.round, hero.id, mode, turn.zones[target], target, route[0],
-             "collect" if route[1] is None else "move")
+def record_target(turn, hero, target, route, mode, changed=False):
+    log = LOG.info if changed or route[1] is None else LOG.debug
+    log("round=%s worker=%s mining_mode=%s ore=%s target=%s steps=%s action=%s",
+        turn.round, hero.id, mode, turn.zones[target], target, route[0],
+        "collect" if route[1] is None else "move")
 
 
 def mining_home(turn, nav, hero, reserved=()):
@@ -71,9 +72,10 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero):
     _, _, _, target, _, route = min(options, key=lambda o: o[:5])
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
+        changed = mem.mine_targets.get(hero.id) != target
         mem.mine_targets[hero.id] = target
         ledger.mine_claims[hero.id] = target
-        record_target(turn, hero, target, route, "carry_for_later")
+        record_target(turn, hero, target, route, "carry_for_later", changed)
         return True
     return False
 
@@ -180,9 +182,10 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
     _, _, _, target, route = chosen
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
+        changed = mem.mine_targets.get(hero.id) != target
         mem.mine_targets[hero.id] = target
         ledger.mine_claims[hero.id] = target
-        record_target(turn, hero, target, route, "wall_material" if want_stone else "sell_today")
+        record_target(turn, hero, target, route, "wall_material" if want_stone else "sell_today", changed)
         return True
     return False
 

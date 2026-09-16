@@ -37,7 +37,38 @@ def visit(turn, nav, ledger, hero, kind, action):
     return ledger.add(hero.id, command("move", route[1]))
 
 
-def upgrade_order(turn, building):
+def wall_sector(turn, wall):
+    walls = [w for w in turn.ours if w.kind == "wall"]
+    if not walls or not turn.station:
+        return None
+    xs = [w.pos[0] for w in walls]
+    ys = [w.pos[1] for w in walls]
+    front = max(xs) if turn.station.pos[0] < turn.width / 2 else min(xs)
+    if wall.pos[0] == front:
+        return "front"
+    if wall.pos[1] == min(ys):
+        return "top"
+    if wall.pos[1] == max(ys):
+        return "bottom"
+    return None
+
+
+def exposed_wall(turn, wall, mem):
+    """Strengthen damaged walls and cover the three sides before the third night."""
+    if turn.day < 2 or wall.level != 1:
+        return False
+    sector = wall_sector(turn, wall)
+    if sector is None:
+        return False
+    # A destroyed cell keeps its hit history after rebuilding. Do not turn a
+    # fresh full-health replacement into an immediate shopping detour.
+    if wall.health < 800 or (wall.health < 1000 and mem.wall_hits.get(wall.pos, 0)):
+        return True
+    return (turn.day >= 3 and not any(w.kind == "wall" and w.level > 1
+                                     and wall_sector(turn, w) == sector for w in turn.ours))
+
+
+def upgrade_order(turn, building, mem=None):
     """Upgrade all weapons to level 2, then 3, before a healthy base.
 
     A damaged base gets the full-heal benefit immediately. Wall upgrades are
@@ -49,6 +80,9 @@ def upgrade_order(turn, building):
         return (0 if building.level == 1 else 1, building.id)
     xs = [u.pos[0] for u in turn.ours if u.kind == "wall"]
     front = (max(xs) if turn.station and turn.station.pos[0] < turn.width / 2 else min(xs)) if xs else 0
+    if mem is not None and exposed_wall(turn, building, mem):
+        return (1.25, -mem.wall_hits.get(building.pos, 0), building.health,
+                turn.base_distance(building.pos), building.id)
     return (4, int(building.pos[0] != front), building.health, building.id)
 
 
@@ -58,7 +92,7 @@ def voucher_for(building):
     return f"{prefix}UpgradeVoucher{building.level}" if prefix and building.level < 3 else None
 
 
-def use_inventory(turn, nav, ledger, hero, local_only=False):
+def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
     if hero.health <= (165 if hero.kind == "worker" else 150) and hero.inventory["Medicine"]:
         return ledger.add(hero.id, command("use", name="Medicine"))
     upgrades = []
@@ -67,14 +101,14 @@ def use_inventory(turn, nav, ledger, hero, local_only=False):
         if name and hero.inventory[name] and building.id not in ledger.upgrade_claims:
             route = nav.approach(hero, building.cells, ledger.reserved)
             if route and (not local_only or route[0] == 0):
-                upgrades.append((upgrade_order(turn, building), route[0], name, building, route))
+                upgrades.append((upgrade_order(turn, building, mem), route[0], name, building, route))
         if (building.kind == "wall" and hero.inventory["WallFixer"] and building.health < 500
                 and building.id not in ledger.repair_claims):
             route = nav.approach(hero, building.cells, ledger.reserved)
             if route and (not local_only or route[0] == 0):
                 upgrades.append(((1.5, building.health, building.id), route[0], "WallFixer", building, route))
     if upgrades:
-        _, _, name, building, route = min(upgrades, key=lambda o: (o[0][:-1], o[1], o[3].id))
+        _, _, name, building, route = min(upgrades, key=lambda o: (o[0], o[1], o[3].id))
         if route[1] is None:
             return ledger.add(hero.id, command("use", building.pos, name=name))
         if ledger.add(hero.id, command("move", route[1])):
@@ -103,7 +137,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     if not urgent_only:
         carried = Counter(item for h in turn.heroes for item in h.backpack)
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
-        for building in sorted(buildings, key=lambda b: upgrade_order(turn, b)):
+        first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
+        for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
             name = voucher_for(building)
             if not name:
                 continue
@@ -115,10 +150,12 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                 name = voucher_for(building) if bulk else None
             if not name:
                 continue
-            if building.kind == "wall" and (any(b.level < 3 and b.kind in (*WEAPONS, "station") for b in buildings)
-                                             or bulk and building.health >= 500):
+            urgent_wall = (not first_level_gun and exposed_wall(turn, building, mem))
+            if building.kind == "wall" and not urgent_wall and (
+                    any(b.level < 3 and b.kind in (*WEAPONS, "station") for b in buildings)
+                    or bulk and building.health >= 500):
                 continue
-            candidates.append((upgrade_order(turn, building), name, building.cells))
+            candidates.append((upgrade_order(turn, building, mem), name, building.cells))
         damaged = [w for w in turn.ours if w.kind == "wall" and w.health < 500]
         if damaged and not any(h.inventory["WallFixer"] for h in turn.heroes):
             candidates.append(((1.5,), "WallFixer", damaged[0].cells))
@@ -236,9 +273,12 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for):
             continue
         route = nav.approach(hero, [target], ledger.reserved)
         if route:
-            priority = wall_priority(turn, cfg, sites, index) if name_for(index) == "wall" else (0, 0, route[0])
+            priority = (wall_priority(turn, cfg, sites, index, mem.wall_hits)
+                        if name_for(index) == "wall" else (0, 0, route[0]))
             if name_for(index) == "wall":
-                priority = priority[:2] + (0, target != mem.build_targets.get(hero.id))
+                # Retain the established front/breach/continuity ordering when
+                # no attacked flank is urgent.
+                priority = priority[:3] + (0, target != mem.build_targets.get(hero.id))
             previous = mem.build_targets.get(hero.id)
             continuity = distance(target, previous) if name_for(index) == "wall" and previous else 0
             options.append((priority, route[0], continuity, index, target, route))
@@ -260,7 +300,7 @@ def finish_preparation(turn, cfg, mem, nav, ledger, hero, tower, wall_sites):
              if hero.id in ledger.operator_posts else nav.approach(hero, tower.cells, ledger.reserved))
     if route is None or turn.day_left <= route[0] + 2:
         return False
-    if use_inventory(turn, nav, ledger, hero, local_only=True):
+    if use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
         return True
     if hero.kind != "worker" or hero.inventory["stone"] < cfg.wall_stones:
         return False
@@ -289,10 +329,10 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
     if hero.health <= 165 and hero.inventory["Medicine"]:
         ledger.add(hero.id, command("use", name="Medicine"))
         return
-    if hero.inventory["WallFixer"] and use_inventory(turn, nav, ledger, hero):
+    if hero.inventory["WallFixer"] and use_inventory(turn, nav, ledger, hero, mem=mem):
         return
     if not develop:
-        if use_inventory(turn, nav, ledger, hero, local_only=True):
+        if use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
             return
         earn(turn, cfg, mem, nav, ledger, hero, deadline)
         return
@@ -302,7 +342,7 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
     # Finish a batch at the shop before delivering its first voucher.
     if plan and plan[1][0] == 0 and hero.space and buy_supply(turn, ledger, hero, plan):
         return
-    if use_inventory(turn, nav, ledger, hero):
+    if use_inventory(turn, nav, ledger, hero, mem=mem):
         return
     if gather_first:
         built_walls = {w.pos for w in turn.ours if w.kind == "wall"}
@@ -471,7 +511,7 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
 
 
 def pioneer(turn, cfg, mem, nav, ledger, hero):
-    if use_inventory(turn, nav, ledger, hero):
+    if use_inventory(turn, nav, ledger, hero, mem=mem):
         return
     # The pioneer can carry its own medicine; there is no transfer action.
     if not hero.inventory["Medicine"] and hero.health <= 150:
