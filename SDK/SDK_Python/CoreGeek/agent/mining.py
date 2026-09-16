@@ -10,7 +10,7 @@ LOG = logging.getLogger(__name__)
 
 
 def record_target(turn, hero, target, route, mode):
-    LOG.info("round=%s worker=%s mining_mode=%s ore=%s target=%s steps=%s action=%s",
+    LOG.debug("round=%s worker=%s mining_mode=%s ore=%s target=%s steps=%s action=%s",
              turn.round, hero.id, mode, turn.zones[target], target, route[0],
              "collect" if route[1] is None else "move")
 
