@@ -81,7 +81,7 @@ def upgrade_order(turn, building, mem=None):
     xs = [u.pos[0] for u in turn.ours if u.kind == "wall"]
     front = (max(xs) if turn.station and turn.station.pos[0] < turn.width / 2 else min(xs)) if xs else 0
     if mem is not None and exposed_wall(turn, building, mem):
-        return (.5, -mem.wall_hits.get(building.pos, 0), building.health,
+        return (1.25, -mem.wall_hits.get(building.pos, 0), building.health,
                 turn.base_distance(building.pos), building.id)
     return (4, int(building.pos[0] != front), building.health, building.id)
 

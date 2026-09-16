@@ -50,17 +50,21 @@ class WallRiskTests(unittest.TestCase):
                                {"name": "WallUpgradeVoucher1", "price": 20}]
         return p
 
-    def test_three_sides_get_early_upgrade_without_starving_level_one_guns(self):
+    def test_three_sides_upgrade_after_weapon_funding(self):
         p = self.case()
         turn, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[])
         mem = Memory()
         self.assertTrue(exposed_wall(turn, turn.ours[-1], mem))
         self.assertEqual(supplies(turn, cfg, mem, nav, ledger, turn.workers[0], bulk=True)[0],
-                         "WallUpgradeVoucher1")
+                         "WeaponUpgradeVoucher2")
         p = self.case(gun_level=1)
         turn, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[])
         self.assertEqual(supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0], bulk=True)[0],
                          "WeaponUpgradeVoucher1")
+        p = self.case(gun_level=3)
+        turn, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[])
+        self.assertEqual(supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0], bulk=True)[0],
+                         "WallUpgradeVoucher1")
 
 
 class BattleDiagnosticsTests(unittest.TestCase):
