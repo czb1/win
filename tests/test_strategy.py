@@ -2,12 +2,22 @@
 import unittest
 from test_agent import payload, unit, setup_case
 from agent.model import distance
-from agent.combat import select_targets, defend
+from agent.combat import select_targets, defend, threat
 from agent.economy import worker
 from agent.intelligence import Memory
 
 
 class TargetingRegressionTests(unittest.TestCase):
+    def test_large_robot_at_base_outweighs_small_robot(self):
+        p = payload(71, roles=[unit(13, "station", 3, 5, health=1500),
+                               unit(20, "rocket", 5, 5)])
+        p["robot"]["roles"] = [unit(31, "smallRobot", 7, 4, health=20),
+                                unit(32, "smallRobot", 7, 3, health=20),
+                                unit(33, "largeRobot", 7, 6, health=500)]
+        t, _, nav, _ = setup_case(p)
+        self.assertGreater(threat(t, t.robots[-1]), threat(t, t.robots[0]))
+        self.assertEqual(select_targets(t, t.weapons[0], {}, nav.deadline), [(7, 6)])
+
     def test_railgun_spends_energy_on_current_health_not_planned_health(self):
         p = payload(71, roles=[unit(1, "worker", 4, 6), unit(20, "railgun", 5, 5)])
         p["robot"]["roles"] = [unit(31, "smallRobot", 7, 5, health=40),
