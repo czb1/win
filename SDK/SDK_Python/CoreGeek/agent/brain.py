@@ -43,7 +43,7 @@ def battle_diagnostics(turn, mem, pairs, response):
         else:
             reason = "no_safe_target_or_command"
         towers.append({"id": tower.id, "pos": tower.pos, "kind": tower.kind,
-                       "level": tower.level, "attackPower": tower.attack_power,
+                       "level": tower.level, "attackPower": tower.power,
                        "attackRange": tower.attack_range, "cooldown": tower.cooldown,
                        "operator": hero.id if hero else None,
                        "operatorPos": hero.pos if hero else None, "reason": reason,
@@ -82,7 +82,13 @@ class Agent:
         self.sessions.move_to_end(key)
         while len(self.sessions) > 8:
             self.sessions.popitem(last=False)
+        previous_mines = mem.mine_kinds.copy()
         mem.observe(turn, self.cfg)
+        if mem.last_round < 0 or previous_mines != mem.mine_kinds:
+            LOG.info("round=%s source=mapInfo.zones mines_received=%s mines=%s", turn.round,
+                     len(mem.mine_kinds), json.dumps(
+                         [{"type": kind, "pos": list(p)} for p, kind in sorted(mem.mine_kinds.items())],
+                         ensure_ascii=False))
         results = turn.raw.get("lastRoundRoleActionResults") or {}
         if mem.last_round == turn.round - 1:
             for uid, action in mem.last_commands.items():
