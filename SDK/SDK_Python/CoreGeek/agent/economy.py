@@ -274,7 +274,9 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for):
             priority = (wall_priority(turn, cfg, sites, index, mem.wall_hits)
                         if name_for(index) == "wall" else (0, 0, route[0]))
             if name_for(index) == "wall":
-                priority = priority[:3] + (target != mem.build_targets.get(hero.id),)
+                # Retain the established front/breach/continuity ordering when
+                # no attacked flank is urgent.
+                priority = priority[:3] + (0, target != mem.build_targets.get(hero.id))
             previous = mem.build_targets.get(hero.id)
             continuity = distance(target, previous) if name_for(index) == "wall" and previous else 0
             options.append((priority, route[0], continuity, index, target, route))
