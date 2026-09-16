@@ -10,7 +10,10 @@ LOG = logging.getLogger(__name__)
 
 
 def record_target(turn, hero, target, route, mode, changed=False):
-    log = LOG.info if changed or route[1] is None else LOG.debug
+    # A worker can collect from the same deposit for many consecutive rounds.
+    # Keep only target/mode transitions in downloadable INFO logs; DEBUG still
+    # carries every movement and collection decision for local reproduction.
+    log = LOG.info if changed else LOG.debug
     log("round=%s worker=%s mining_mode=%s ore=%s target=%s steps=%s action=%s",
         turn.round, hero.id, mode, turn.zones[target], target, route[0],
         "collect" if route[1] is None else "move")

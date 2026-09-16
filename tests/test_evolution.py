@@ -1,5 +1,6 @@
 """Multi-turn judger fixtures; no external LLM or live task API is required."""
 from pathlib import Path
+import json
 import shlex
 import subprocess
 import sys
@@ -23,6 +24,32 @@ def task_payload(round_no=1, description=""):
 
 
 class EvolutionTests(unittest.TestCase):
+    def test_full_task_question_is_kept_while_attempt_logs_are_bounded(self):
+        question = "完整题目信息：" + "要求" * 1200
+        agent = Agent(Config(layout_mode="explicit"))
+        p = task_payload(1, question)
+        with self.assertLogs("agent.intelligence", "INFO") as captured:
+            agent.decide(p)
+        self.assertIn(json.dumps(question, ensure_ascii=False), "\n".join(captured.output))
+
+        reply = "PYTHON\n# " + "x" * 3000 + "\nprint(missing)"
+        p.update(roundNo=2, llmResp=reply)
+        with self.assertLogs("agent.intelligence", "INFO") as captured:
+            agent.decide(p)
+        line = next(line for line in captured.output if "task_llm " in line)
+        self.assertIn("kind=python", line)
+        self.assertIn(f"chars={len(reply)}", line)
+        self.assertLess(len(line), 500)
+        self.assertNotIn("x" * 500, line)
+
+        p.update(roundNo=3, llmResp="", lastCmdResult="[exitCode:1]\n" + "y" * 3000
+                 + "\nValueError: useful tail")
+        with self.assertLogs("agent.intelligence", "INFO") as captured:
+            agent.decide(p)
+        line = next(line for line in captured.output if "task_sandbox " in line)
+        self.assertIn("ValueError: useful tail", line)
+        self.assertLess(len(line), 800)
+
     def test_rejected_accept_does_not_keep_stale_task_origin(self):
         p = task_payload(2)
         p["lastRoundRoleActionResults"] = {"11": False}

@@ -14,6 +14,42 @@ from .movement import MovementMemory
 
 LOG = logging.getLogger(__name__)
 
+LOG_EXCERPT = 256
+SANDBOX_ERROR_EXCERPT = 512
+
+
+def digest_text(text):
+    return hashlib.sha256(str(text).encode("utf-8", errors="replace")).hexdigest()[:12]
+
+
+def tail_excerpt(text, limit=SANDBOX_ERROR_EXCERPT):
+    text = str(text)
+    return text if len(text) <= limit else "[tail omitted]" + text[-limit:]
+
+
+def task_reply_kind(parsed):
+    if not isinstance(parsed, dict):
+        return "invalid"
+    for kind in ("read", "list", "python", "answer"):
+        if kind in parsed:
+            return kind
+    return "object"
+
+
+def task_reply_detail(parsed, raw):
+    kind = task_reply_kind(parsed)
+    if kind == "invalid":
+        return excerpt(raw, LOG_EXCERPT)
+    if kind in ("read", "list"):
+        return excerpt(str(parsed.get(kind, "")), 160)
+    return ""
+
+
+def compact_errors(errors):
+    return [{"errorCode": error.get("errorCode"),
+             "description": excerpt(str(error.get("description", "")), LOG_EXCERPT)}
+            for error in errors[:5] if isinstance(error, dict)]
+
 
 def unfence(text):
     text = text.strip()
@@ -261,7 +297,7 @@ class Memory:
             LOG.info("round=%s task_event=%s point=%s reason=%s retries=%s errors=%s", turn.round,
                      "started" if turn.phase_task else "ended", self.task_point,
                      self.stop_reason or ("judger_error" if errors else "unknown"), self.task_failures,
-                     json.dumps(errors, ensure_ascii=False))
+                     json.dumps(compact_errors(errors), ensure_ascii=False, separators=(",", ":")))
             self.task_text = turn.phase_task
             self.task_started = (self.accepted_round if self.accepted_round is not None else turn.round) if turn.phase_task else 0
             self.accepted_round = None
@@ -298,7 +334,8 @@ class Memory:
             # Persist rejection beyond the one round in which errors is present.
             LOG.info("round=%s task_submission_feedback=%s", turn.round,
                      json.dumps({"actionResult": results.get(str(turn.pioneer.id)) if turn.pioneer else None,
-                                 "errors": errors, "stillActive": bool(turn.phase_task)}, ensure_ascii=False))
+                                 "errors": compact_errors(errors), "stillActive": bool(turn.phase_task)},
+                                ensure_ascii=False, separators=(",", ":")))
             self.submission_feedback = ("上次答案：" + excerpt(self.submitted[1], 2000) + "\n反馈："
                                         + (self.task_feedback or "任务仍在进行；上次提交尚未完成任务。"))
             self.history.append({"submission_feedback": self.submission_feedback})
@@ -317,8 +354,13 @@ class Memory:
         if purpose == "cmd":
             raw = turn.raw.get("lastCmdResult") or ""
             status, body, answer = sandbox_result(raw)
-            LOG.info("round=%s task_sandbox_status=%s final_answer=%s output=%s", turn.round,
-                     status, answer is not None, json.dumps(excerpt(str(raw), 12000), ensure_ascii=False))
+            tool = self.running_tool or {}
+            LOG.info("round=%s task_sandbox status=%s final=%s chars=%s sha=%s tool=%s path=%s error_tail=%s",
+                     turn.round, status, answer is not None, len(str(raw)), digest_text(raw),
+                     tool.get("kind", "python"), excerpt(str(tool.get("path", "-")), 160),
+                     json.dumps(tail_excerpt(raw) if status != "ok" else "", ensure_ascii=False))
+            LOG.debug("round=%s task_sandbox_output=%s", turn.round,
+                      json.dumps(excerpt(str(raw), 12000), ensure_ascii=False))
             self.cmd_result = excerpt(str(raw), 12000)
             self.history.append({"sandbox": self.cmd_result})
             self.last_attempt = {"python": excerpt(self.running_python, 5000),
@@ -349,11 +391,15 @@ class Memory:
             self.running_python = ""
             self.running_tool = None
             return
-        if purpose == "task":
-            LOG.info("round=%s task_llm_reply=%s", turn.round,
-                     json.dumps(excerpt(str(turn.raw.get("llmResp") or ""), 16000), ensure_ascii=False))
+        raw_reply = str(turn.raw.get("llmResp") or "")
         parsed = (parse_task_reply(turn.raw.get("llmResp")) if purpose == "task"
                   else parse_object(turn.raw.get("llmResp")))
+        if purpose == "task":
+            LOG.info("round=%s task_llm kind=%s chars=%s sha=%s detail=%s", turn.round,
+                     task_reply_kind(parsed), len(raw_reply), digest_text(raw_reply),
+                     json.dumps(task_reply_detail(parsed, raw_reply), ensure_ascii=False))
+            LOG.debug("round=%s task_llm_reply=%s", turn.round,
+                      json.dumps(excerpt(raw_reply, 16000), ensure_ascii=False))
         if parsed is None:
             if purpose == "task":
                 self.reject("格式错误：第一行写 ANSWER 或 PYTHON，后面写答案或代码。")
@@ -435,7 +481,7 @@ class Memory:
     def reject(self, message):
         self.task_failures += 1
         self.history.append({"error": message[:1000]})
-        LOG.info("task_reject=%s retries=%s", json.dumps(message[:1000], ensure_ascii=False),
+        LOG.info("task_reject=%s retries=%s", json.dumps(message[:LOG_EXCERPT], ensure_ascii=False),
                  self.task_failures)
 
     def task_active(self, turn):
@@ -466,8 +512,9 @@ class Intelligence:
             return "", ""
         if self.mem.answer is not None:
             if ledger.add(pioneer.id, command("submitAnswer", taskAnswer=self.mem.answer)):
-                LOG.info("round=%s task_answer=submitted value=%s", self.turn.round,
-                         json.dumps(excerpt(self.mem.answer, 4000), ensure_ascii=False))
+                LOG.info("round=%s task_answer=submitted chars=%s sha=%s excerpt=%s", self.turn.round,
+                         len(self.mem.answer), digest_text(self.mem.answer),
+                         json.dumps(excerpt(self.mem.answer, LOG_EXCERPT), ensure_ascii=False))
                 self.mem.submitted = (self.turn.round, self.mem.answer)
                 self.mem.answer = None
             return "", ""

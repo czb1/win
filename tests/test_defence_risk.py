@@ -73,13 +73,18 @@ class BattleDiagnosticsTests(unittest.TestCase):
                           unit(1, "worker", 5, 7), unit(20, "rocket", 5, 8, cooldown=2),
                           unit(30, "wall", 9, 8, level=2, health=700)])
         p["robot"]["roles"] = [unit(50, "smallRobot", 10, 8, targetTeam="challenger")]
+        agent = Agent(Config(layout_mode="explicit", llm_enabled=False))
         with self.assertLogs("agent.brain", "INFO") as captured:
-            Agent(Config(layout_mode="explicit", llm_enabled=False)).decide(p)
+            agent.decide(p)
         line = next(line for line in captured.output if "battle_state=" in line)
         self.assertIn('"baseHealth":1410', line)
-        self.assertIn('"level":2', line)
+        self.assertIn('"levels":{"2":1}', line)
         self.assertIn('"reason":"cooldown"', line)
         self.assertIn('"operator":1', line)
+
+        p["roundNo"] = 338
+        with self.assertNoLogs("agent.brain", "INFO"):
+            agent.decide(p)
 
 
 if __name__ == "__main__":
