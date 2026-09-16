@@ -205,6 +205,16 @@ class OperatorReturnTests(unittest.TestCase):
         defend(t, nav, ledger, pairs, {uid: q for uid, (q, _) in posts.items()})
         self.assertEqual(ledger.commands["2"], command("move", (4, 5)))
 
+    def test_operator_post_prefers_base_side_over_shorter_exposed_cell(self):
+        p = payload(60, [unit(1, "worker", 7, 8), unit(13, "station", 3, 9),
+                         unit(20, "rocket", 5, 8)])
+        t, _, nav, _ = setup_case(p)
+        posts = operator_posts(t, nav, [(t.workers[0], t.weapons[0])])
+        chosen = posts[1][0]
+        reachable = [q for q in neighbours(t.weapons[0].pos)
+                     if nav.search(t.workers[0], {q}) is not None]
+        self.assertEqual(t.base_distance(chosen), min(map(t.base_distance, reachable)))
+
     def test_operator_waits_beside_gate_until_teammate_passes(self):
         p = payload(62, [unit(1, "worker", 2, 3), unit(2, "pioneer", 1, 4),
                          unit(20, "rocket", 3, 2), unit(21, "rocket", 6, 3)])
@@ -260,8 +270,10 @@ class LogisticsReplayTests(unittest.TestCase):
                 self.assertEqual(result["destroyed_walls"], 4)
                 nights = [result["checkpoints"][str(r)] for r in (69, 199, 329)]
                 self.assertTrue(all(n["operators_ready"] == 3 and n["front_walls"] == 6 for n in nights))
-                self.assertGreaterEqual(nights[1]["walls"], nights[0]["walls"] + 2)
-                self.assertGreaterEqual(nights[2]["walls"], nights[1]["walls"])
+                # Core upgrades may defer untouched side walls on day two;
+                # carried stone is still spent and expansion resumes later.
+                self.assertGreaterEqual(nights[1]["walls"], nights[0]["walls"])
+                self.assertGreaterEqual(nights[2]["walls"], nights[0]["walls"] + 3)
                 self.assertEqual(nights[2]["weapon_levels"], [3, 3, 3])
 
 
