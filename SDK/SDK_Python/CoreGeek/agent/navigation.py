@@ -139,5 +139,7 @@ def wall_priority(turn, cfg, sites, index, hits=None):
               (x, y - 1) in walls and (x, y + 1) in walls)
     hits = hits or {}
     # Reclose a damaged flank before extending untouched wall segments.
-    urgent = turn.day >= 2 and any(hits.get(p, 0) for p in [target, *neighbours(target)])
+    # Keep the urgent set narrow: rebuilding the observed destroyed cell comes
+    # first, while neighbouring expansion keeps its normal front/breach order.
+    urgent = turn.day >= 2 and hits.get(target, 0)
     return (int(not urgent), int(x != front_x), int(not breach), index)
