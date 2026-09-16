@@ -155,6 +155,7 @@ class Memory:
     buy_failures: dict = field(default_factory=dict)
     preparation_tick: int = 70
     preparation_workers: set = field(default_factory=set)
+    sold_workers: set = field(default_factory=set)
     sale_workers: set = field(default_factory=set)
     sale_targets: dict = field(default_factory=dict)
     mine_targets: dict = field(default_factory=dict)
@@ -175,6 +176,7 @@ class Memory:
             self.day, self.calls = turn.day, 0
             self.preparation_tick = 70
             self.preparation_workers.clear()
+            self.sold_workers.clear()
             self.sale_workers.clear()
             self.sale_targets.clear()
             self.mine_targets.clear()
@@ -183,6 +185,12 @@ class Memory:
             self.stone_reserves.clear()
             self.return_targets.clear()
             self.return_posts.clear()
+        # Once selling has begun, any other action ends that visit. A failed
+        # sell remains retryable; it must not authorize another trip later today.
+        if self.last_round == turn.round - 1:
+            for uid, cmd in self.last_commands.items():
+                if int(uid) in self.sold_workers and cmd["action"] != "sell":
+                    self.sale_workers.discard(int(uid))
         news = turn.raw.get("worldNews") or {}
         record = {"day": turn.day, "officialNews": str(news.get("officialNews", ""))[:12000],
                   "folkLegends": str(news.get("folkLegends", ""))[:20000]}

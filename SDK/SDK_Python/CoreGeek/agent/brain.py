@@ -10,6 +10,7 @@ from .commands import Ledger
 from .combat import assignments, return_plan, defend, emergency_items
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation
 from .intelligence import Memory, Intelligence
+from .mining import night_mine
 
 LOG = logging.getLogger(__name__)
 
@@ -63,6 +64,21 @@ class Agent:
                                 fixed=mem.return_targets if turn.is_day else None)
             pairs, posts = (return_plan(turn, nav, pairs, walls, mem.return_targets, mem.return_posts)
                             if turn.is_day else (pairs, {}))
+            if not turn.is_day:
+                # Recall from the current position early enough for an approaching
+                # wave, but release workers immediately when local danger ends.
+                def needs_defence(hero, tower):
+                    if hero.kind != "worker":
+                        return True
+                    route = nav.approach(hero, [tower.pos])
+                    lead = (route[0] if route else 130) + self.cfg.return_margin
+                    return any(turn.threatens_us(r) and (
+                        turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius, lead + r.attack_range)
+                        or distance(tower.pos, r.pos) <= tower.attack_range + 1)
+                        or distance(hero.pos, r.pos) <= r.attack_range + 2 for r in turn.robots)
+                pairs = [(hero, tower) for hero, tower in pairs if needs_defence(hero, tower)]
+                mem.return_targets.clear()
+                mem.return_posts.clear()
             ledger.return_pairs = pairs
             ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
             returning = set()
@@ -115,8 +131,11 @@ class Agent:
                 for hero in turn.heroes:
                     if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True):
                         continue
-                    if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs} and turn.station:
-                        walk(nav, ledger, hero, turn.station.cells)
+                    if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs}:
+                        if hero.kind == "worker":
+                            night_mine(turn, self.cfg, mem, nav, ledger, hero)
+                        elif turn.station:
+                            walk(nav, ledger, hero, turn.station.cells)
             else:
                 for hero, tower in pairs:
                     if hero.id in returning and hero.id not in ledger.used:

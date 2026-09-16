@@ -59,8 +59,8 @@ class EconomyRegressionTests(unittest.TestCase):
         worker(t, c, Memory(), n, l, t.workers[0], list(map(tuple, tower_sites or [])), [], False)
         return l.commands["1"]
 
-    def test_short_batch_can_fund_missing_tower(self):
-        self.assertEqual(self.trade_case(["copper"] * 5, tower_sites=[[9, 9]])["action"], "sell")
+    def test_small_funding_gap_does_not_trigger_early_sale(self):
+        self.assertEqual(self.trade_case(["copper"] * 5, tower_sites=[[9, 9]])["action"], "collect")
 
     def test_short_batch_that_cannot_fund_tower_keeps_mining(self):
         self.assertEqual(self.trade_case(["copper"], tower_sites=[[9, 9]])["action"], "collect")
@@ -68,8 +68,8 @@ class EconomyRegressionTests(unittest.TestCase):
     def test_depleted_mines_allow_partial_batch_sale(self):
         self.assertEqual(self.trade_case(["copper"], has_mine=False)["action"], "sell")
 
-    def test_full_batch_sells_even_without_construction(self):
-        self.assertEqual(self.trade_case(["copper"] * 40)["action"], "sell")
+    def test_old_batch_threshold_does_not_trigger_early_sale(self):
+        self.assertEqual(self.trade_case(["copper"] * 40)["action"], "collect")
 
     def test_zero_gold_does_not_force_one_ore_sale_when_towers_are_complete(self):
         p = payload(roles=[unit(1, "worker", 5, 5, backpack=["copper"]),

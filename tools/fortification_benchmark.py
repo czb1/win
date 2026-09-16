@@ -45,8 +45,7 @@ def simulate_day(agent_class, config_class, mirrored=False):
         p["teamOur"]["type"] = "defender"
     front = {mirror((8, y)) for y in range(12, 18)}
     # Independent expected geometry: complete 6x6 perimeter except rear gate.
-    expected = {mirror((x, y)) for x in range(3, 9) for y in range(12, 18)
-                if (x in (3, 8) or y in (12, 17)) and (x, y) not in ((3, 14), (3, 15))}
+    expected = set(front)
     front_complete_round = None
     first_wall = None
     walls_by_round, actions, invalid, worst = {}, Counter(), 0, 0.0

@@ -296,6 +296,12 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
             return
         earn(turn, cfg, mem, nav, ledger, hero, deadline)
         return
+    # Close a nearby front breach before a courier leaves to deliver upgrades.
+    # This spends reserved stone in-place and avoids a later repair round trip.
+    if hero.inventory["stone"] >= cfg.wall_stones:
+        local_front = [p for p in front_sites(turn, wall_sites) if turn.adjacent(hero.pos, p)]
+        if build(turn, cfg, mem, nav, ledger, hero, local_front, lambda _: "wall"):
+            return
     planned = planned_weapons(turn, cfg, mem, tower_sites)
     reserve = sum(w.id < 0 for w in planned) * cfg.weapon_cost
     plan = supplies(turn, cfg, mem, nav, ledger, hero, reserve, planned=planned, bulk=True) if shopping else None
@@ -327,10 +333,8 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
     if plan:
         if not hero.space:
             sale = sale_inventory(turn, mem, hero)
-            if sale:
-                kind = max(sale, key=lambda k: sale[k] * turn.prices[k])
-                if visit(turn, nav, ledger, hero, "vendor", command("sell", name=kind, num=sale[kind])):
-                    return
+            if sale and earn(turn, cfg, mem, nav, ledger, hero, deadline, force_sale=True):
+                return
         elif buy_supply(turn, ledger, hero, plan):
             return
     available_walls = [p for p in wall_sites if p not in turn.blocked
@@ -370,10 +374,8 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
     if need_walls and hero.inventory["stone"] >= cfg.wall_stones:
         if build(turn, cfg, mem, nav, ledger, hero, wall_sites, lambda _: "wall"):
             return
-    next_price = next((turn.shop.get(voucher_for(w), 0) for w in sorted(planned, key=lambda w: w.level)
-                       if w.level < 3), 0)
-    earn(turn, cfg, mem, nav, ledger, hero, deadline,
-         missing_towers * cfg.weapon_cost + next_price)
+    earn(turn, cfg, mem, nav, ledger, hero, deadline)
+
 
 
 def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
@@ -404,13 +406,14 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
                     or any(p not in built_walls and p not in mem.build_failures for p in wall_sites))
     cutoff = (preparation_start(turn, cfg, mem, nav, free, tower_sites) if work_remains else 70) if trading else 0
     developing = {h.id for h in free if h.id not in trading or turn.tick >= cutoff
+                  or h.id in mem.sold_workers
                   or any("UpgradeVoucher" in k or k == "WallFixer" for k in h.backpack)}
     # Liquidate the last farming load before either actor leaves for the base
     # or the shop. Otherwise unspent ore can split one bulk order into two trips.
     for h in free:
         if h.id in developing and h.id not in mem.preparation_workers:
             mem.preparation_workers.add(h.id)
-            if h.id in trading and sale_inventory(turn, mem, h):
+            if h.id in trading and h.id not in mem.sold_workers and sale_inventory(turn, mem, h):
                 mem.sale_workers.add(h.id)
         if h.id in developing and h.id in mem.sale_workers:
             if sale_inventory(turn, mem, h):
@@ -438,8 +441,7 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     buyer = (mem.supply_worker if mem.supply_worker in eligible or carrying
              else min(buyers)[1] if buyers else None)
     mem.supply_worker = buyer
-    # Close the front first, then keep building the flanks and rear regardless
-    # of weapon level. Batch size limits transport, never the daily wall count.
+    # Complete the configured wall blueprint; the default contains only the front.
     selected_walls = wall_sites
     builders = [h for h in free if h.id in developing and h.id != buyer]
     if trading:
