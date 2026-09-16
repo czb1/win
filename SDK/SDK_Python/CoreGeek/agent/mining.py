@@ -1,4 +1,4 @@
-"""Persistent mining runs and deadline-driven sales, independent of the LLM."""
+"""Persistent mining, safe night runs and one daily sale visit per worker."""
 import logging
 from collections import Counter
 from dataclasses import replace
@@ -88,15 +88,18 @@ def sale_inventory(turn, mem, hero):
 
 
 def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
-         deadline=None):
+         deadline=None, stockpile=False):
     if not hero.space:
         LOG.debug("round=%s worker=%s mining=backpack_full", turn.round, hero.id)
         return False
-    vendors = [p for p, kind in turn.zones.items() if kind == "vendor"]
+    vendors = [] if stockpile else [p for p, kind in turn.zones.items() if kind == "vendor"]
     home = mining_home(turn, nav, hero, ledger.reserved)
     # Pick one reachable sale-and-return corridor. Using the worst home walk
     # over every vendor would let a distant enemy-side vendor stop local mining.
-    home_dist = nav.distances_to(home, {hero.pos}, ledger.reserved) if home and not want_stone else {}
+    home_dist = (nav.distances_to(home, {hero.pos}, ledger.reserved)
+                 if home and not want_stone else {})
+    wave_budget = min((turn.base_distance(r.pos) - r.attack_range - cfg.return_margin
+                       for r in turn.robots if turn.threatens_us(r)), default=None)
     vendor_home = 0
     if vendors and home and not want_stone:
         corridors = []
@@ -129,7 +132,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         if local_only and not turn.adjacent(hero.pos, p):
             skipped["not_adjacent"] += 1
             continue
-        value = 1 if want_stone else max(0, turn.prices.get(kind, 0))
+        value = 1 if want_stone else max(1 if stockpile else 0, turn.prices.get(kind, 0))
         if not value:
             skipped["no_positive_price"] += 1
             continue
@@ -153,6 +156,14 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         share = max(1, (remaining + len(others)) // (1 + len(others)))
         amount = min(hero.space, share)
         sale_walk = min((sale_dist[q] for q in cells), default=None)
+        if stockpile and home and (turn.is_day or wave_budget is not None):
+            home_walk = min((home_dist[q] for q in neighbours(p) if q in home_dist), default=None)
+            if home_walk is None:
+                continue
+            budget = turn.day_left - cfg.return_margin if turn.is_day else wave_budget
+            amount = min(amount, budget - route[0] - home_walk)
+            if amount <= 0:
+                continue
         if not want_stone and vendors:
             if sale_walk is None:
                 skipped["no_sale_route"] += 1
@@ -185,21 +196,25 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         changed = mem.mine_targets.get(hero.id) != target
         mem.mine_targets[hero.id] = target
         ledger.mine_claims[hero.id] = target
-        record_target(turn, hero, target, route, "wall_material" if want_stone else "sell_today", changed)
+        record_target(turn, hero, target, route,
+                      "wall_material" if want_stone else "carry_for_later" if stockpile else "sell_today", changed)
         return True
     return False
 
 
-def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, funding_goal=0, allow_spare=True):
+def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, allow_spare=True):
     counts = sale_inventory(turn, mem, hero)
     ores = list(counts)
     total = sum(counts[k] for k in ores)
     if not total:
         mem.sale_workers.discard(hero.id)
         mem.sale_targets.pop(hero.id, None)
+    if not turn.is_day or (hero.id in mem.sold_workers and hero.id not in mem.sale_workers):
+        return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=turn.is_day)
     vendors = [p for p, k in turn.zones.items() if k == "vendor"]
     options = [(r[0] != 0, p != mem.sale_targets.get(hero.id), r[0], p, r) for p in vendors
-               if not mem.movement.avoids(hero.id, p)
+               if (hero.id not in mem.sold_workers or p == mem.sale_targets.get(hero.id))
+               and not mem.movement.avoids(hero.id, p)
                and (r := nav.approach(hero, [p], ledger.reserved)) is not None]
     choice = min(options, default=None)
     vendor, route = (choice[3], choice[4]) if choice else (None, None)
@@ -212,10 +227,6 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, funding_goal=0, allow
         due = (deadline is not None and turn.tick <= deadline
                and deadline - turn.tick <= route[0] + len(ores)
                or trip is not None and turn.day_left <= trip + len(ores) + cfg.return_margin)
-    batch = min(hero.capacity, cfg.sell_batch_max,
-                max(cfg.sell_batch, 2 * route[0] + 10 if route else cfg.sell_batch))
-    value = sum(counts[k] * turn.prices[k] for k in ores)
-    funds = ledger.gold < funding_goal <= ledger.gold + value
 
     def sell():
         if not ores or route is None or not sale_fits:
@@ -225,12 +236,14 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, funding_goal=0, allow
                   else command("move", route[1]))
         if ledger.add(hero.id, action):
             mem.sale_workers.add(hero.id)
+            if route[1] is None:
+                mem.sold_workers.add(hero.id)
             mem.sale_targets[hero.id] = vendor
             mem.mine_targets.pop(hero.id, None)
             return True
         return False
 
-    if total and (total >= batch or not hero.space or due or funds or hero.id in mem.sale_workers):
+    if total and (not hero.space or due or force_sale or hero.id in mem.sale_workers):
         if sell():
             return True
     if mine(turn, cfg, mem, nav, ledger, hero, deadline=deadline):
@@ -250,3 +263,37 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, funding_goal=0, allow
         if back and back[1] is not None:
             return ledger.add(hero.id, command("move", back[1]))
     return False
+
+
+def night_mine(turn, cfg, mem, nav, ledger, hero):
+    """Stockpile until daylight; exclude danger cells from the entire route."""
+    threats = [r for r in turn.robots if turn.threatens_us(r)]
+    if any(turn.base_distance(r.pos) <= max(cfg.task_danger_radius, r.attack_range + 2)
+           for r in threats):
+        if turn.station:
+            route = nav.approach(hero, turn.station.cells, ledger.reserved)
+            if route and route[1] is not None:
+                return ledger.add(hero.id, command("move", route[1]))
+        return False
+    original = turn.blocked
+    try:
+        danger = set()
+        # Even an opponent-bound robot makes a poor mining neighbour. Do not
+        # approach or route through its range merely because our base is safe.
+        for robot in turn.robots:
+            radius = robot.attack_range + 2
+            danger.update((x, y)
+                          for x in range(max(0, robot.pos[0] - radius), min(turn.width, robot.pos[0] + radius + 1))
+                          for y in range(max(0, robot.pos[1] - radius), min(turn.height, robot.pos[1] + radius + 1)))
+        turn.blocked = original | danger
+        # A threatened unassigned worker retreats instead of starting a new run.
+        if hero.pos in danger:
+            turn.blocked = original
+            if turn.station:
+                route = nav.approach(hero, turn.station.cells, ledger.reserved)
+                if route and route[1] is not None:
+                    return ledger.add(hero.id, command("move", route[1]))
+            return False
+        return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True)
+    finally:
+        turn.blocked = original
