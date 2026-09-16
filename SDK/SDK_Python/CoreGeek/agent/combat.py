@@ -231,6 +231,15 @@ def select_targets(turn, tower, damage, deadline):
 def defend(turn, nav, ledger, pairs=None, posts=None):
     damage = {}
     pairs = pairs if pairs is not None else assignments(turn, nav, ledger)
+    if len({h.id for h, _ in pairs}) < len(pairs):
+        # One shared operator gets one action: fire the most useful ready gun.
+        benefits = {}
+        for _, tower in pairs:
+            planned = {}
+            if not tower.cooldown and not turn.is_day:
+                select_targets(turn, tower, planned, nav.deadline)
+            benefits[tower.id] = sum(planned.get(r.id, 0) * threat(turn, r) for r in turn.robots)
+        pairs = sorted(pairs, key=lambda pair: (-benefits[pair[1].id], pair[1].id))
     for hero, tower in pairs:
         if hero.id in ledger.used:
             continue

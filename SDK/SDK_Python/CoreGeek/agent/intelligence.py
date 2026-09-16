@@ -165,6 +165,11 @@ class Memory:
     stone_reserves: dict = field(default_factory=dict)
     return_targets: dict = field(default_factory=dict)
     return_posts: dict = field(default_factory=dict)
+    night_crew: dict | None = None
+    night_alarm_until: int = 0
+    night_mode: str = "full"
+    night_reason: str = ""
+    night_miner: int | None = None
     movement: MovementMemory = field(default_factory=MovementMemory)
     last_response: dict | None = None
     last_digest: str = ""
@@ -175,6 +180,10 @@ class Memory:
     def observe(self, turn, cfg):
         self.movement.observe(turn, self)
         current_walls = {wall.pos: (wall.id, wall.health) for wall in turn.ours if wall.kind == "wall"}
+        if not turn.is_day and (
+                turn.station and self.station_health is not None and turn.station.health < self.station_health
+                or self.last_round == turn.round - 1 and set(self.wall_health) - set(current_walls)):
+            self.night_alarm_until = turn.round + cfg.return_margin
         if self.last_round == turn.round - 1:
             for location, (uid, health) in self.wall_health.items():
                 next_wall = current_walls.get(location)
@@ -193,6 +202,9 @@ class Memory:
             self.stone_reserves.clear()
             self.return_targets.clear()
             self.return_posts.clear()
+            self.night_crew = None
+            self.night_alarm_until = 0
+            self.night_mode, self.night_reason, self.night_miner = "full", "", None
         news = turn.raw.get("worldNews") or {}
         record = {"day": turn.day, "officialNews": str(news.get("officialNews", ""))[:12000],
                   "folkLegends": str(news.get("folkLegends", ""))[:20000]}

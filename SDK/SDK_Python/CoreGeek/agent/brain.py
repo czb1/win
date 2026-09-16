@@ -10,6 +10,7 @@ from .commands import Ledger
 from .combat import assignments, return_plan, defend, emergency_items
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector
 from .intelligence import Memory, Intelligence
+from .night import shared_crew, crew_pairs, day_return, night_plan, night_earn
 
 LOG = logging.getLogger(__name__)
 
@@ -36,6 +37,9 @@ def battle_diagnostics(turn, mem, pairs, response):
             reason = "operator_en_route"
         elif commands.get(str(hero.id)):
             reason = "operator_other_action"
+        elif any(a.get("action") == "attack" and a.get("controllerId") == str(hero.id)
+                 for uid, a in commands.items() if uid != str(tower.id)):
+            reason = "operator_busy"
         elif tower.attack_range <= 0:
             reason = "unknown_range"
         elif not any(distance(tower.pos, r.pos) <= tower.attack_range for r in hostile):
@@ -56,6 +60,7 @@ def battle_diagnostics(turn, mem, pairs, response):
              for wall in turn.ours if wall.kind == "wall"]
     LOG.info("round=%s battle_state=%s", turn.round, json.dumps({
         "baseHealth": turn.station.health, "heroes": len(turn.heroes), "gold": turn.gold,
+        "nightEconomy": {"mode": mem.night_mode, "miner": mem.night_miner, "reason": mem.night_reason},
         "hostileTotal": len(hostile), "hostileWithin6": len(near),
         "hostileNear": [{"id": r.id, "kind": r.kind, "pos": r.pos, "health": r.health}
                         for r in near[:12]], "walls": walls, "towers": towers,
@@ -128,7 +133,12 @@ class Agent:
                 emergency_items(turn, ledger)
             pairs = assignments(turn, nav, ledger, excluded={h.id} if hold_task else (),
                                 fixed=mem.return_targets if turn.is_day else None)
-            pairs, posts = (return_plan(turn, nav, pairs, walls, mem.return_targets, mem.return_posts)
+            preferred = None
+            if turn.is_day:
+                crew = shared_crew(turn, self.cfg, mem, nav, ledger, walls)
+                if crew:
+                    preferred = day_return(turn, mem, nav, ledger, crew, {h.id} if hold_task else ())
+            pairs, posts = (preferred or return_plan(turn, nav, pairs, walls, mem.return_targets, mem.return_posts)
                             if turn.is_day else (pairs, {}))
             ledger.return_pairs = pairs
             ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
@@ -181,9 +191,32 @@ class Agent:
                                        "first_wave_deadline" if first_watch else "task_deadline")
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             if not turn.is_day:
-                defend(turn, nav, ledger, pairs)
+                reduced = night_plan(turn, self.cfg, mem, nav, ledger, walls, {h.id} if hold_task else ())
+                night_posts = {}
+                if reduced is not None:
+                    pairs, night_posts = reduced
+                if mem.night_miner is not None:
+                    miner = next(hero for hero in turn.workers if hero.id == mem.night_miner)
+                    deadline = nav.deadline
+                    try:
+                        # Keep combat time available if a large mining map
+                        # makes income planning too expensive this turn.
+                        nav.deadline = min(deadline, started + .7 * self.cfg.decision_seconds)
+                        if not use_inventory(turn, nav, ledger, miner, local_only=True, mem=mem):
+                            night_earn(turn, self.cfg, mem, nav, ledger, miner)
+                    except DeadlineExceeded:
+                        mem.night_mode, mem.night_reason, mem.night_miner = "full", "income_budget", None
+                    finally:
+                        nav.deadline = deadline
+                    if mem.night_mode != "shared":
+                        pairs, night_posts = crew_pairs(turn, mem.night_crew)
+                ledger.return_pairs = pairs
+                ledger.operator_posts = night_posts
+                defend(turn, nav, ledger, pairs, night_posts)
                 for hero in turn.heroes:
                     if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
+                        continue
+                    if hero.id == mem.night_miner:
                         continue
                     if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs} and turn.station:
                         walk(nav, ledger, hero, turn.station.cells)
