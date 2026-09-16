@@ -261,7 +261,11 @@ class Memory:
                 if active:
                     self.task_point = pos(active["taskPosition"])
                     self.task_timeout = int(active.get("timeoutRounds", cfg.task_max_rounds))
-            if not turn.phase_task:
+            if turn.phase_task:
+                # Log the full question once per task so downloadable runner logs can diagnose failures.
+                LOG.info("round=%s task_point=%s task_question=%s", turn.round, self.task_point,
+                         json.dumps(turn.phase_task, ensure_ascii=False))
+            else:
                 self.task_point = None
                 self.task_timeout = cfg.task_max_rounds
             self.answer = self.python = None
