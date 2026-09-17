@@ -69,25 +69,19 @@ def exposed_wall(turn, wall, mem):
 
 
 def upgrade_order(turn, building, mem=None):
-    """Establish level-2 firepower, then double the base health budget.
+    """Upgrade all weapons to level 2, then 3, before a healthy base.
 
-    A damaged base gets the full-heal benefit immediately.  A healthy level-1
-    station waits until all three guns reach level 2, but no longer waits for
-    every gun to reach level 3.  Wall upgrades remain behind core progression.
+    A damaged base gets the full-heal benefit immediately. Wall upgrades are
+    deliberately last: upgrading every wall first would starve the guns.
     """
     if building.kind == "station":
-        if building.health < 750:
-            return (-1, building.id)
-        guns_ready = (len(turn.weapons) >= 3 and all(w.level >= 2 for w in turn.weapons[:3]))
-        if building.level == 1:
-            return (.5 if guns_ready else 2, building.id)
-        return (3, building.id)
+        return (-1 if building.health < 750 else 2 if building.level == 1 else 3, building.id)
     if building.kind in WEAPONS:
         return (0 if building.level == 1 else 1, building.id)
     xs = [u.pos[0] for u in turn.ours if u.kind == "wall"]
     front = (max(xs) if turn.station and turn.station.pos[0] < turn.width / 2 else min(xs)) if xs else 0
     if mem is not None and exposed_wall(turn, building, mem):
-        return (1.5, -mem.wall_hits.get(building.pos, 0), building.health,
+        return (1.25, -mem.wall_hits.get(building.pos, 0), building.health,
                 turn.base_distance(building.pos), building.id)
     return (4, int(building.pos[0] != front), building.health, building.id)
 
@@ -537,22 +531,10 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
         built_walls = {w.pos for w in turn.ours if w.kind == "wall"}
         missing_front = [p for p in front_sites(turn, selected_walls)
                          if p not in built_walls and p not in mem.build_failures]
-        urgent_breaches = [p for p in selected_walls if p not in built_walls
-                           and p not in mem.build_failures and mem.wall_hits.get(p, 0)]
-        core_ready = (len(turn.weapons) >= len(cfg.loadout)
-                      and all(w.level >= 2 for w in turn.weapons[:len(cfg.loadout)])
-                      and bool(turn.station and turn.station.level >= 2))
-        # More level-1 perimeter did not protect the live match after the
-        # enemy-facing segment closed.  Until firepower and base health catch
-        # up, build only the front or an observed breach.
-        if not missing_front and not urgent_breaches and not core_ready:
-            # Spend stone already transported home, but do not launch another
-            # side-wall mining trip ahead of the core upgrade milestones.
-            builders = [h for h in builders if h.inventory["stone"] >= cfg.wall_stones]
         # Near dusk, parallelize the remaining front segment instead of sending
         # the second worker on another mining trip that cannot fund an upgrade.
         wall_work = 2 * len(missing_front) + cfg.stone_batch + cfg.return_margin
-        if builders and (not missing_front or turn.day_left > wall_work):
+        if not missing_front or turn.day_left > wall_work:
             builders = builders[:1]
     builder_ids = {h.id for h in builders}
     # The buyer reserves its complete batch before a second actor spends gold.

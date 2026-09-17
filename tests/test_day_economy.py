@@ -7,7 +7,6 @@ from agent.brain import Agent
 from agent.config import Config
 from agent.commands import command
 from agent.economy import earn, supplies, workers
-from agent.economy import upgrade_order
 from agent.economy_plan import planned_weapons, preparation_start
 from agent.intelligence import Memory
 
@@ -16,16 +15,6 @@ from day_economy_benchmark import simulate
 
 
 class DayEconomyTests(unittest.TestCase):
-    def test_station_level_two_follows_all_level_two_guns(self):
-        p = self.case(41, 400)
-        station = p["teamOur"]["roles"][2]
-        p["teamOur"]["roles"] += [unit(20+i, "rocket", 5, 7+i, level=2) for i in range(3)]
-        t = setup_case(p)[0]
-        self.assertLess(upgrade_order(t, t.station), upgrade_order(t, t.weapons[0]))
-        p["teamOur"]["roles"][-1]["level"] = 1
-        t = setup_case(p)[0]
-        self.assertGreater(upgrade_order(t, t.station), upgrade_order(t, t.weapons[-1]))
-
     def case(self, rno=1, gold=75):
         p = payload(rno, [unit(1, "worker", 8, 7, health=220), unit(2, "worker", 8, 9, health=220),
                           unit(13, "station", 3, 11, health=1500)])
