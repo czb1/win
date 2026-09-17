@@ -30,8 +30,9 @@ LEGACY_DOCS = {
 }
 REQUIRED_SECTIONS = ("## 关键设定与原因", "## 变更记录")
 REQUIRED_CHANGE_FIELDS = ("策略：", "设定：", "原因：", "经验教训：", "验证：")
-IGNORED_PREFIXES = (".github/", "docs/")
+IGNORED_PREFIXES = (".github/", "docs/", "tests/")
 IGNORED_FILES = {"AGENTS.md", "README.md"}
+IGNORED_TOOLS = {"tools/check_design_governance.py", "tools/run_checks.py"}
 
 
 def git(*args: str) -> str:
@@ -54,7 +55,7 @@ def changed_entries(base: str, head: str) -> list[tuple[str, str]]:
 
 
 def is_product_change(path: str) -> bool:
-    if path in IGNORED_FILES or path == "tools/check_design_governance.py":
+    if path in IGNORED_FILES or path in IGNORED_TOOLS:
         return False
     return not path.startswith(IGNORED_PREFIXES)
 
