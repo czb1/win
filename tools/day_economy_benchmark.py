@@ -6,7 +6,7 @@ No robot combat, task rewards, hidden-map generation or survival claims.
 import argparse
 from collections import Counter
 import copy
-from itertools import permutations
+from itertools import combinations
 import json
 from pathlib import Path
 import sys
@@ -206,10 +206,15 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
         if rno % 130 in (39, 40, 69, 70):
             guns = [r for r in roles if r["roleType"] in ("rocket", "gatling", "railgun")]
             heroes = [r for r in roles if r["roleType"] in ("worker", "pioneer")]
-            crew = max((sum(near(point(h), point(w)) for h, w in zip(hs, guns))
-                        for hs in permutations(heroes, len(guns))), default=0)
+            coverage = [{w["id"] for w in guns if near(point(h), point(w))} for h in heroes]
+            ready = set().union(*coverage) if coverage else set()
+            all_guns = {w["id"] for w in guns}
+            crew = next((count for count in range(1, len(heroes) + 1)
+                         if any(set().union(*(coverage[i] for i in selected)) >= all_guns
+                                for selected in combinations(range(len(heroes)), count))), 0)
             checkpoints[str(rno)] = {"gold": state["teamOur"]["goldNum"], "income": income,
-                "spent": spent, "weapon_levels": sorted(r["level"] for r in guns), "operators_ready": crew,
+                "spent": spent, "weapon_levels": sorted(r["level"] for r in guns),
+                "operators_ready": len(ready), "operators_used": crew,
                 "walls": sum(r["roleType"] == "wall" for r in roles),
                 "front_walls": sum(r["roleType"] == "wall" and point(r) in front for r in roles),
                 "carried_vouchers": sum("UpgradeVoucher" in n for h in heroes for n in h["backpack"]),

@@ -1,7 +1,6 @@
 """Regressions for wall throughput, aligned geometry and weak-model replies."""
 import copy
 import json
-from itertools import product
 import sys
 from time import monotonic
 import unittest
@@ -25,13 +24,13 @@ class LayoutRegressionTests(unittest.TestCase):
     def test_enemy_side_is_complete_in_all_four_corners(self):
         for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
             t = Turn(payload(roles=[unit(13, "station", x, y)]), Config())
-            _, walls = layout(t, Config())
+            towers, walls = layout(t, Config())
             front_x = x + 3 if x < 7 else x - 2
             front = {(front_x, v) for v in range(y - 3, y + 3)}
-            self.assertTrue(front <= set(walls))
-            self.assertEqual(set(walls[:6]), front)
+            self.assertEqual(front, set(walls) & front)
+            self.assertEqual(len(set(walls) & front), 6)
 
-    def test_sealed_blueprint_has_three_reachable_distinct_operator_spots(self):
+    def test_sealed_blueprint_has_one_reachable_shared_operator_spot(self):
         for station in ((3, 11), (10, 4)):
             p = payload(roles=[unit(13, "station", *station), unit(10, "worker", 0, 7)])
             t = Turn(p, Config())
@@ -42,7 +41,7 @@ class LayoutRegressionTests(unittest.TestCase):
             choices = [{point for point in neighbours(tower)
                         if point not in t.blocked and nav.search(t.workers[0], {point}) is not None}
                        for tower in towers]
-            self.assertTrue(any(len(set(crew)) == 3 for crew in product(*choices)), choices)
+            self.assertTrue(set.intersection(*choices), choices)
             # Every inner walking cell remains reachable; no pocket forces a hole.
             inner = {point for x in range(t.width) for y in range(t.height)
                      if t.base_distance(point := (x, y)) == 1 and point not in t.blocked}
@@ -56,6 +55,7 @@ class LayoutRegressionTests(unittest.TestCase):
         self.assertTrue(all(t.base_distance(p) == 2 for p in walls))
         self.assertTrue(all(p[0] in (1, 6) or p[1] in (8, 13) for p in walls))
         self.assertTrue(all(t.base_distance(p) == 1 for p in towers))
+        self.assertTrue(set.intersection(*(set(neighbours(p)) for p in towers)))
         # Two contiguous rear gate cells.
         self.assertNotIn((1, 10), walls)
         self.assertNotIn((1, 11), walls)

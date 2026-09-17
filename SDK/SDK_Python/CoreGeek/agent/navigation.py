@@ -100,12 +100,11 @@ def layout(turn, cfg):
     def world(p):
         return origin[0] + sx * p[0], origin[1] + sy * p[1]
 
-    # Group towers along the front. Spreading them around the 2x2 base cuts
-    # the inner walking ring into pockets, forcing connectivity checks to
-    # leave extra wall holes. Keep both flanks connected to the rear gate.
-    # Leave (2, 1) as an operator/circulation cell; three consecutive towers
-    # would leave their middle tower without a usable controller position.
-    tower_order = [(2, 0), (2, -1), (2, 2)]
+    # Three rocket positions surround the open rear post (-1, 0), so one
+    # stationary hero can control all of them without opening the front wall.
+    # The rear placement costs a little range but keeps the shared post on the
+    # existing mining gate and preserves the sealed front and flanks.
+    tower_order = [(-1, -1), (-1, 1), (0, -1)]
     towers = [world(p) for p in tower_order[:len(cfg.loadout)] if turn.inside(world(p))]
     # Close the six-cell front first, then add three cells on each flank.
     # Leave the rear open for mining, deliveries and operator circulation.
