@@ -21,15 +21,12 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11.10'
-      - name: Unit, protocol and HTTP regressions
-        run: python -m unittest discover -s tests -v
-      - name: First-day construction replay
-        run: python tools/fortification_benchmark.py
-      - name: Economy progression and static combat replay
-        run: |
-          python tools/progression_benchmark.py
-          python tools/strategy_benchmark.py
-      - name: Compare pre-fix construction baseline
-        run: |
-          git worktree add --detach "$RUNNER_TEMP/win-baseline" 767b72d494fd5772eccd61d4df27bb4f17de1909
-          python tools/fortification_benchmark.py --agent-root "$RUNNER_TEMP/win-baseline"
+      - name: Full offline validation (including multi-day replays)
+        run: python tools/run_checks.py
+      - name: Preserve full validation log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: validation-log
+          path: artifacts/validation/
+          retention-days: 7

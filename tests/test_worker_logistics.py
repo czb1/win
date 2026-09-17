@@ -5,6 +5,7 @@ import unittest
 
 from test_agent import payload, unit, setup_case
 from test_day_economy import simulate
+from run_checks import replay_test
 from agent.brain import Agent
 from agent.commands import command
 from agent.combat import assignments, operator_posts, defend
@@ -244,6 +245,7 @@ class OperatorReturnTests(unittest.TestCase):
 
 
 class LogisticsReplayTests(unittest.TestCase):
+    @replay_test
     def test_remote_ore_keeps_all_operators_and_front_wall_ready(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):
@@ -252,6 +254,7 @@ class LogisticsReplayTests(unittest.TestCase):
                 self.assertEqual(result["checkpoints"]["69"]["operators_ready"], 3)
                 self.assertEqual(result["checkpoints"]["69"]["front_walls"], 6)
 
+    @replay_test
     def test_rebuild_front_for_three_days_without_stranding_operators(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):

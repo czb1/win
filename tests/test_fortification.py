@@ -18,6 +18,7 @@ from agent.intelligence import Memory, Intelligence, parse_object, parse_task_re
 
 sys.path.insert(0, str(ROOT / "tools"))
 from fortification_benchmark import simulate_day
+from run_checks import replay_test
 
 
 class LayoutRegressionTests(unittest.TestCase):
@@ -221,6 +222,7 @@ class ConstructionRegressionTests(unittest.TestCase):
             wall_keeps_access(t, Navigator(t, 0), l, (3, 3))
         self.assertIs(t.blocked, original)
 
+    @replay_test
     def test_first_day_replay_completes_front_with_two_builders(self):
         for mirrored in (False, True):
             result = simulate_day(Agent, Config, mirrored)

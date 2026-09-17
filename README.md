@@ -66,16 +66,25 @@ curl -X POST http://127.0.0.1:8080/ -H 'Content-Type: application/json' --data-b
 
 ## 离线验证
 
+默认使用统一入口：
+
 ```bash
-python3 -m unittest discover -s tests -v
-python3 tools/replay.py examples/request.json
-python3 tools/replay.py examples/request.json --output examples/local-response.json
-python3 tools/strategy_benchmark.py
-python3 tools/progression_benchmark.py
-python3 tools/day_economy_benchmark.py --days 3
-python3 tools/day_economy_benchmark.py --case far_shop
-python3 tools/fortification_benchmark.py
-python3 tools/fortification_benchmark.py --mirror
+# 本地 Python 3.11 虚拟环境；无需安装额外依赖
+.venv/bin/python tools/run_checks.py --quick  # 中间迭代，省略 7 项连续模拟测试
+.venv/bin/python tools/run_checks.py          # 最终验收：全部测试 + 独立策略基准
+```
+
+完整模式保留左右镜像首日建墙、三日重建、五日升级等现有回归，默认只显示通过/失败、数量和耗时；完整日志写入 `artifacts/validation/full.log`，失败时显示有限长度的日志尾部。快速模式会明确显示省略数量，不可替代最终验收。CI 运行完整模式；不再重复执行单元测试已覆盖的建墙和升级脚本，也不再每次回放固定的历史版本。
+
+这些离线模拟不请求真实模型，因此不消耗比赛模型额度；节省的是开发过程中阅读长日志、重复分析和重复执行的开销，不承诺固定 token 节省比例。
+
+需要排查具体问题时再单独运行（将输出保存到文件后读取所需指标）：
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p 'test_front_night_sales.py' -q
+.venv/bin/python tools/replay.py examples/request.json --output artifacts/local-response.json
+.venv/bin/python tools/day_economy_benchmark.py --days 3 > artifacts/economy.json
+.venv/bin/python tools/fortification_benchmark.py --mirror > artifacts/construction.json
 ```
 
 回放工具还支持由多个连续回合请求组成的 JSON 数组。它只调用决策器，不模拟机器人、经济结算或任务判分。
