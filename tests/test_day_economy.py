@@ -123,7 +123,7 @@ class OpeningReplayTests(unittest.TestCase):
     def test_first_night_has_three_upgraded_operable_weapons(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):
-                r = simulate(Agent, Config, mirror=mirror)
+                r = simulate(Agent, Config, profile="controlled", mirror=mirror)
                 self.assertEqual(r["invalid_actions"], 0)
                 self.assertEqual(r["checkpoints"]["40"]["spent"], 0)
                 dusk = r["checkpoints"]["69"]
@@ -138,7 +138,7 @@ class OpeningReplayTests(unittest.TestCase):
     def test_nearby_iron_is_used_and_first_defence_still_finishes(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):
-                r = simulate(Agent, Config, case="local_ore", mirror=mirror)
+                r = simulate(Agent, Config, profile="controlled", case="local_ore", mirror=mirror)
                 self.assertEqual(r["invalid_actions"], 0)
                 self.assertGreater(r["mined_before_70"].get("iron", 0), 0)
                 self.assertLess(r["worker_actions_before_70"]["move"], 70)
@@ -149,7 +149,7 @@ class OpeningReplayTests(unittest.TestCase):
 
     @replay_test
     def test_long_shop_trip_starts_early_and_finishes_before_night(self):
-        r = simulate(Agent, Config, case="far_shop")
+        r = simulate(Agent, Config, profile="controlled", case="far_shop")
         self.assertEqual(r["invalid_actions"], 0)
         self.assertLess(r["first"]["buy_WeaponUpgradeVoucher1"], 40)
         self.assertEqual(r["checkpoints"]["69"]["weapon_levels"], [1, 1, 2])

@@ -70,7 +70,7 @@ curl -X POST http://127.0.0.1:8080/ -H 'Content-Type: application/json' --data-b
 
 ```bash
 # 本地 Python 3.11 虚拟环境；无需安装额外依赖
-.venv/bin/python tools/run_checks.py --quick  # 中间迭代，省略 7 项连续模拟测试
+.venv/bin/python tools/run_checks.py --quick  # 中间迭代，省略标记的连续模拟测试
 .venv/bin/python tools/run_checks.py          # 最终验收：全部测试 + 独立策略基准
 ```
 
@@ -83,9 +83,20 @@ curl -X POST http://127.0.0.1:8080/ -H 'Content-Type: application/json' --data-b
 ```bash
 .venv/bin/python -m unittest discover -s tests -p 'test_front_night_sales.py' -q
 .venv/bin/python tools/replay.py examples/request.json --output artifacts/local-response.json
-.venv/bin/python tools/day_economy_benchmark.py --days 3 > artifacts/economy.json
+# 默认按接口样例的矿点、商店和售价重建开局；耗尽后跨地图随机刷新
+.venv/bin/python tools/day_economy_benchmark.py --trace --output artifacts/economy.json
+# 随机地图、多种子、左右镜像；记录首夜分布
+.venv/bin/python tools/day_economy_benchmark.py --profile random --seeds 0 7 19 --both-sides --output artifacts/random-economy.json
+# 可调整密度，例如每种矿 4 个（合计 12 个）；截图无法确认的数量不可视为官方规则
+.venv/bin/python tools/day_economy_benchmark.py --profile random --mines-per-kind 4 --output artifacts/dense-economy.json
+# 历史理想场景仍用于策略回归
+.venv/bin/python tools/day_economy_benchmark.py --profile controlled --case near --days 3 --output artifacts/controlled-economy.json
 .venv/bin/python tools/fortification_benchmark.py --mirror > artifacts/construction.json
 ```
+
+经济回放默认 `sample` 档使用接口样例中的石/铁/铜各 2 个矿点、售价 1/3/5，初始金币 75、无炮塔、空背包。样例本身是夜间快照，只复用地图与价格，不声称还原真实首日。`random` 档按相同密度随机生成初始矿点；两档均每矿采集 10 次后于下一回合换位，避开双方推导建造区、角色和中立单位。同回合争抢最后一份矿石时，每人仍获得一份。`controlled` 保留旧的近距离循环矿与 1/6/10 高售价，首夜三座二级炮塔仅是这个理想夹具的断言。
+
+比较入夜状态请使用 `checkpoints["69"]`（第 69 回合结算后、首夜第 70 回合之前），而不是无战斗夜晚结束后的余额。报告区分初始金币、卖矿收入、任务收入（当前未模拟，为 0）、支出、库存、矿点数量、炮塔等级和操控者到位数。完整验收自动生成 `artifacts/calibration/first-night.json` 的八组样例/随机镜像结果，无需重复跑矩阵。多日模式没有机器人战斗、敌方抢矿、任务奖励或新闻价格变化，不能据此推断真实多日财富和胜率。
 
 回放工具还支持由多个连续回合请求组成的 JSON 数组。它只调用决策器，不模拟机器人、经济结算或任务判分。
 
