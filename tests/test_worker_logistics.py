@@ -279,10 +279,7 @@ class LogisticsReplayTests(unittest.TestCase):
                 for row in result["trace"]:
                     for h in row["workers"]:
                         if (h["command"] or {}).get("action") == "sell":
-                            if row["round"] % 130 >= 70:
-                                # Shared-crew night sales are separate from
-                                # the existing once-per-day daylight visit.
-                                continue
+                            self.assertLess(row["round"] % 130, 70)
                             key = (row["round"] // 130, h["id"])
                             if previous_sales.get(h["id"]) != row["round"] - 1:
                                 visits[key] = visits.get(key, 0) + 1

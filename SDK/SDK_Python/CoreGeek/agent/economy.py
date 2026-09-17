@@ -335,13 +335,6 @@ def finish_preparation(turn, cfg, mem, nav, ledger, hero, tower, wall_sites):
         return True
     if hero.kind != "worker" or hero.inventory["stone"] < cfg.wall_stones:
         return False
-    # The shared crew has explicit posts. Once everyone is at most one step
-    # away, a checked local flank build needs no long-distance congestion buffer.
-    nearby_crew = bool(cfg.night_economy_enabled and mem.night_crew
-                      and len(ledger.return_pairs) == 3 and all(
-        h.id in ledger.operator_posts
-        and (r := nav.search(h, {ledger.operator_posts[h.id]}, ledger.reserved)) is not None
-        and r[0] <= 1 for h, _ in ledger.return_pairs))
     front = set(front_sites(turn, wall_sites))
     options = []
     for target in wall_sites:
@@ -359,7 +352,7 @@ def finish_preparation(turn, cfg, mem, nav, ledger, hero, tower, wall_sites):
                          if hero.id in ledger.operator_posts else nav.approach(proxy, tower.cells, ledger.reserved))
             finally:
                 turn.blocked = original
-            margin = 2 if target in front or nearby_crew else cfg.return_margin
+            margin = 2 if target in front else cfg.return_margin
             if after and turn.day_left > work[0] + after[0] + margin:
                 options.append((target not in front, work[0], work[0] + after[0], target, cell))
     for _, _, _, target, cell in sorted(options):
@@ -438,10 +431,6 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
     for other in turn.workers:
         if other.id == hero.id:
             continue
-        if cfg.night_economy_enabled and mem.night_crew and other.id == mem.supply_worker:
-            # A courier's stones cannot replace the active builder's material
-            # while the courier is buying and delivering its voucher batch.
-            continue
         spent = ledger.commands.get(str(other.id), {})
         stones = other.inventory["stone"]
         if spent.get("action") == "build" and spent.get("name") == "wall":
@@ -452,12 +441,6 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
     material_gaps = sum(p in stone_sites for p in available_walls)
     stone_goal = min(max(cfg.wall_stones, cfg.stone_batch),
                      max(cfg.wall_stones, material_gaps * cfg.wall_stones - other_stones))
-    broken_front = [p for p in front_sites(turn, wall_sites)
-                    if p not in {w.pos for w in turn.ours if w.kind == "wall"}
-                    and p not in mem.build_failures and mem.wall_hits.get(p, 0)]
-    if cfg.night_economy_enabled and mem.night_crew and broken_front:
-        stone_goal = min(stone_goal, max(cfg.wall_stones,
-                                        len(broken_front) * cfg.wall_stones - other_stones))
     # As dusk approaches, spend an existing partial batch instead of returning
     # with unused stone. Include travel, construction, and the operator margin.
     if need_walls and hero.inventory["stone"] >= cfg.wall_stones:
