@@ -253,6 +253,8 @@ class Agent:
                 # its own chance before expensive worker connectivity searches.
                 if within_timeout and (mem.answer is not None or hold_task):
                     available = min(mem.task_timeout, self.cfg.task_max_rounds) - (turn.round - mem.task_started)
+                    if turn.day == 1 and home:
+                        available = min(available, max(0, turn.day_left - task_return - self.cfg.return_margin))
                     prompt, execute = intel.task(ledger, available_rounds=available)
                 if hold_task:
                     ledger.used.add(h.id)
