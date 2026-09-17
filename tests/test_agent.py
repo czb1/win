@@ -438,10 +438,8 @@ class HTTPTests(unittest.TestCase):
                     collections += 1
                 p["lastRoundRoleActionResults"] = {"1": True}
         self.assertEqual((moves, collections), (7, 3))
-        logs = "\n".join(captured.output)
-        self.assertIn('mine_map={"count":1', logs)
-        self.assertIn("target=(10, 2) steps=7 action=move", logs)
-        self.assertEqual(logs.count("mining_mode="), 1)
+        self.assertIn("source=mapInfo.zones mines_received=1", "\n".join(captured.output))
+        self.assertIn("target=(10, 2) steps=0 action=collect", "\n".join(captured.output))
 
         # Replacing the deposit in the next request must replace the target.
         p["roundNo"] = 11
@@ -449,7 +447,7 @@ class HTTPTests(unittest.TestCase):
         with self.assertLogs("agent", level="INFO") as captured:
             status, response = self.request(body=json.dumps(p))
         self.assertEqual(status, 200)
-        self.assertIn('"pos":[13,3]', "\n".join(captured.output))
+        self.assertIn('"pos": [13, 3]', "\n".join(captured.output))
         self.assertIn("target=(13, 3)", "\n".join(captured.output))
 
         p["roundNo"] = 12
@@ -457,8 +455,7 @@ class HTTPTests(unittest.TestCase):
         with self.assertLogs("agent", level="INFO") as captured:
             status, response = self.request(body=json.dumps(p))
         self.assertEqual(status, 200)
-        self.assertIn('mine_map_delta={"count":0', "\n".join(captured.output))
-        self.assertIn('"removed":[{"type":"iron","pos":[13,3]}]', "\n".join(captured.output))
+        self.assertIn("mines_received=0 mines=[]", "\n".join(captured.output))
         self.assertFalse(any(cmd["action"] == "collect" for cmd in response["roleCommandMap"].values()))
 
 

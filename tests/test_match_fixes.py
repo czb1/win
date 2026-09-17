@@ -16,10 +16,11 @@ from agent.config import Config
 from agent.economy import worker, use_inventory
 from agent.intelligence import Memory, Intelligence, parse_task_reply
 from agent.model import Turn, distance
-from agent.task_tools import file_code, document_code, document_path
+from agent.task_tools import file_code, document_path
 
 sys.path.insert(0, str(ROOT / "tools"))
 from progression_benchmark import simulate
+from run_checks import replay_test
 
 
 class WaveOwnershipTests(unittest.TestCase):
@@ -189,6 +190,7 @@ class SuppliesTests(unittest.TestCase):
             p["teamOur"]["roles"][0]["pos"] = cmd["targetPos"][0]
         self.assertEqual(cmd, command("use", (2, 7), name="WallFixer"))
 
+    @replay_test
     def test_multi_day_collect_sell_buy_deliver_upgrade(self):
         result = simulate(Agent, Config)
         self.assertEqual(result["invalid_actions"], 0)
@@ -216,12 +218,15 @@ class TaskReliabilityTests(unittest.TestCase):
             agent = Agent(Config(layout_mode="explicit"))
             first = agent.decide(p)
             self.assertFalse(first["prompt"])
-            self.assertEqual(shlex.split(first["executeCmd"])[-1], document_code("api.md"))
-            p.update(roundNo=2, lastCmdResult=self.run_fixed_tool(document_code("api.md"), directory))
+            bootstrap = shlex.split(first["executeCmd"])
+            self.assertEqual(bootstrap[:2], ["python3", "-c"])
+            p.update(roundNo=2, lastCmdResult=self.run_fixed_tool(bootstrap[2], directory))
+            self.assertIn("RESOLVED_DOCUMENT", p["lastCmdResult"])
             self.assertIn("values.csv", agent.decide(p)["prompt"])
             p.update(roundNo=3, lastCmdResult="", llmResp="READ values.csv")
-            self.assertTrue(agent.decide(p)["executeCmd"])
-            p.update(roundNo=4, llmResp="", lastCmdResult=self.run_fixed_tool(file_code("read", "values.csv"), directory))
+            query = shlex.split(agent.decide(p)["executeCmd"])
+            self.assertEqual(query[:2], ["python3", "-c"])
+            p.update(roundNo=4, llmResp="", lastCmdResult=self.run_fixed_tool(query[2], directory))
             self.assertIn("Shanghai,25", agent.decide(p)["prompt"])
             p.update(roundNo=5, lastCmdResult="", llmResp="ANSWER\n25")
             self.assertEqual(agent.decide(p)["roleCommandMap"]["11"]["taskAnswer"], "25")

@@ -221,7 +221,6 @@ class Memory:
     wall_health: dict = field(default_factory=dict)
     wall_hits: dict = field(default_factory=dict)
     station_health: int | None = None
-    hero_count: int | None = None
 
     def observe(self, turn, cfg):
         self.movement.observe(turn, self)

@@ -58,7 +58,7 @@ class EvolutionTests(unittest.TestCase):
         self.assertIsNone(mem.python)
         self.assertGreater(mem.task_failures, 0)
         prompt, _ = Intelligence(t, cfg, mem).task(ledger)
-        self.assertIn("临近截止", prompt)
+        self.assertIn("最后机会", prompt)
         self.assertNotIn("读取文件：READ", prompt)
 
     def test_full_task_question_is_kept_while_attempt_logs_are_bounded(self):

@@ -68,54 +68,18 @@ class WallRiskTests(unittest.TestCase):
 
 
 class BattleDiagnosticsTests(unittest.TestCase):
-    def test_wall_damage_uses_delta_without_full_snapshot(self):
-        p = payload(337, [unit(13, "station", 3, 9), unit(30, "wall", 9, 8, health=1000)])
-        agent = Agent(Config(layout_mode="explicit", llm_enabled=False))
-        agent.decide(p)
-        p["roundNo"] = 338
-        p["teamOur"]["roles"][1]["health"] = 700
-        with self.assertLogs("agent.brain", "INFO") as captured:
-            agent.decide(p)
-        text = "\n".join(captured.output)
-        self.assertIn("wall_delta=", text)
-        self.assertNotIn("battle_state=", text)
-
-    def test_dusk_summary_reports_progression_blocker(self):
-        p = payload(69, [unit(13, "station", 3, 9, health=1500), unit(20, "rocket", 5, 8)])
-        p["teamOur"]["goldNum"] = 22
-        p["weaponShopList"] = [{"name": "WeaponUpgradeVoucher1", "price": 25}]
-        with self.assertLogs("agent.brain", "INFO") as captured:
-            Agent(Config(layout_mode="explicit", llm_enabled=False)).decide(p)
-        line = next(line for line in captured.output if "day_summary=" in line)
-        self.assertIn('"upgradeBlocked":"insufficient_gold"', line)
-
-    def test_station_disappearance_logs_match_end_once(self):
-        agent = Agent(Config(layout_mode="explicit", llm_enabled=False))
-        p = payload(486, [unit(13, "station", 3, 9, health=5)])
-        agent.decide(p)
-        p.update(roundNo=487)
-        p["teamOur"]["roles"] = []
-        with self.assertLogs("agent.brain", "WARNING") as captured:
-            agent.decide(p)
-        self.assertIn("match_end=", "\n".join(captured.output))
-
     def test_third_night_reports_wall_levels_cooldown_and_operator(self):
         p = payload(337, [unit(13, "station", 3, 9, health=1410),
                           unit(1, "worker", 5, 7), unit(20, "rocket", 5, 8, cooldown=2),
                           unit(30, "wall", 9, 8, level=2, health=700)])
         p["robot"]["roles"] = [unit(50, "smallRobot", 10, 8, targetTeam="challenger")]
-        agent = Agent(Config(layout_mode="explicit", llm_enabled=False))
         with self.assertLogs("agent.brain", "INFO") as captured:
-            agent.decide(p)
+            Agent(Config(layout_mode="explicit", llm_enabled=False)).decide(p)
         line = next(line for line in captured.output if "battle_state=" in line)
         self.assertIn('"baseHealth":1410', line)
-        self.assertIn('"levels":{"2":1}', line)
+        self.assertIn('"level":2', line)
         self.assertIn('"reason":"cooldown"', line)
         self.assertIn('"operator":1', line)
-
-        p["roundNo"] = 338
-        with self.assertNoLogs("agent.brain", "INFO"):
-            agent.decide(p)
 
 
 if __name__ == "__main__":

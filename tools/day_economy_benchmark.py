@@ -1,13 +1,17 @@
 """Controlled opening economy with finite deposits, shopping and construction.
 
 Starts with 75 gold and no weapons. Records actual level/crew readiness at dusk.
-No robot combat, task rewards, hidden-map generation or survival claims.
+Default: sample-map economy and seeded map-wide finite mine respawns.
+The controlled profile retains the historical optimistic regression fixtures.
+No robot combat, opponent mining, task rewards or survival claims.
 """
 import argparse
 from collections import Counter
 import copy
 from itertools import permutations
 import json
+import random
+from statistics import median
 from pathlib import Path
 import sys
 from time import monotonic
@@ -19,7 +23,19 @@ def role(uid, kind, x, y, **kw):
             "attackRange": 8, "attackPower": 40, "cooldown": 0, **kw}
 
 
-def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, damage_walls=False):
+def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, damage_walls=False,
+             profile="sample", seed=0, mines_per_kind=2):
+    if profile not in ("sample", "random", "controlled"):
+        raise ValueError("unknown economy profile")
+    if days < 1:
+        raise ValueError("days must be positive")
+    if profile != "controlled" and case != "near":
+        raise ValueError("case variations require profile=controlled")
+    if not isinstance(mines_per_kind, int) or not 1 <= mines_per_kind <= 20:
+        raise ValueError("mines_per_kind must be between 1 and 20")
+    if profile != "random" and mines_per_kind != 2:
+        raise ValueError("mine count overrides require profile=random")
+    rng = random.Random(seed)
     width, height = 41, 32
     def flip(p):
         return (width-1-p[0], height-1-p[1]) if mirror else p
@@ -65,6 +81,48 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
                 "StationUpgradeVoucher1": 100, "StationUpgradeVoucher2": 150,
                 "WallUpgradeVoucher1": 20, "WallUpgradeVoucher2": 30,
                 "Medicine": 10, "WallFixer": 10}
+    neutral_zones = [("vendor", vendor), ("weaponShop", shop)]
+    forbidden = set()
+    if profile != "controlled":
+        # The checked-in request is a night snapshot, not a captured opening.
+        # Reuse only its geometry and price tables; reset the opening economy.
+        sample = json.loads((Path(__file__).resolve().parents[1] / "examples/request.json").read_text())
+        roles = [make(13, "station", (10, 24), health=1500),
+                 make(1, "worker", (9, 22)), make(2, "worker", (9, 24)),
+                 make(3, "pioneer", (9, 23), health=200)]
+        wall_sites = {flip((x, y)) for x in range(8, 14) for y in range(21, 27)
+                      if (x in (8, 13) or y in (21, 26)) and (x, y) not in ((8, 23), (8, 24))}
+        weapon_sites = {flip((x, y)) for x in range(9, 13) for y in range(22, 26)
+                        if x in (9, 12) or y in (22, 25)}
+        front = {flip((13, y)) for y in range(21, 27)}
+        neutral_zones = [(z["neutralType"], flip(point(z))) for z in sample["mapInfo"]["zones"]
+                         if z["neutralType"] not in prices]
+        vendor = next(p for k, p in neutral_zones if k == "vendor")
+        shop = next(p for k, p in neutral_zones if k == "weaponShop")
+        prices = {v["name"]: v["price"] for v in sample["vendorShopList"] if v["name"] in prices}
+        active = {flip(point(z)): [z["neutralType"], 10] for z in sample["mapInfo"]["zones"]
+                  if z["neutralType"] in prices}
+        # Exclude both entire inferred building rings, including the bases.
+        forbidden = {flip((x, y)) for bx, by in ((10, 24), (30, 10))
+                     for x in range(bx-2, bx+4) for y in range(by-3, by+3)}
+    neutral_cells = {p for _, p in neutral_zones}
+
+    def respawn(kind, old=None):
+        occupied_now = set().union(*(cells(r) for r in roles))
+        blocked = forbidden | neutral_cells | set(active) | occupied_now
+        candidates = [flip((x, y)) for x in range(width) for y in range(height)
+                      if flip((x, y)) not in blocked and flip((x, y)) != old]
+        if not candidates:
+            raise ValueError("no free cell for mine respawn")
+        active[rng.choice(candidates)] = [kind, 10]
+
+    if profile == "random":
+        kinds = [kind for kind in sorted(prices) for _ in range(mines_per_kind)]
+        active.clear()
+        for kind in kinds:
+            respawn(kind)
+    initial_mines = [{"kind": k, "pos": list(p), "remaining": n} for p, (k, n) in active.items()]
+    respawns = []
     cfg, actions, purchases = Config(llm_enabled=False), Counter(), Counter()
     agent = Agent(cfg)
     state = {"roundNo": 1, "mapInfo": {"width": width, "height": height, "zones": []},
@@ -81,7 +139,8 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
     destroyed_walls = 0
     next_build_id = 1000 + len(roles)
     history, previous, reversals = [], {}, 0
-    for rno in range(1, days * 130):
+    # Keep historical controlled fixture indexing; new profiles model all 70 daylight ticks.
+    for rno in range(1 if profile == "controlled" else 0, days * 130):
         state["roundNo"] = rno
         if damage_walls and rno >= 130 and rno % 130 == 0:
             victims = [r for r in roles if r["roleType"] == "wall" and point(r) in front][:2]
@@ -89,15 +148,17 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
                 roles.remove(victim)
             destroyed_walls += len(victims)
         state["mapInfo"]["zones"] = [{"neutralType": kind, "pos": dict(zip(("x", "y"), p))}
-                                      for kind, p in [("vendor", vendor), ("weaponShop", shop)]
+                                      for kind, p in neutral_zones
                                       + [(k, p) for p, (k, _) in active.items()]]
-        occupied = set(active) | {vendor, shop} | set().union(*(cells(r) for r in roles))
+        occupied = set(active) | neutral_cells | set().union(*(cells(r) for r in roles))
         started = monotonic()
         commands = agent.decide(copy.deepcopy(state))["roleCommandMap"]
         worst = max(worst, (monotonic()-started)*1000)
         by_id = {str(r["id"]): r for r in roles}
         if trace:
             history.append({"round": rno, "gold": state["teamOur"]["goldNum"],
+                            "mines": [{"kind": k, "pos": list(p), "remaining": n}
+                                      for p, (k, n) in active.items()],
                             "workers": [{"id": h["id"], "pos": h["pos"].copy(),
                                          "inventory": dict(Counter(h["backpack"])),
                                          "command": commands.get(str(h["id"]))}
@@ -200,8 +261,15 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
             active[p][1] -= n
             if active[p][1] <= 0:
                 kind = active.pop(p)[0]
-                indices[kind] += 1
-                active[deposits[kind][indices[kind] % len(deposits[kind])]] = [kind, 10]
+                if profile == "controlled":
+                    indices[kind] += 1
+                    active[deposits[kind][indices[kind] % len(deposits[kind])]] = [kind, 10]
+                else:
+                    before = set(active)
+                    respawn(kind, p)
+                    new = next(iter(set(active) - before))
+                    respawns.append({"available_round": rno + 1, "kind": kind,
+                                     "old": list(p), "new": list(new)})
         state["lastRoundRoleActionResults"] = results
         if rno % 130 in (39, 40, 69, 70):
             guns = [r for r in roles if r["roleType"] in ("rocket", "gatling", "railgun")]
@@ -209,12 +277,21 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
             crew = max((sum(near(point(h), point(w)) for h, w in zip(hs, guns))
                         for hs in permutations(heroes, len(guns))), default=0)
             checkpoints[str(rno)] = {"gold": state["teamOur"]["goldNum"], "income": income,
+                "initial_gold": 75, "task_income": 0,
+                "mine_counts": dict(Counter(k for k, _ in active.values())),
+                "remaining_minerals": sum(n for _, n in active.values()),
+                "inventory": dict(Counter(n for h in heroes for n in h["backpack"])),
                 "spent": spent, "weapon_levels": sorted(r["level"] for r in guns), "operators_ready": crew,
                 "walls": sum(r["roleType"] == "wall" for r in roles),
                 "front_walls": sum(r["roleType"] == "wall" and point(r) in front for r in roles),
                 "carried_vouchers": sum("UpgradeVoucher" in n for h in heroes for n in h["backpack"]),
                 "carried_ore_value": sum(prices.get(n, 0) for h in heroes for n in h["backpack"])}
-    return {"case": case, "mirror": mirror, "days": days, "checkpoints": checkpoints,
+    return {"profile": profile, "seed": seed, "prices": prices,
+            "checkpoint_timing": "after actions; round 69 is before first night",
+            "initial_mines": initial_mines, "respawns": respawns,
+            "limitations": ["no combat or opponent mining", "no task rewards or news price changes",
+                            "sample geometry is not an observed opening", "building rings inferred from demo"],
+            "case": case, "mirror": mirror, "days": days, "checkpoints": checkpoints,
             "early_worker_actions": dict(early_actions), "actions": dict(actions),
             "purchases": dict(purchases), "first": first, "invalid_actions": invalid,
             "worker_actions_before_70": dict(worker_actions),
@@ -224,10 +301,35 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
             **({"trace": history} if trace else {}), "worst_ms": round(worst, 2)}
 
 
+def summarize(results):
+    """Compare pre-night balances, not final balances after a combat-free night."""
+    rows = []
+    for result in results:
+        dusk = result["checkpoints"]["69"]
+        rows.append({"profile": result["profile"], "seed": result["seed"], "mirror": result["mirror"],
+                     "gold": dusk["gold"], "income": dusk["income"], "spent": dusk["spent"],
+                     "weapon_levels": dusk["weapon_levels"],
+                     "upgraded_weapons": sum(level >= 2 for level in dusk["weapon_levels"]),
+                     "operators_ready": dusk["operators_ready"], "walls": dusk["walls"],
+                     "carried_ore_value": dusk["carried_ore_value"],
+                     "invalid_actions": result["invalid_actions"]})
+    return {"first_night": rows,
+            "distribution": {key: {"min": min(row[key] for row in rows),
+                                   "median": median(row[key] for row in rows),
+                                   "max": max(row[key] for row in rows)}
+                             for key in ("gold", "income", "upgraded_weapons")}}
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--case", choices=("near", "far_shop", "remote_ore", "local_ore"), default="near")
+    parser.add_argument("--profile", choices=("sample", "random", "controlled"), default="sample")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seeds", type=int, nargs="+", help="Run reproducible seed matrix and report dusk distribution")
+    parser.add_argument("--both-sides", action="store_true", help="Include mirrored geometry for each seed")
+    parser.add_argument("--mines-per-kind", type=int, default=2, help="Random profile only; default matches sample count")
+    parser.add_argument("--output", type=Path, help="Write JSON results including assumptions and checkpoints")
     parser.add_argument("--mirror", action="store_true")
     parser.add_argument("--days", type=int, default=1)
     parser.add_argument("--fixed-40", action="store_true", help="Control: disable adaptive preparation deadline")
@@ -240,5 +342,21 @@ if __name__ == "__main__":
     if args.fixed_40:
         import agent.economy
         agent.economy.preparation_start = lambda *a: 40
-    print(json.dumps(simulate(Agent, Config, args.case, args.mirror, args.days, args.trace,
-                              args.damage_walls), ensure_ascii=False, indent=2))
+    if args.days < 1 or not 1 <= args.mines_per_kind <= 20:
+        parser.error("days must be positive; mines-per-kind must be between 1 and 20")
+    if args.profile != "controlled" and args.case != "near":
+        parser.error("--case requires --profile controlled")
+    if args.profile != "random" and args.mines_per_kind != 2:
+        parser.error("--mines-per-kind requires --profile random")
+    results = [simulate(Agent, Config, args.case, mirrored, args.days, args.trace,
+                        args.damage_walls, profile=args.profile, seed=seed,
+                        mines_per_kind=args.mines_per_kind)
+               for seed in (args.seeds or [args.seed])
+               for mirrored in ((False, True) if args.both_sides else (args.mirror,))]
+    result = {**summarize(results), "runs": results} if args.seeds or args.both_sides else results[0]
+    output = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(output, encoding="utf-8")
+    else:
+        print(output, end="")

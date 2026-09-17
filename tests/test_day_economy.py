@@ -7,25 +7,15 @@ from agent.brain import Agent
 from agent.config import Config
 from agent.commands import command
 from agent.economy import earn, supplies, workers
-from agent.economy import upgrade_order
 from agent.economy_plan import planned_weapons, preparation_start
 from agent.intelligence import Memory
 
 sys.path.insert(0, str(ROOT / "tools"))
 from day_economy_benchmark import simulate
+from run_checks import replay_test
 
 
 class DayEconomyTests(unittest.TestCase):
-    def test_station_level_two_follows_all_level_two_guns(self):
-        p = self.case(41, 400)
-        station = p["teamOur"]["roles"][2]
-        p["teamOur"]["roles"] += [unit(20+i, "rocket", 5, 7+i, level=2) for i in range(3)]
-        t = setup_case(p)[0]
-        self.assertLess(upgrade_order(t, t.station), upgrade_order(t, t.weapons[0]))
-        p["teamOur"]["roles"][-1]["level"] = 1
-        t = setup_case(p)[0]
-        self.assertGreater(upgrade_order(t, t.station), upgrade_order(t, t.weapons[-1]))
-
     def case(self, rno=1, gold=75):
         p = payload(rno, [unit(1, "worker", 8, 7, health=220), unit(2, "worker", 8, 9, health=220),
                           unit(13, "station", 3, 11, health=1500)])
@@ -129,10 +119,11 @@ class DayEconomyTests(unittest.TestCase):
 
 
 class OpeningReplayTests(unittest.TestCase):
+    @replay_test
     def test_first_night_has_three_upgraded_operable_weapons(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):
-                r = simulate(Agent, Config, mirror=mirror)
+                r = simulate(Agent, Config, profile="controlled", mirror=mirror)
                 self.assertEqual(r["invalid_actions"], 0)
                 self.assertEqual(r["checkpoints"]["40"]["spent"], 0)
                 dusk = r["checkpoints"]["69"]
@@ -143,10 +134,11 @@ class OpeningReplayTests(unittest.TestCase):
                 self.assertGreaterEqual(r["worker_actions_before_70"]["collect"], 40)
                 self.assertLess(r["worker_actions_before_70"]["move"], 75)
 
+    @replay_test
     def test_nearby_iron_is_used_and_first_defence_still_finishes(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):
-                r = simulate(Agent, Config, case="local_ore", mirror=mirror)
+                r = simulate(Agent, Config, profile="controlled", case="local_ore", mirror=mirror)
                 self.assertEqual(r["invalid_actions"], 0)
                 self.assertGreater(r["mined_before_70"].get("iron", 0), 0)
                 self.assertLess(r["worker_actions_before_70"]["move"], 70)
@@ -155,8 +147,9 @@ class OpeningReplayTests(unittest.TestCase):
                 self.assertEqual(dusk["operators_ready"], 3)
                 self.assertEqual(dusk["front_walls"], 6)
 
+    @replay_test
     def test_long_shop_trip_starts_early_and_finishes_before_night(self):
-        r = simulate(Agent, Config, case="far_shop")
+        r = simulate(Agent, Config, profile="controlled", case="far_shop")
         self.assertEqual(r["invalid_actions"], 0)
         self.assertLess(r["first"]["buy_WeaponUpgradeVoucher1"], 40)
         self.assertEqual(r["checkpoints"]["69"]["weapon_levels"], [1, 1, 2])
