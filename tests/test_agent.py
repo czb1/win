@@ -169,6 +169,21 @@ class CombatTests(unittest.TestCase):
         self.assertNotIn("1",l.commands)
         self.assertFalse(l.add(1,command("move",(3,6))))
 
+    def test_one_stationary_controller_fires_three_adjacent_towers(self):
+        p = payload(71, roles=[unit(1, "worker", 5, 5), unit(13, "station", 1, 12),
+                               unit(20, "rocket", 4, 4), unit(21, "rocket", 5, 4),
+                               unit(22, "rocket", 6, 4)])
+        p["robot"]["roles"] = [unit(31, "smallRobot", 8, 4, health=200,
+                                            targetTeam="challenger")]
+        t, _, n, ledger = setup_case(p)
+        pairs = assignments(t, n, ledger)
+        self.assertEqual({hero.id for hero, _ in pairs}, {1})
+        self.assertEqual({tower.id for _, tower in pairs}, {20, 21, 22})
+        defend(t, n, ledger, pairs)
+        self.assertEqual(set(ledger.commands), {"20", "21", "22"})
+        self.assertEqual({cmd["controllerId"] for cmd in ledger.commands.values()}, {"1"})
+        self.assertFalse(ledger.add(1, command("move", (5, 6))))
+
     def test_cooldown_and_day_prevent_attack(self):
         for p in (self.combat("rocket",cooldown=2), {**self.combat(),"roundNo":69}):
             t,c,n,l=setup_case(p)
