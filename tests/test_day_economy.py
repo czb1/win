@@ -12,6 +12,7 @@ from agent.intelligence import Memory
 
 sys.path.insert(0, str(ROOT / "tools"))
 from day_economy_benchmark import simulate
+from run_checks import replay_test
 
 
 class DayEconomyTests(unittest.TestCase):
@@ -118,6 +119,7 @@ class DayEconomyTests(unittest.TestCase):
 
 
 class OpeningReplayTests(unittest.TestCase):
+    @replay_test
     def test_first_night_has_three_upgraded_operable_weapons(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):
@@ -132,6 +134,7 @@ class OpeningReplayTests(unittest.TestCase):
                 self.assertGreaterEqual(r["worker_actions_before_70"]["collect"], 40)
                 self.assertLess(r["worker_actions_before_70"]["move"], 75)
 
+    @replay_test
     def test_nearby_iron_is_used_and_first_defence_still_finishes(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):
@@ -144,6 +147,7 @@ class OpeningReplayTests(unittest.TestCase):
                 self.assertEqual(dusk["operators_ready"], 3)
                 self.assertEqual(dusk["front_walls"], 6)
 
+    @replay_test
     def test_long_shop_trip_starts_early_and_finishes_before_night(self):
         r = simulate(Agent, Config, case="far_shop")
         self.assertEqual(r["invalid_actions"], 0)

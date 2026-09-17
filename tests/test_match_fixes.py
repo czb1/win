@@ -20,6 +20,7 @@ from agent.task_tools import file_code, document_path
 
 sys.path.insert(0, str(ROOT / "tools"))
 from progression_benchmark import simulate
+from run_checks import replay_test
 
 
 class WaveOwnershipTests(unittest.TestCase):
@@ -189,6 +190,7 @@ class SuppliesTests(unittest.TestCase):
             p["teamOur"]["roles"][0]["pos"] = cmd["targetPos"][0]
         self.assertEqual(cmd, command("use", (2, 7), name="WallFixer"))
 
+    @replay_test
     def test_multi_day_collect_sell_buy_deliver_upgrade(self):
         result = simulate(Agent, Config)
         self.assertEqual(result["invalid_actions"], 0)
