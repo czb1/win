@@ -19,7 +19,6 @@ class Config:
     sell_batch: int = 20
     sell_batch_max: int = 40
     economy_rounds: int = 40
-    night_economy_enabled: bool = True
     return_margin: int = 5
     task_min_rounds: int = 12
     task_danger_radius: int = 6
@@ -55,8 +54,6 @@ class Config:
             raise ValueError("invalid deadline or round_origin")
         if type(cfg.economy_rounds) is not int or not 0 <= cfg.economy_rounds < 70:
             raise ValueError("economy_rounds must be between 0 and 69")
-        if type(cfg.night_economy_enabled) is not bool:
-            raise ValueError("night_economy_enabled must be a boolean")
         if cfg.sell_batch_max < cfg.sell_batch:
             raise ValueError("sell_batch_max must be at least sell_batch")
         if type(cfg.daily_llm_limit) is not int or not 0 <= cfg.daily_llm_limit <= 3:

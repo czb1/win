@@ -10,7 +10,6 @@
   "sell_batch": 20,
   "sell_batch_max": 40,
   "economy_rounds": 40,
-  "night_economy_enabled": true,
   "return_margin": 5,
   "task_min_rounds": 12,
   "task_danger_radius": 6,
