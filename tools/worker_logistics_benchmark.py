@@ -17,10 +17,10 @@ if __name__ == "__main__":
     cases = []
     if args.multi_day:
         for mirror in (False, True):
-            cases.append(simulate(Agent, Config, mirror=mirror, days=3, damage_walls=True))
+            cases.append(simulate(Agent, Config, profile="controlled", mirror=mirror, days=3, damage_walls=True))
     else:
         for case in ("near", "local_ore", "remote_ore", "far_shop"):
             for mirror in (False, True):
-                cases.append(simulate(Agent, Config, case=case, mirror=mirror))
-    print(json.dumps({"simulation": "finite deposits; no combat or task income", "cases": cases},
+                cases.append(simulate(Agent, Config, profile="controlled", case=case, mirror=mirror))
+    print(json.dumps({"simulation": "optimistic controlled fixtures; nearby cyclic deposits; no combat or task income", "cases": cases},
                      ensure_ascii=False, indent=2))

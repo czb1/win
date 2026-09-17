@@ -249,7 +249,7 @@ class LogisticsReplayTests(unittest.TestCase):
     def test_remote_ore_keeps_all_operators_and_front_wall_ready(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):
-                result = simulate(Agent, Config, case="remote_ore", mirror=mirror)
+                result = simulate(Agent, Config, profile="controlled", case="remote_ore", mirror=mirror)
                 self.assertEqual(result["invalid_actions"], 0)
                 self.assertEqual(result["checkpoints"]["69"]["operators_ready"], 3)
                 self.assertEqual(result["checkpoints"]["69"]["front_walls"], 6)
@@ -258,7 +258,7 @@ class LogisticsReplayTests(unittest.TestCase):
     def test_rebuild_front_for_three_days_without_stranding_operators(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):
-                result = simulate(Agent, Config, mirror=mirror, days=3, damage_walls=True, trace=True)
+                result = simulate(Agent, Config, profile="controlled", mirror=mirror, days=3, damage_walls=True, trace=True)
                 self.assertEqual(result["invalid_actions"], 0)
                 self.assertEqual(result["destroyed_walls"], 4)
                 nights = [result["checkpoints"][str(r)] for r in (69, 199, 329)]
