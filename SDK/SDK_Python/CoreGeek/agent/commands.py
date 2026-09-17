@@ -17,6 +17,7 @@ class Ledger:
         self.turn, self.cfg = turn, cfg
         self.gold = turn.gold
         self.commands, self.used, self.reserved = {}, set(), set()
+        self.controllers = set()
         self.tower_cells, self.wall_cells = set(tower_cells), set(wall_cells)
         self.new_towers = 0
         # Claims are work destinations, not occupied movement cells.
@@ -51,7 +52,9 @@ class Ledger:
                 return False
             expected = 1 if unit.kind == "railgun" else unit.level
             if (self.turn.is_day or unit.kind not in WEAPONS or unit.cooldown > 0
-                    or controller.kind not in HEROES or controller.id in self.used
+                    or controller.kind not in HEROES
+                    or (controller.id in self.used and not (
+                        self.cfg.shared_operators and controller.id in self.controllers))
                     or not self.turn.adjacent(controller.pos, unit.pos)
                     or len(points) != expected or unit.attack_range <= 0
                     or any(distance(unit.pos, p) > unit.attack_range for p in points)):
@@ -150,6 +153,7 @@ class Ledger:
         self.used.add(uid)
         if controller:
             self.used.add(controller.id)
+            self.controllers.add(controller.id)
         if action in ("build", "move"):
             self.reserved.add(target)
         if action == "build" and name in WEAPONS:

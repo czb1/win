@@ -8,7 +8,7 @@ No robot combat, opponent mining, task rewards or survival claims.
 import argparse
 from collections import Counter
 import copy
-from itertools import permutations
+from itertools import combinations, permutations
 import json
 import random
 from statistics import median
@@ -124,6 +124,13 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
     initial_mines = [{"kind": k, "pos": list(p), "remaining": n} for p, (k, n) in active.items()]
     respawns = []
     cfg, actions, purchases = Config(llm_enabled=False), Counter(), Counter()
+    if getattr(cfg, "shared_operators", False):
+        # Independent fixture geometry for the forward cluster; retain legacy sites.
+        bx, by = (5, 15) if profile == "controlled" else (10, 24)
+        wall_sites |= {flip((x, y)) for x in range(bx, bx+5) for y in range(by-3, by+3)
+                       if x == bx+4 or y in (by-3, by+2)}
+        weapon_sites |= {flip((bx+3, y)) for y in range(by-2, by+2)}
+        front = {flip((bx+4, y)) for y in range(by-3, by+3)}
     agent = Agent(cfg)
     state = {"roundNo": 1, "mapInfo": {"width": width, "height": height, "zones": []},
              "teamOur": {"type": "defender" if mirror else "challenger", "teamId": "opening",
@@ -276,12 +283,21 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
             heroes = [r for r in roles if r["roleType"] in ("worker", "pioneer")]
             crew = max((sum(near(point(h), point(w)) for h, w in zip(hs, guns))
                         for hs in permutations(heroes, len(guns))), default=0)
+            operators = crew
+            if getattr(cfg, "shared_operators", False):
+                covered = [w for w in guns if any(near(point(h), point(w)) for h in heroes)]
+                crew = len(covered)
+                operators = min(count for count in range(len(heroes)+1)
+                                if any(all(any(near(point(h), point(w)) for h in subset)
+                                           for w in covered)
+                                       for subset in combinations(heroes, count)))
             checkpoints[str(rno)] = {"gold": state["teamOur"]["goldNum"], "income": income,
                 "initial_gold": 75, "task_income": 0,
                 "mine_counts": dict(Counter(k for k, _ in active.values())),
                 "remaining_minerals": sum(n for _, n in active.values()),
                 "inventory": dict(Counter(n for h in heroes for n in h["backpack"])),
                 "spent": spent, "weapon_levels": sorted(r["level"] for r in guns), "operators_ready": crew,
+                "operable_towers": crew, "minimum_ready_operators": operators,
                 "walls": sum(r["roleType"] == "wall" for r in roles),
                 "front_walls": sum(r["roleType"] == "wall" and point(r) in front for r in roles),
                 "carried_vouchers": sum("UpgradeVoucher" in n for h in heroes for n in h["backpack"]),
@@ -311,6 +327,8 @@ def summarize(results):
                      "weapon_levels": dusk["weapon_levels"],
                      "upgraded_weapons": sum(level >= 2 for level in dusk["weapon_levels"]),
                      "operators_ready": dusk["operators_ready"], "walls": dusk["walls"],
+                     "operable_towers": dusk["operable_towers"],
+                     "minimum_ready_operators": dusk["minimum_ready_operators"],
                      "carried_ore_value": dusk["carried_ore_value"],
                      "invalid_actions": result["invalid_actions"]})
     return {"first_night": rows,

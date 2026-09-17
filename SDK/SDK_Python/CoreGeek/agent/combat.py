@@ -5,6 +5,167 @@ from .commands import command
 from .navigation import check_time
 
 
+def crew_groups(pairs):
+    """Economy adapters use pairs, but planning and movement are per person."""
+    groups = {}
+    for h, w in pairs:
+        groups.setdefault(h.id, (h, []))[1].append(w)
+    return groups
+
+
+def crew_plan(turn, nav, ledger, wall_sites=(), excluded=(), previous=None):
+    """Jointly choose a reachable post and a tower group for each operator."""
+    towers = turn.weapons[:3]
+    heroes = [h for h in turn.heroes if h.id not in ledger.used and h.id not in excluded]
+    if not towers or not heroes:
+        return [], {}
+    previous = previous or {}
+    firepower = {}
+    for w in towers:
+        damage = {}
+        if not turn.is_day and not w.cooldown:
+            select_targets(turn, w, damage, nav.deadline)
+        firepower[w.id] = sum(damage.get(r.id, 0) * threat(turn, r) for r in turn.robots)
+    original = turn.blocked
+    options = {}
+    try:
+        turn.blocked = original - {h.pos for h in heroes}
+        for h in heroes:
+            for mask in range(1, 1 << len(towers)):
+                group = [w for i, w in enumerate(towers) if mask & (1 << i)]
+                cells = set.intersection(*(set(neighbours(w.pos)) for w in group)) - set(wall_sites)
+                choices = []
+                for p in sorted(cells):
+                    route = nav.search(h, {p}, ledger.reserved)
+                    if route is not None:
+                        danger = sum(distance(p, r.pos) <= r.attack_range + 2 for r in turn.robots)
+                        choices.append((p, route[0], danger))
+                options[h.id, mask] = choices
+    finally:
+        turn.blocked = original
+    best, result = None, ([], {})
+    # Three towers bound this search: enumerate owners, then common posts.
+    for owners in product(range(-1, len(heroes)), repeat=len(towers)):
+        check_time(nav.deadline)
+        masks = {j: sum(1 << i for i, owner in enumerate(owners) if owner == j)
+                 for j in set(owners) if j >= 0}
+        if not masks:
+            continue
+        crew = [(heroes[j], mask) for j, mask in sorted(masks.items())]
+        for choices in product(*(options[h.id, mask] for h, mask in crew)):
+            check_time(nav.deadline)
+            if len({p for p, _, _ in choices}) != len(choices):
+                continue
+            stationary = {h.id for (h, _), (p, _, _) in zip(crew, choices) if h.pos == p}
+            immediate = sum(firepower[w.id] for i, w in enumerate(towers)
+                            if owners[i] >= 0 and heroes[owners[i]].id in stationary)
+            changes = sum(previous.get(h.id) != (p, tuple(w.id for i, w in enumerate(towers)
+                                                       if mask & (1 << i)))
+                          for (h, mask), (p, _, _) in zip(crew, choices))
+            late = sum(length > 0 and length + ledger.cfg.return_margin > turn.day_left
+                       for _, length, _ in choices) if turn.is_day else 0
+            held = sum(h.pos == p and h.id in previous and previous[h.id][0] == p
+                       for (h, _), (p, _, _) in zip(crew, choices)) if not turn.is_day else 0
+            cost = (-immediate, -sum(o >= 0 for o in owners), late, -held,
+                    sum(h.health <= 165 for h, _ in crew),
+                    sum(h.kind != "worker" for h, _ in crew), len(crew),
+                    sum(d for _, _, d in choices), changes,
+                    sum(length for _, length, _ in choices),
+                    sum(turn.base_distance(p) for p, _, _ in choices) if turn.station else 0)
+            if best is None or cost < best:
+                best = cost
+                result = ([(heroes[o], w) for o, w in zip(owners, towers) if o >= 0],
+                          {h.id: (p, length) for (h, _), (p, length, _) in zip(crew, choices)})
+    return result
+
+
+def relief_excluded(turn, mem):
+    """Keep an outgoing worker out of the assignment until relief completes."""
+    live = {h.id for h in turn.heroes}
+    mem.relief = {old: entry for old, entry in mem.relief.items()
+                  if old in live and entry[0] in live}
+    return {old for old, (_, _, vacated) in mem.relief.items() if vacated}
+
+
+def prepare_relief(turn, nav, ledger, pairs, posts, mem):
+    """Stage a healthy replacement before the incumbent vacates a unique post.
+
+    Occupied cells cannot be entered this turn. Movement during the exchange
+    is a real fire gap, not simulated instantaneous handoff.
+    """
+    if turn.is_day or not ledger.cfg.shared_operators:
+        return
+    groups = crew_groups(pairs)
+    for old, (replacement, post, vacated) in list(mem.relief.items()):
+        if vacated and replacement in groups and groups[replacement][0].pos == post:
+            del mem.relief[old]
+    for uid, (hero, guns) in groups.items():
+        post = posts.get(uid)
+        if (hero.kind != "worker" or hero.health > 165 or hero.pos != post
+                or hero.id in ledger.used):
+            continue
+        candidates = []
+        for helper in turn.workers:
+            if helper.id in groups or helper.id in ledger.used or helper.health <= 165:
+                continue
+            route = nav.approach(helper, {post}, ledger.reserved)
+            if route is not None:
+                candidates.append((route[0], helper.id, helper, route))
+        if not candidates:
+            continue
+        _, _, helper, route = min(candidates, key=lambda x: x[:2])
+        mem.relief[uid] = (helper.id, post, False)
+        if route[1] is not None:
+            ledger.add(helper.id, command("move", route[1]))
+            continue
+        if all(turn.adjacent(helper.pos, gun.pos) for gun in guns):
+            mem.relief[uid] = (helper.id, helper.pos, True)
+            ledger.used.add(helper.id)
+            continue
+        exits = [p for p in neighbours(post) if turn.inside(p) and p not in turn.blocked
+                 and p not in ledger.reserved and p != helper.pos]
+        if exits:
+            exit_cell = min(exits, key=lambda p: (
+                sum(distance(p, r.pos) <= r.attack_range + 2 for r in turn.robots),
+                turn.base_distance(p) if turn.station else 0, p))
+            if ledger.add(uid, command("move", exit_cell)):
+                mem.relief[uid] = (helper.id, post, True)
+                ledger.used.add(helper.id)
+        else:
+            ledger.used.add(helper.id)
+
+
+def yield_spare_worker(turn, nav, ledger, pairs, posts):
+    """Clear a spare worker from a blocked operator route before normal jobs."""
+    crew = crew_groups(pairs)
+    original = turn.blocked
+    for uid, (hero, _) in crew.items():
+        if uid in ledger.used or uid not in posts or nav.search(hero, {posts[uid]}, ledger.reserved) is not None:
+            continue
+        for helper in turn.workers:
+            if helper.id in crew or helper.id in ledger.used:
+                continue
+            try:
+                turn.blocked = original - {helper.pos}
+                if nav.search(hero, {posts[uid]}, ledger.reserved) is None:
+                    continue
+                exits = []
+                current_danger = sum(distance(helper.pos, r.pos) <= r.attack_range + 2 for r in turn.robots)
+                for p in neighbours(helper.pos):
+                    if (not turn.inside(p) or p in original or p in ledger.reserved
+                            or p in posts.values()):
+                        continue
+                    danger = sum(distance(p, r.pos) <= r.attack_range + 2 for r in turn.robots)
+                    turn.blocked = (original - {helper.pos}) | {p}
+                    route = nav.search(hero, {posts[uid]}, ledger.reserved)
+                    if route is not None and danger <= current_danger:
+                        exits.append((danger, route[0], p))
+            finally:
+                turn.blocked = original
+            if exits and ledger.add(helper.id, command("move", min(exits)[2])):
+                break
+
+
 def line_cells(start, end):
     """Supercover grid traversal, conservatively includes cells touched at corners."""
     x, y = start
@@ -230,6 +391,34 @@ def select_targets(turn, tower, damage, deadline):
 
 def defend(turn, nav, ledger, pairs=None, posts=None):
     damage = {}
+    if ledger.cfg.shared_operators:
+        if pairs is None:
+            pairs, planned = crew_plan(turn, nav, ledger)
+            posts = {uid: p for uid, (p, _) in planned.items()}
+        if posts:
+            yield_spare_worker(turn, nav, ledger, pairs, posts)
+        for hero, towers in crew_groups(pairs).values():
+            if hero.id in ledger.used:
+                continue
+            goals = ({posts[hero.id]} if posts and hero.id in posts else
+                     set.intersection(*(set(neighbours(w.pos)) for w in towers)))
+            route = nav.search(hero, goals, ledger.reserved)
+            if turn.is_day and posts and hero.id in posts:
+                if yield_operator(turn, nav, ledger, hero, pairs, posts, route):
+                    continue
+            if route and route[1] is not None:
+                ledger.add(hero.id, command("move", route[1]))
+            elif route and not turn.is_day:
+                for tower in sorted(towers, key=lambda w: (-w.level, w.id)):
+                    if tower.cooldown:
+                        continue
+                    planned = damage.copy()
+                    targets = select_targets(turn, tower, planned, nav.deadline)
+                    if targets and ledger.add(tower.id, {"action": "attack", "controllerId": str(hero.id),
+                                                       "targetPos": [dump(p) for p in targets]}):
+                        damage = planned
+                ledger.used.add(hero.id)
+        return
     pairs = pairs if pairs is not None else assignments(turn, nav, ledger)
     for hero, tower in pairs:
         if hero.id in ledger.used:
@@ -285,12 +474,14 @@ def yield_operator(turn, nav, ledger, hero, pairs, posts, route):
     return False
 
 
-def emergency_items(turn, ledger):
+def emergency_items(turn, ledger, guarded=()):
     """Use carried emergency supplies before assigning operators; no speculative shopping."""
     area_used = False
     for hero in turn.heroes:
         if hero.health <= (70 if hero.kind == "worker" else 65) and hero.inventory["Medicine"]:
             ledger.add(hero.id, command("use", name="Medicine"))
+            continue
+        if hero.id in guarded:
             continue
         if area_used:
             continue

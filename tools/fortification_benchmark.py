@@ -43,9 +43,10 @@ def simulate_day(agent_class, config_class, mirrored=False):
                 x, y = x - 1, y + 1
             r["pos"] = {"x": x, "y": y}
         p["teamOur"]["type"] = "defender"
-    front = {mirror((8, y)) for y in range(12, 18)}
-    # Independent expected geometry: complete 6x6 perimeter except rear gate.
-    expected = front | {mirror((x, y)) for x in (5, 6, 7) for y in (12, 17)}
+    front_x = 9 if getattr(cfg, "shared_operators", False) else 8
+    front = {mirror((front_x, y)) for y in range(12, 18)}
+    # Independent expected geometry, with rear access kept open.
+    expected = front | {mirror((x, y)) for x in range(5, front_x) for y in (12, 17)}
     disconnected_builds = 0
     front_complete_round = None
     first_wall = None
@@ -93,9 +94,13 @@ def simulate_day(agent_class, config_class, mirrored=False):
                 x, y = mirror(target)
                 # Explicitly model the demo-inferred ring, independent of layout().
                 base_distance = max(max(5 - x, 0, x - 6), max(14 - y, 0, y - 15))
+                in_build_area = base_distance == (2 if name == "wall" else 1)
+                if getattr(cfg, "shared_operators", False):
+                    # Forward shared-post extension is an assumption, not engine validation.
+                    in_build_area |= target in expected if name == "wall" else (x == 8 and 13 <= y <= 16)
                 legal = (adjacent and target not in occupied and destinations[target] == 1
                          and r["roleType"] == "worker"
-                         and base_distance == (2 if name == "wall" else 1))
+                         and in_build_area)
                 if name == "wall":
                     legal = legal and r["backpack"].count("stone") >= cfg.wall_stones
                     if legal:

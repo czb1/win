@@ -86,7 +86,7 @@ class Navigator:
 
 
 def layout(turn, cfg):
-    """Twelve-cell front and flanks; explicit layouts remain authoritative."""
+    """Shared front cluster with legacy fallback; explicit layouts take precedence."""
     if cfg.layout_mode == "explicit":
         return (list(dict.fromkeys(tuple(p) for p in cfg.weapon_cells if turn.inside(tuple(p)))),
                 list(dict.fromkeys(tuple(p) for p in cfg.wall_cells if turn.inside(tuple(p)))))
@@ -99,6 +99,39 @@ def layout(turn, cfg):
 
     def world(p):
         return origin[0] + sx * p[0], origin[1] + sy * p[1]
+
+    if cfg.shared_operators:
+        # Forward cluster with a protected inner post. Try two offsets, then
+        # retain the old geometry for existing guns or obstructed new sites.
+        for middle in (1, 0):
+            cluster = [world((3, v)) for v in (middle, middle-1, middle+1)][:len(cfg.loadout)]
+            post = world((2, middle))
+            outer = [world((4, v)) for v in (0, 1, -1, 2, -2, 3)]
+            outer += [world((u, v)) for u in (3, 2, 1, 0) for v in (-2, 3)]
+            occupied = {p for u in (*turn.ours, *turn.enemies)
+                        if u.kind not in ("worker", "pioneer", "wall", "rocket", "gatling", "railgun")
+                        for p in u.cells}
+            occupied |= {p for p, kind in turn.zones.items() if kind != "land"}
+            occupied |= {p for u in turn.enemies if u.kind not in ("worker", "pioneer") for p in u.cells}
+            occupied |= {w.pos for w in turn.ours if w.kind == "wall" and w.pos not in outer}
+            if (all(turn.inside(p) for p in cluster + outer + [post])
+                    and not occupied.intersection(cluster + outer + [post])
+                    and {w.pos for w in turn.weapons} <= set(cluster)):
+                blocked = occupied | set(cluster) | set(outer)
+                rear = world((-1, middle))
+                def connected(start, goal, extra=()):
+                    seen, queue = {start}, deque([start])
+                    while queue:
+                        p = queue.popleft()
+                        if p == goal:
+                            return True
+                        for q in neighbours(p):
+                            if turn.inside(q) and q not in blocked and q not in extra and q not in seen:
+                                seen.add(q)
+                                queue.append(q)
+                    return False
+                if turn.inside(rear) and connected(rear, post) and connected(rear, world((2, 1-middle)), {post}):
+                    return cluster, outer
 
     # Group towers along the front. Spreading them around the 2x2 base cuts
     # the inner walking ring into pockets, forcing connectivity checks to

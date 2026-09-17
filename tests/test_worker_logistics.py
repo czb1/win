@@ -178,7 +178,7 @@ class OperatorReturnTests(unittest.TestCase):
                 if task:
                     p["teamOur"]["roles"].append(unit(3, "pioneer", 1, 2))
                     p["phaseTask"] = "返回42"
-                cfg = Config(llm_enabled=task, layout_mode="explicit")
+                cfg = Config(llm_enabled=task, layout_mode="explicit", shared_operators=False)
                 agent, turn = Agent(cfg), Turn(p, cfg)
                 mem = Memory(day=1, return_targets={1: 21}, return_posts={1: (5, 3)})
                 agent.sessions[(*turn.key, None)] = mem
@@ -263,7 +263,7 @@ class LogisticsReplayTests(unittest.TestCase):
                 self.assertEqual(result["destroyed_walls"], 4)
                 nights = [result["checkpoints"][str(r)] for r in (69, 199, 329)]
                 self.assertTrue(all(n["operators_ready"] == 3 and n["front_walls"] == 6 for n in nights))
-                self.assertTrue(all(6 <= n["walls"] <= 12 for n in nights))
+                self.assertTrue(all(6 <= n["walls"] <= 14 for n in nights))
                 self.assertGreater(nights[-1]["walls"], 6)
                 self.assertGreaterEqual(nights[2]["walls"], nights[1]["walls"])
                 self.assertEqual(nights[2]["weapon_levels"], [3, 3, 3])

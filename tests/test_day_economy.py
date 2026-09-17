@@ -129,6 +129,8 @@ class OpeningReplayTests(unittest.TestCase):
                 dusk = r["checkpoints"]["69"]
                 self.assertEqual(dusk["weapon_levels"], [2, 2, 2])
                 self.assertEqual(dusk["operators_ready"], 3)
+                self.assertEqual(dusk["operable_towers"], 3)
+                self.assertEqual(dusk["minimum_ready_operators"], 1)
                 self.assertEqual(dusk["carried_vouchers"], 0)
                 self.assertEqual(dusk["front_walls"], 6)
                 self.assertGreaterEqual(r["worker_actions_before_70"]["collect"], 40)

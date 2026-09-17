@@ -6,6 +6,7 @@ from pathlib import Path
 
 @dataclass
 class Config:
+    shared_operators: bool = True
     round_origin: int = 0
     # These three defaults are inferred from the upstream demo, NOT verified rules.
     layout_mode: str = "demo_inferred"
@@ -40,6 +41,8 @@ class Config:
         if unknown:
             raise ValueError(f"Unknown configuration keys: {sorted(unknown)}")
         cfg = cls(**raw)
+        if type(cfg.shared_operators) is not bool:
+            raise ValueError("shared_operators must be a boolean")
         if cfg.layout_mode not in ("demo_inferred", "explicit"):
             raise ValueError("layout_mode must be demo_inferred or explicit")
         if not cfg.loadout or len(cfg.loadout) > 3 or any(

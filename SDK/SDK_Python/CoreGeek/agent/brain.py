@@ -7,7 +7,8 @@ from .config import Config
 from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
-from .combat import assignments, return_plan, defend, emergency_items
+from .combat import (assignments, return_plan, defend, emergency_items, crew_plan, crew_groups,
+                     relief_excluded, prepare_relief)
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
@@ -102,7 +103,9 @@ class Agent:
             LOG.warning("round=%s base_damage=%s health=%s", turn.round,
                         mem.station_health - turn.station.health, turn.station.health)
         mem.station_health = turn.station.health if turn.station else None
-        towers, walls = layout(turn, self.cfg)
+        if mem.blueprint is None:
+            mem.blueprint = layout(turn, self.cfg)
+        towers, walls = mem.blueprint
         ledger = Ledger(turn, self.cfg, towers, walls)
         nav = Navigator(turn, started + self.cfg.decision_seconds, mem.movement)
         intel = Intelligence(turn, self.cfg, mem)
@@ -110,27 +113,43 @@ class Agent:
         pairs = []
         try:
             h = turn.pioneer
+            worker_cover, preview = False, []
+            if self.cfg.shared_operators and turn.weapons:
+                unavailable = ({h.id} if h else set()) | relief_excluded(turn, mem)
+                if not turn.is_day:
+                    unavailable |= {w.id for w in turn.workers if w.health <= 70 and w.inventory["Medicine"]}
+                preview, preview_posts = crew_plan(turn, nav, ledger, walls,
+                                                   excluded=unavailable, previous=mem.crew)
+                worker_cover = (len(preview) == len(turn.weapons) and all(
+                    length == 0 or (turn.is_day and length + self.cfg.return_margin <= turn.day_left)
+                    for _, length in preview_posts.values()))
             within_timeout = bool(h and turn.phase_task and turn.round - mem.task_started <
                                   min(mem.task_timeout, self.cfg.task_max_rounds))
             home = [w.cells for w in turn.weapons] or ([turn.station.cells] if turn.station else [])
             task_return = min((route[0] for cells in home
                                if (route := nav.approach(h, cells)) is not None), default=130) if within_timeout else 0
             danger = bool(h and any(turn.threatens_us(r) and (
-                turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius,
-                                                 task_return + self.cfg.return_margin + r.attack_range)
+                turn.base_distance(r.pos) <= (self.cfg.task_danger_radius if worker_cover else
+                    max(self.cfg.task_danger_radius, task_return + self.cfg.return_margin + r.attack_range))
                 or distance(h.pos, r.pos) <= max(self.cfg.task_danger_radius, r.attack_range + 2))
                 for r in turn.robots))
             # First-wave readiness has a hard return deadline. On later nights
             # a task may continue while no wave threatens the pioneer or base.
-            first_watch = (turn.day == 1 and bool(home)
+            first_watch = (not worker_cover and turn.day == 1 and bool(home)
                            and turn.day_left <= task_return + self.cfg.return_margin)
             hold_task = within_timeout and not danger and not first_watch and not mem.stop_reason
             if not turn.is_day:
-                emergency_items(turn, ledger)
-            pairs = assignments(turn, nav, ledger, excluded={h.id} if hold_task else (),
-                                fixed=mem.return_targets if turn.is_day else None)
-            pairs, posts = (return_plan(turn, nav, pairs, walls, mem.return_targets, mem.return_posts)
-                            if turn.is_day else (pairs, {}))
+                emergency_items(turn, ledger, guarded=(set(mem.crew) | {actor.id for actor, _ in preview})
+                                if self.cfg.shared_operators else ())
+            if self.cfg.shared_operators:
+                pairs, posts = crew_plan(turn, nav, ledger, walls,
+                                         excluded=relief_excluded(turn, mem) | ({h.id} if hold_task else set()),
+                                         previous=mem.crew)
+            else:
+                pairs = assignments(turn, nav, ledger, excluded={h.id} if hold_task else (),
+                                    fixed=mem.return_targets if turn.is_day else None)
+                pairs, posts = (return_plan(turn, nav, pairs, walls, mem.return_targets, mem.return_posts)
+                                if turn.is_day else (pairs, {}))
             if not turn.is_day:
                 # Recall from the current position early enough for an approaching
                 # wave, but release workers immediately when local danger ends.
@@ -143,9 +162,23 @@ class Agent:
                         turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius, lead + r.attack_range)
                         or distance(tower.pos, r.pos) <= tower.attack_range + 1)
                         or distance(hero.pos, r.pos) <= r.attack_range + 2 for r in turn.robots)
-                pairs = [(hero, tower) for hero, tower in pairs if needs_defence(hero, tower)]
+                needed = {hero.id for hero, tower in pairs if needs_defence(hero, tower)}
+                if self.cfg.shared_operators and any(turn.threatens_us(r) for r in turn.robots):
+                    needed.update(mem.crew)
+                pairs = [(hero, tower) for hero, tower in pairs if hero.id in needed]
+                posts = {uid: p for uid, p in posts.items() if uid in needed}
                 mem.return_targets.clear()
                 mem.return_posts.clear()
+            if self.cfg.shared_operators:
+                active = {hero.id for hero, _ in pairs}
+                mem.return_targets = {uid: value for uid, value in mem.return_targets.items() if uid in active}
+                mem.return_posts = {uid: value for uid, value in mem.return_posts.items() if uid in active}
+                new_crew = {uid: (posts[uid][0], tuple(w.id for w in group))
+                            for uid, (_, group) in crew_groups(pairs).items()}
+                if new_crew != mem.crew:
+                    LOG.info("round=%s operator_groups=%s previous=%s covered=%s operators=%s",
+                             turn.round, new_crew, mem.crew, len(pairs), len(new_crew))
+                mem.crew = new_crew
             ledger.return_pairs = pairs
             ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
             returning = set()
@@ -159,7 +192,7 @@ class Agent:
                 length = route[0] if route else posts[hero.id][1] + self.cfg.return_margin
                 if hero.id in mem.return_targets or not turn.is_day or turn.day_left <= length + self.cfg.return_margin:
                     returning.add(hero.id)
-                    mem.return_targets[hero.id] = tower.id
+                    mem.return_targets[hero.id] = (mem.crew[hero.id][1] if self.cfg.shared_operators else tower.id)
                     if hero.id in posts:
                         mem.return_posts[hero.id] = posts[hero.id][0]
                     LOG.debug("round=%s worker_or_pioneer=%s return_to_tower=%s steps=%s day_left=%s",
@@ -181,7 +214,8 @@ class Agent:
                     if can_clear:
                         for helper, weapon in helpers:
                             returning.add(helper.id)
-                            mem.return_targets[helper.id] = weapon.id
+                            mem.return_targets[helper.id] = (mem.crew[helper.id][1]
+                                                             if self.cfg.shared_operators else weapon.id)
                             mem.return_posts[helper.id] = posts[helper.id][0]
             if h and turn.phase_task:
                 # Submit a ready answer before a return movement can cancel it.
@@ -197,7 +231,8 @@ class Agent:
                                        "first_wave_deadline" if first_watch else "task_deadline")
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             if not turn.is_day:
-                defend(turn, nav, ledger, pairs)
+                prepare_relief(turn, nav, ledger, pairs, ledger.operator_posts, mem)
+                defend(turn, nav, ledger, pairs, ledger.operator_posts)
                 for hero in turn.heroes:
                     if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
                         continue
