@@ -59,6 +59,21 @@ def preparation_start(turn, cfg, mem, nav, heroes, sites):
     shops = [p for p, k in turn.zones.items() if k == "weaponShop"]
     missing = sum(w.id < 0 for w in weapons)
     upgrades = sum(w.level < 3 for w in weapons)
+    # Night income can fund healthy-base vouchers in the same bulk shop trip.
+    # Reserve their real purchase/use actions instead of crowding out walls.
+    base_work = 0
+    if mem.night_crew and turn.station and turn.station.health >= 750:
+        funds = turn.gold + sum(max(0, h.inventory[k] - (mem.stone_reserves.get(h.id, 0) if k == "stone" else 0))
+                                * turn.prices.get(k, 0) for h in turn.heroes for k in ORES)
+        funds -= missing * cfg.weapon_cost
+        funds -= sum(turn.shop.get(f"WeaponUpgradeVoucher{w.level}", 0)
+                     for w in weapons if w.level < 3)
+        for level in range(turn.station.level, 3):
+            price = turn.shop.get(f"StationUpgradeVoucher{level}")
+            if price is None or funds < price:
+                break
+            funds -= price
+            base_work += 2
     budgets = []
     for hero in heroes:
         if not home:
@@ -69,12 +84,13 @@ def preparation_start(turn, cfg, mem, nav, heroes, sites):
         route = via(nav, hero, groups)
         if route is not None:
             build_route = nav.approach(hero, home)
-            shopping = route + (1 if vendors else 0) + (2 + 2 * upgrades if shops else 0)
+            shopping = route + (1 if vendors else 0) + (2 + 2 * upgrades + base_work if shops else 0)
             construction = (build_route[0] if build_route else 0) + 2 * missing
             work = max(shopping, construction) if len(heroes) > 1 else shopping + 2 * missing
             budgets.append(work + cfg.return_margin)
     # Re-evaluate as mines move, but do not oscillate back into an earlier phase.
-    cutoff = min(cfg.economy_rounds, max(0, 70 - max(budgets, default=cfg.return_margin)))
+    cutoff = min(max(0, cfg.economy_rounds - base_work),
+                 max(0, 70 - max(budgets, default=cfg.return_margin)))
     mem.preparation_tick = min(mem.preparation_tick, cutoff)
     return mem.preparation_tick
 

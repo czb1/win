@@ -242,6 +242,15 @@ def select_targets(turn, tower, damage, deadline):
 def defend(turn, nav, ledger, pairs=None, posts=None):
     damage = {}
     pairs = pairs if pairs is not None else assignments(turn, nav, ledger)
+    if len({h.id for h, _ in pairs}) < len(pairs):
+        # One shared operator gets one action: fire the most useful ready gun.
+        benefits = {}
+        for _, tower in pairs:
+            planned = {}
+            if not tower.cooldown and not turn.is_day:
+                select_targets(turn, tower, planned, nav.deadline)
+            benefits[tower.id] = sum(planned.get(r.id, 0) * threat(turn, r) for r in turn.robots)
+        pairs = sorted(pairs, key=lambda pair: (-benefits[pair[1].id], pair[1].id))
     for hero, tower in pairs:
         if hero.id in ledger.used:
             continue
@@ -265,7 +274,13 @@ def yield_operator(turn, nav, ledger, hero, pairs, posts, route):
     """Occupy a narrow control cell only after the other operators pass it."""
     target = posts[hero.id]
     if hero.pos != target and (route is None or route[1] != target):
-        return False
+        if route is not None:
+            return False
+        # During a handoff, two operators can occupy each other's posts.
+        # A blocked actor must also yield its current cell before either moves.
+        obstruction = hero.pos
+    else:
+        obstruction = target
     waiting = [h for h, _ in pairs if h.id != hero.id and h.id in posts and h.pos != posts[h.id]]
     if not waiting:
         return False
@@ -274,13 +289,13 @@ def yield_operator(turn, nav, ledger, hero, pairs, posts, route):
     try:
         turn.blocked = static
         reachable = [h for h in waiting if nav.search(h, {posts[h.id]}) is not None]
-        turn.blocked = static | {target}
+        turn.blocked = static | {obstruction}
         obstructed = [h for h in reachable if nav.search(h, {posts[h.id]}) is None]
         if not obstructed:
             return False
         choices = []
         for p in [hero.pos, *neighbours(hero.pos)]:
-            if (not turn.inside(p) or p == target or p in original and p != hero.pos
+            if (not turn.inside(p) or p == obstruction or p in original and p != hero.pos
                     or p in ledger.reserved or nav.memory and p in nav.memory.blocked(hero.id)):
                 continue
             turn.blocked = static | {p}
