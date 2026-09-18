@@ -24,15 +24,20 @@ def parse_file_tool(text):
 
 
 def document_path(task):
+    return next(iter(document_paths(task)), None)
+
+
+def document_paths(task):
     # Only explicit local documentation paths from this task; no guessed API.
     task = re.sub(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s`<>\"'，。]+", " ", task)
+    paths = []
     # Chinese text is a Unicode word character: \w would miss the actual
     # judger wording, e.g. 请阅读task_1_alpha.md，获取任务信息.
     for match in re.finditer(r"(?<![A-Za-z0-9_./-])[A-Za-z0-9_./-]+\.(?:md|txt|rst)(?![A-Za-z0-9_./-])", task):
         path = match[0]
-        if "//" not in path and ".." not in path.split("/"):
-            return path
-    return None
+        if "//" not in path and ".." not in path.split("/") and path not in paths:
+            paths.append(path)
+    return paths
 
 
 def document_code(path, start=0, base=None):

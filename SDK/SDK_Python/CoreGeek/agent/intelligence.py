@@ -11,7 +11,8 @@ import re
 import shlex
 from .commands import command
 from .model import ORES, pos
-from .task_tools import parse_file_tool, document_path, document_code, file_code, resolved_document
+from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
+from .task_runtime import runtime_code, runtime_result
 from .task_sop import answer_contract, answer_error, engineering_code
 from .movement import MovementMemory
 
@@ -205,6 +206,8 @@ class Memory:
     bootstrap_done: bool = False
     last_attempt: dict = field(default_factory=dict)
     documents: list = field(default_factory=list)
+    reference_reads: set = field(default_factory=set)
+    query_blocked: bool = False
     contract: dict = field(default_factory=dict)
     sop_attempted: bool = False
     check_pending: bool = False
@@ -383,6 +386,8 @@ class Memory:
             self.bootstrap_done = False
             self.last_attempt.clear()
             self.documents.clear()
+            self.reference_reads.clear()
+            self.query_blocked = False
             self.contract.clear()
             self.sop_attempted = self.check_pending = False
             self.work_deadline = None
@@ -428,8 +433,14 @@ class Memory:
             return
         if purpose == "cmd":
             raw = turn.raw.get("lastCmdResult") or ""
-            status, body, answer = sandbox_result(raw)
             tool = self.running_tool or {}
+            result, report = runtime_result(raw) if not tool else (raw, {})
+            status, body, answer = sandbox_result(result)
+            if report.get("http_errors"):
+                self.query_blocked = True
+                status, answer = "query_failed", None
+            elif report.get("http_successes", 0) and status == "ok":
+                self.query_blocked = False
             LOG.info("round=%s task_sandbox status=%s final=%s chars=%s sha=%s tool=%s path=%s error_tail=%s",
                      turn.round, status, answer is not None, len(str(raw)), digest_text(raw),
                      tool.get("kind", "python"), excerpt(str(tool.get("path", "-")), 160),
@@ -442,6 +453,8 @@ class Memory:
             self.history.append({"sandbox": self.cmd_result})
             self.last_attempt = {"python": excerpt(self.running_python, 5000),
                                  "sandbox": excerpt(str(raw), 7000), "status": status}
+            if report:
+                self.last_attempt["http"] = report
             if not tool:
                 self.exploration.append({"python": excerpt(self.running_python, 2400),
                                          "sandbox": excerpt(str(raw), 3000), "status": status})
@@ -476,7 +489,10 @@ class Memory:
                     # Verify the current workspace ourselves before submission.
                     self.check_pending = True
                 elif answer is not None and (not self.running_tool or checker):
-                    error = answer_error(answer, self.contract)
+                    if checker and not answer_error(answer, self.contract):
+                        self.query_blocked = False  # An independent check is authoritative for token tasks.
+                    error = ("查询错误尚未解决；必须成功重查，不能把失败当作空数据提交。"
+                             if self.query_blocked else answer_error(answer, self.contract))
                     signature = hashlib.sha256(("answer:" + answer).encode()).hexdigest()
                     if error:
                         self.reject(error)
@@ -535,10 +551,6 @@ class Memory:
                 return
             if remaining <= 4 and file_kinds:
                 self.reject("临近截止；禁止继续 READ/LIST，必须输出 ANSWER 或能打印 FINAL_ANSWER 的 PYTHON。")
-                return
-            if (remaining <= 4 and has_python and "FINAL_ANSWER" not in parsed["python"]
-                    and self.contract.get("kind") != "check_token"):
-                self.reject("临近截止；PYTHON 必须在本次执行直接打印 FINAL_ANSWER。")
                 return
             if has_python or file_kinds:
                 code = code if file_kinds else unfence(parsed["python"])
@@ -636,6 +648,15 @@ class Memory:
                 return str(PurePosixPath(document["resolved_path"]).parent)
         return None
 
+    def task_directory(self):
+        if self.contract.get("workspace"):
+            return self.contract["workspace"]
+        # A secondary document in a subdirectory must not move the task root.
+        for document in self.documents:
+            if document.get("resolved_path"):
+                return str(PurePosixPath(document["resolved_path"]).parent)
+        return None
+
 
 class Intelligence:
     def __init__(self, turn, cfg, memory):
@@ -682,7 +703,11 @@ class Intelligence:
             remaining = max(0, min(remaining, available_rounds))
         self.mem.work_deadline = self.turn.round + remaining
         if self.mem.answer is not None:
-            if answer_identity(self.mem.answer) in self.mem.rejected_answers:
+            if self.mem.query_blocked:
+                self.mem.answer = None
+                self.mem.answer_python = ""
+                self.mem.reject("查询错误尚未解决；必须成功重查，禁止用默认零值或空集合提交答案。")
+            elif answer_identity(self.mem.answer) in self.mem.rejected_answers:
                 self.mem.answer = None
                 self.mem.answer_python = ""
                 self.mem.reject("该答案已被判题器判错，禁止原样重交；根据 submissionFeedback 修正字段或提交有证据的字段子集。")
@@ -707,6 +732,19 @@ class Intelligence:
             if path:
                 self.mem.python = document_code(path)
                 self.mem.running_tool = {"kind": "discover", "path": path, "start": 0}
+        if (self.mem.documents and self.mem.python is None and self.mem.pending is None
+                and self.mem.contract.get("kind") != "check_token"
+                and remaining >= 5 and len(self.mem.reference_reads) < 2):
+            entry = self.mem.documents[0]
+            read_paths = {d.get("path") for d in self.mem.documents}
+            read_paths.update(d.get("resolved_path") for d in self.mem.documents)
+            for path in document_paths(entry.get("output", "")):
+                if path in read_paths or path in self.mem.reference_reads:
+                    continue
+                self.mem.reference_reads.add(path)
+                self.mem.python = document_code(path, base=self.mem.task_directory())
+                self.mem.running_tool = {"kind": "read", "path": path, "start": 0}
+                break
         if self.mem.python is not None and self.mem.pending is None:
             code, self.mem.python = self.mem.python, None
             self.mem.pending = ("cmd", self.turn.round)
@@ -719,7 +757,8 @@ class Intelligence:
                              task_started=self.mem.task_started, point=self.mem.task_point)
             self.mem.history.append({"python": excerpt(code)})
             # executeCmd is passed to the official sandbox, never subprocess/eval on this HTTP host.
-            return "", "python3 -c " + shlex.quote(code)
+            executed = code if tool else runtime_code(code, self.mem.task_directory())
+            return "", "python3 -c " + shlex.quote(executed)
         if not self.can_call():
             return "", ""
         if self.mem.contract.get("kind") == "check_token" and remaining <= 2:
@@ -744,6 +783,8 @@ class Intelligence:
                    "submissionFeedback": self.mem.submission_feedback,
                    "documents": self.mem.documents,
                    "submissionContract": self.mem.contract,
+                   "taskDirectory": self.mem.task_directory(),
+                   "queryBlocked": self.mem.query_blocked,
                    "previousSolutions": hints}
         if remaining <= 2:
             step = "最后机会：下一回合必须提交，只输出 ANSWER 和当前有证据的最佳答案，禁止 READ、LIST、PYTHON。"
@@ -782,6 +823,10 @@ class Intelligence:
                   "查询结果在下一回合lastAttempt中；documents是已读文档，不要重复读取同一页。\n"
                   "如果API返回很多条数据，只打印本题需要的字段；HTTP请求设timeout=8。\n"
                   "exploration保留本题最近查询及错误；复用已获得的接口说明，勿重复失败的路径。\n"
+                  "taskDirectory是本题执行目录，每次PYTHON自动切换到该目录；不继承上次代码中的chdir。\n"
+                  "401/400时按响应中的认证方式、必填参数纠正文档；不要同时猜接口路径和统计字段。\n"
+                  "沙盒会记录requests/urllib的HTTP失败；即使try/except吞掉错误也禁止提交，修正后重新完整查询。\n"
+                  "临近截止也只能在查询成功且数据完整时打印FINAL_ANSWER；失败时保留诊断，不能强凑答案。\n"
                   "HTTP失败、404、解析失败或缺少字段不等于空数据；禁止用默认0、空列表或空字符串冒充查询结论。\n"
                   "聚合前验证响应结构并按文档处理分页；输出请求路径、状态与必要字段，便于下一步纠错。\n"
                   "文档在沙盒文件中时，先用READ读取指定文件；不要臆造API、路径或方法。\n"

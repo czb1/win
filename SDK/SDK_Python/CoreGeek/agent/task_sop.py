@@ -14,11 +14,13 @@ def answer_contract(documents):
         if document.get("kind") not in ("read", "discover"):
             continue
         text = document.get("output", "")
-        section = re.search(r"(?:^|\n)#{1,4}\s*(?:提交规则|提交格式|答案格式|答案输出格式)[^\n]*\n"
+        section = re.search(r"(?:^|\n)#{1,4}\s*(?:提交规则|提交格式|提交形式|答案格式|答案输出格式)[^\n]*\n"
                             r"(.*?)(?=\n#{1,4} |\Z)", text, re.S)
         if not section:
             continue
-        samples = re.findall(r"```(?:json)?\s*\n(.*?)\n```", section[1], re.S)
+        # Real tasks put fenced JSON inside Markdown list items (two spaces).
+        samples = re.findall(r"^[ \t]*```(?:json)?[ \t]*\r?\n(.*?)^[ \t]*```[ \t]*\r?$",
+                             section[1], re.S | re.M | re.I)
         for sample in samples:
             try:
                 example = json.loads(sample)
@@ -77,9 +79,12 @@ def engineering_code(workspace, repair=True):
 
 _ENGINEERING_SCRIPT = r'''
 import json
+import errno
 import os
 from pathlib import Path
 import re
+import shlex
+import shutil
 import subprocess
 import tempfile
 
@@ -161,10 +166,32 @@ except (ValueError, OSError) as error:
 
 # Capture output separately so diagnostics can never masquerade as an answer.
 # A file bounds host memory even if the checker produces excessive output.
+def run_check(output):
+    checker = base / 'check'
+    try:
+        return subprocess.run([str(checker)], cwd=base, stdout=output,
+                              stderr=subprocess.STDOUT, timeout=8)
+    except OSError as error:
+        # ENOENT can mean a missing shebang interpreter, not a missing file.
+        # Only fall back for a declared shell script; never rewrite the checker
+        # or retry a checker that actually ran and returned a failure.
+        if error.errno not in (errno.ENOENT, errno.ENOEXEC, errno.EACCES) or not checker.is_file():
+            raise
+        with checker.open('rb') as source:
+            first = source.readline(256).decode('utf-8', errors='replace').strip()
+        words = shlex.split(first[2:]) if first.startswith('#!') else []
+        if words and Path(words[0]).name == 'env':
+            words = words[1:]
+        shell = Path(words[0]).name if words else ''
+        interpreter = shutil.which(shell) if shell in ('sh', 'bash') else None
+        if not interpreter or any(not arg.startswith('-') for arg in words[1:]):
+            raise
+        return subprocess.run([interpreter, *words[1:], str(checker)], cwd=base,
+                              stdout=output, stderr=subprocess.STDOUT, timeout=8)
+
 try:
     with tempfile.TemporaryFile() as output:
-        result = subprocess.run([str(base / 'check')], cwd=base, stdout=output,
-                                stderr=subprocess.STDOUT, timeout=8)
+        result = run_check(output)
         output.seek(0)
         raw = output.read(16001)
     text = raw.decode('utf-8', errors='replace')

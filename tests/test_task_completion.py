@@ -58,22 +58,10 @@ print('TOKEN: {token}')
     (workspace / 'check').write_text(f'#!{sys.executable}\n' + checker)
     (workspace / 'check').chmod(0o755)
     document = task_dir / f'task_1_{name}.md'
-    document.write_text(f'''# 自进化任务 B-1：修复应用 {name} 部署
-应用工作区由组织方准备，请按 spec.md 修复文件系统。
-## 任务要求
-1. 进入工作区：`cd {workspace}/`
-2. 阅读 `spec.md`
-3. 修复文件系统中的所有问题
-4. 运行 `./check`
-5. 全部通过输出 `TOKEN: xxx`
-## 提交规则
-任务完成以 `./check` 输出 `TOKEN: xxx` 为准，通过 submitAnswer 提交：
-```
-{{"token": "xxx"}}
-```
-## 提示
-你可以反复运行 `./check` 查看进度。
-''', encoding='utf-8')
+    # Preserve the real log's list indentation and submission heading.
+    text = Path(__file__).with_name('fixtures').joinpath('evolution/alpha_task.md').read_text(encoding='utf-8')
+    text = text.replace('/tmp/selfEvolutionTask/1-fixed-step/2-engineering-fix/ws_1', str(workspace))
+    document.write_text(text.replace('alpha', name), encoding='utf-8')
     return workspace, document, token
 
 

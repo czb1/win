@@ -117,10 +117,10 @@ class EvolutionTests(unittest.TestCase):
         response = agent.decide(p)
         self.assertFalse(response["prompt"])
         args = shlex.split(response["executeCmd"])
-        self.assertEqual(args, ["python3", "-c", code])
+        self.assertEqual(args[:2], ["python3", "-c"])
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "weather.json").write_text('{"北京": 21, "上海": 25}', encoding="utf-8")
-            result = subprocess.run([sys.executable, "-c", code], cwd=directory,
+            result = subprocess.run([sys.executable, "-c", args[2]], cwd=directory,
                                     capture_output=True, text=True, timeout=3)
         self.assertEqual(result.returncode, 0, result.stderr)
         p.update(roundNo=4, llmResp="", lastCmdResult=f"[exitCode:{result.returncode}]\n{result.stdout}")
