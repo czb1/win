@@ -593,7 +593,8 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
         if route and turn.day_left > route[0] + cfg.task_min_rounds + return_estimate + cfg.return_margin:
             duration = min(int(task.get("timeoutRounds", cfg.task_max_rounds)), cfg.task_max_rounds)
             observed = [s["rounds"] for s in mem.skills if s.get("point") == pos(task["taskPosition"])
-                        and s.get("workflow") == "check_token" and type(s.get("rounds")) is int]
+                        and s.get("workflow") == "check_token" and not s.get("disabled")
+                        and type(s.get("rounds")) is int]
             if observed:
                 # A learned fast SOP should not be priced at its official worst
                 # case timeout. This estimate only ranks tasks, never deadlines.

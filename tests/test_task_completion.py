@@ -18,6 +18,7 @@ from agent.intelligence import Intelligence, Memory, parse_task_reply
 from agent.model import Turn
 from agent.task_sop import answer_contract, answer_error, engineering_code
 from agent.task_tools import document_code, document_path
+from agent.task_skills import learned_method
 
 
 def deployment(directory, name, port=8080):
@@ -138,15 +139,20 @@ class TaskCompletionTests(unittest.TestCase):
         self.assertIsNone(mem.submitted)
         self.assertIsNone(mem.answer)
 
-    def test_completed_solution_keeps_exploration_for_next_task(self):
+    def test_completed_solution_keeps_method_but_not_old_exploration_values(self):
         p = task_payload(4)
         p['lastRoundRoleActionResults'] = {'11': True}
         mem = Memory(task_text='query Beijing', task_point=(6, 5), task_started=1,
-                     submitted=(3, '42'), submitted_python='print(42)')
+                     submitted=(3, '42'), submitted_python='print(42)',
+                     submitted_method=learned_method((6, 5), {}, calls=[{
+                         'endpoint': 'http://localhost:8899/api/search', 'auth': 'Bearer',
+                         'method': 'GET', 'parameters': ['location']}]))
         mem.exploration.append({'python': 'read_schema()', 'sandbox': 'API_SCHEMA', 'status': 'ok'})
         mem.observe(Turn(p, Config()), Config())
         self.assertFalse(mem.exploration)
-        self.assertEqual(mem.skills[0]['exploration'][0]['sandbox'], 'API_SCHEMA')
+        self.assertEqual(mem.skills[0]['interfaces'][0]['auth'], 'Bearer')
+        self.assertNotIn('API_SCHEMA', json.dumps(mem.skills))
+        self.assertNotIn('42', json.dumps(mem.skills))
         p = task_payload(40, 'query Shanghai')
         mem.task_text = p['phaseTask']
         mem.task_point = (6, 5)
@@ -154,7 +160,8 @@ class TaskCompletionTests(unittest.TestCase):
         mem.bootstrap_done = True
         t, cfg, _, ledger = setup_case(p)
         prompt, _ = Intelligence(t, cfg, mem).task(ledger)
-        self.assertIn('API_SCHEMA', prompt)
+        self.assertIn('Bearer', prompt)
+        self.assertNotIn('API_SCHEMA', prompt)
         self.assertIn('必须重新查询', prompt)
 
     def test_actual_log_question_triggers_bootstrap_without_llm(self):
@@ -243,9 +250,10 @@ class TaskCompletionTests(unittest.TestCase):
             first = self.complete_deployment(agent, directory, 'alpha', 1)
             self.complete_deployment(agent, directory, 'gamma', 36, port=9091)
             mem = next(iter(agent.sessions.values()))
-            self.assertEqual(len(mem.skills), 2)
+            self.assertEqual(len(mem.skills), 1)
+            self.assertEqual(mem.skills[0]['successes'], 2)
             self.assertEqual(mem.skills[-1]['workflow'], 'check_token')
-            self.assertNotIn(str(first), mem.skills[-1]['python'])
+            self.assertNotIn(str(first), json.dumps(mem.skills[-1]))
             self.assertFalse(mem.skills[-1]['verified'])
             for outcome in mem.task_outcomes:
                 self.assertTrue(outcome['completionObserved'])

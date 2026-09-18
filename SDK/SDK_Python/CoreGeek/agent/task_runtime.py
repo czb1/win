@@ -30,9 +30,31 @@ import tempfile
 import traceback
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
-report = {'http_successes': 0, 'http_errors': []}
+report = {'http_successes': 0, 'http_errors': [], 'http_calls': []}
+
+def remember_call(method, url, headers=None, params=None):
+    address = urlsplit(str(url))
+    if address.scheme not in ('http', 'https') or not address.hostname:
+        return
+    headers = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    authorization = headers.get('authorization', '')
+    # Only protocol names survive; no credentials, query values or response data.
+    auth = ('Bearer' if authorization.lower().startswith('bearer ') else
+            'Basic' if authorization.lower().startswith('basic ') else
+            'X-API-Key' if 'x-api-key' in headers else 'none')
+    keys = set(parse_qs(address.query))
+    if isinstance(params, dict):
+        keys.update(str(k) for k in params)
+    endpoint = address.scheme + '://' + address.hostname
+    if address.port:
+        endpoint += ':' + str(address.port)
+    call = {'method': str(method).upper(), 'endpoint': endpoint + address.path,
+            'auth': auth, 'parameters': sorted(keys)}
+    if call not in report['http_calls'] and len(report['http_calls']) < 12:
+        report['http_calls'].append(call)
+
 
 def failure(url, detail):
     # Do not repeat headers, credentials, or query strings in diagnostics.
@@ -62,6 +84,8 @@ def checked_urlopen(url, *args, **kwargs):
         raise
     if str(address).startswith(('http://', 'https://')):
         report['http_successes'] += 1
+        remember_call(getattr(url, 'get_method', lambda: 'GET')(), address,
+                      dict(url.header_items()) if hasattr(url, 'header_items') else {})
     return response
 urllib.request.urlopen = checked_urlopen
 
@@ -89,6 +113,8 @@ else:
             failure(url, 'HTTP %s: %s' % (response.status_code, response.text[:1000]))
         else:
             report['http_successes'] += 1
+            remember_call(method, url, kwargs.get('headers') or getattr(session, 'headers', {}),
+                          kwargs.get('params'))
         return response
 
     def checked_json(response, *args, **kwargs):
