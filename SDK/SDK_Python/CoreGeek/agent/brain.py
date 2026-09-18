@@ -8,7 +8,7 @@ from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
 from .combat import (assignments, return_plan, defend, emergency_items, crew_plan, crew_groups,
-                     relief_excluded, prepare_relief)
+                     relief_excluded, prepare_relief, retreat_endangered)
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
@@ -58,6 +58,12 @@ def battle_diagnostics(turn, mem, pairs, response):
              for wall in turn.ours if wall.kind == "wall"]
     LOG.info("round=%s battle_state=%s", turn.round, json.dumps({
         "baseHealth": turn.station.health, "heroes": len(turn.heroes), "gold": turn.gold,
+        "operators": len({h.id for h, _ in pairs}),
+        "coveredTowers": sum(turn.adjacent(h.pos, w.pos) and str(h.id) not in commands for h, w in pairs),
+        "firingTowers": sum(c["action"] == "attack" for c in commands.values()),
+        "relief": [{"outgoing": uid, "replacement": entry[0], "post": entry[1],
+                    "phase": "awaiting_entry" if entry[2] else "approaching"}
+                   for uid, entry in sorted(mem.relief.items())],
         "hostileTotal": len(hostile), "hostileWithin6": len(near),
         "hostileNear": [{"id": r.id, "kind": r.kind, "pos": r.pos, "health": r.health}
                         for r in near[:12]], "walls": walls, "towers": towers,
@@ -141,6 +147,8 @@ class Agent:
             if not turn.is_day:
                 emergency_items(turn, ledger, guarded=(set(mem.crew) | {actor.id for actor, _ in preview})
                                 if self.cfg.shared_operators else ())
+                if self.cfg.shared_operators:
+                    retreat_endangered(turn, ledger, set(mem.crew) | {actor.id for actor, _ in preview})
             if self.cfg.shared_operators:
                 pairs, posts = crew_plan(turn, nav, ledger, walls,
                                          excluded=relief_excluded(turn, mem) | ({h.id} if hold_task else set()),
@@ -156,7 +164,8 @@ class Agent:
                 def needs_defence(hero, tower):
                     if hero.kind != "worker":
                         return True
-                    route = nav.approach(hero, [tower.pos])
+                    route = (nav.search(hero, {posts[hero.id][0]}, ledger.reserved)
+                             if hero.id in posts else nav.approach(hero, [tower.pos]))
                     lead = (route[0] if route else 130) + self.cfg.return_margin
                     return any(turn.threatens_us(r) and (
                         turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius, lead + r.attack_range)
@@ -232,6 +241,9 @@ class Agent:
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             if not turn.is_day:
                 prepare_relief(turn, nav, ledger, pairs, ledger.operator_posts, mem)
+                if self.cfg.shared_operators:
+                    mem.crew = {uid: (ledger.operator_posts[uid], tuple(w.id for w in guns))
+                                for uid, (_, guns) in crew_groups(pairs).items()}
                 defend(turn, nav, ledger, pairs, ledger.operator_posts)
                 for hero in turn.heroes:
                     if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):

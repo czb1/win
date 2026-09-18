@@ -168,6 +168,9 @@ class Memory:
     return_posts: dict = field(default_factory=dict)
     crew: dict = field(default_factory=dict)
     relief: dict = field(default_factory=dict)
+    relief_started: dict = field(default_factory=dict)
+    worker_health: dict = field(default_factory=dict)
+    worker_damage: dict = field(default_factory=dict)
     blueprint: tuple | None = None
     movement: MovementMemory = field(default_factory=MovementMemory)
     last_response: dict | None = None
@@ -178,6 +181,9 @@ class Memory:
 
     def observe(self, turn, cfg):
         self.movement.observe(turn, self)
+        self.worker_damage = {h.id: max(0, self.worker_health.get(h.id, h.health) - h.health)
+                              for h in turn.workers} if self.last_round == turn.round - 1 else {}
+        self.worker_health = {h.id: h.health for h in turn.workers}
         current_walls = {wall.pos: (wall.id, wall.health) for wall in turn.ours if wall.kind == "wall"}
         if self.last_round == turn.round - 1:
             for location, (uid, health) in self.wall_health.items():
@@ -200,6 +206,7 @@ class Memory:
             self.return_posts.clear()
             self.crew.clear()
             self.relief.clear()
+            self.relief_started.clear()
         # Once selling has begun, any other action ends that visit. A failed
         # sell remains retryable; it must not authorize another trip later today.
         if self.last_round == turn.round - 1:

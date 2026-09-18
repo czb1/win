@@ -236,3 +236,130 @@ class SharedLayoutTests(unittest.TestCase):
         self.assertEqual(layout(Turn(p, Config()), Config()), old)
         cfg = Config(layout_mode="explicit", weapon_cells=[[2, 2]], wall_cells=[[3, 3]])
         self.assertEqual(layout(Turn(payload(), cfg), cfg), ([(2, 2)], [(3, 3)]))
+
+
+class SharedSafetyTests(unittest.TestCase):
+    def test_lethal_post_loses_priority_over_immediate_fire(self):
+        from agent.combat import post_damage
+        p = scenario()
+        p['teamOur']['roles'][0]['health'] = 30
+        p['robot']['roles'][0]['pos'] = {'x': 6, 'y': 5}
+        t, _, _, pairs, posts = plan(p)
+        self.assertTrue(pairs)
+        for h, _ in pairs:
+            self.assertLess(post_damage(t, posts[h.id]), h.health)
+        self.assertNotIn(1, {h.id for h, _ in pairs})
+
+    def test_endangered_incumbent_really_retreats(self):
+        from agent.combat import post_damage
+        p = scenario()
+        p['teamOur']['roles'][0]['health'] = 30
+        p['robot']['roles'][0]['pos'] = {'x': 6, 'y': 5}
+        agent = Agent(Config(layout_mode='explicit', llm_enabled=False))
+        t = Turn(p, agent.cfg)
+        agent.sessions[(*t.key, t.station.pos)] = Memory(day=1, crew={1: ((4, 5), (20, 21, 22))})
+        cmds = agent.decide(p)['roleCommandMap']
+        self.assertEqual(cmds['1']['action'], 'move')
+        point = cmds['1']['targetPos'][0]
+        self.assertLess(post_damage(t, (point['x'], point['y'])), 30)
+        self.assertFalse(any(c.get('controllerId') == '1' for c in cmds.values()))
+
+    def test_relief_starts_above_old_fixed_health_threshold(self):
+        p = scenario()
+        p['teamOur']['roles'][0]['health'] = 190
+        t, n, ledger, pairs, posts = plan(p)
+        mem = Memory()
+        prepare_relief(t, n, ledger, pairs, posts, mem)
+        defend(t, n, ledger, pairs, posts)
+        self.assertEqual(ledger.commands['2']['action'], 'move')
+        self.assertEqual(sum(c['action'] == 'attack' for c in ledger.commands.values()), 3)
+        self.assertEqual(mem.relief[1][0], 2)
+
+    def test_recent_damage_can_start_relief_without_nearby_robot(self):
+        p = scenario()
+        p['teamOur']['roles'][0]['health'] = 190
+        p['robot']['roles'][0]['pos'] = {'x': 14, 'y': 14}
+        t, n, ledger, pairs, posts = plan(p)
+        mem = Memory(worker_damage={1: 50})
+        prepare_relief(t, n, ledger, pairs, posts, mem)
+        self.assertEqual(ledger.commands['2']['action'], 'move')
+
+    def test_already_in_range_replacement_fires_same_round(self):
+        p = scenario()
+        p['teamOur']['roles'] = [r for r in p['teamOur']['roles'] if r['id'] != 22]
+        p['teamOur']['roles'][0]['health'] = 120
+        p['teamOur']['roles'][1]['pos'] = {'x': 4, 'y': 4}
+        t, _, n, ledger = setup_case(p, layout_mode='explicit')
+        pairs = [(t.units[1], w) for w in t.weapons]
+        posts = {1: (4, 5)}
+        mem = Memory()
+        prepare_relief(t, n, ledger, pairs, posts, mem)
+        defend(t, n, ledger, pairs, posts)
+        self.assertEqual(set(ledger.commands), {'20', '21'})
+        self.assertEqual({c['controllerId'] for c in ledger.commands.values()}, {'2'})
+        self.assertEqual(posts, {2: (4, 4)})
+
+    def test_unique_post_handoff_has_two_real_movement_rounds(self):
+        p = scenario()
+        p['teamOur']['roles'][0]['health'] = 120
+        p['teamOur']['roles'][1]['pos'] = {'x': 3, 'y': 5}
+        agent = Agent(Config(layout_mode='explicit', llm_enabled=False))
+        counts = []
+        for rno in (80, 81, 82):
+            p['roundNo'] = rno
+            cmds = agent.decide(p)['roleCommandMap']
+            counts.append(sum(c['action'] == 'attack' for c in cmds.values()))
+            for c in cmds.values():
+                if c['action'] == 'attack':
+                    self.assertNotIn(c['controllerId'], cmds)
+            for role in p['teamOur']['roles']:
+                action = cmds.get(str(role['id']), {})
+                if action.get('action') == 'move':
+                    role['pos'] = action['targetPos'][0]
+        self.assertEqual(counts, [0, 0, 3])
+        self.assertEqual({c['controllerId'] for c in cmds.values() if c['action'] == 'attack'}, {'2'})
+
+    def test_expired_or_blocked_handoff_releases_outgoing_worker(self):
+        for blocked in (False, True):
+            p = scenario()
+            if blocked:
+                p['teamOur']['roles'].append(unit(80, 'wall', 4, 5))
+            t = Turn(p, Config())
+            mem = Memory(relief={1: (2, (4, 5), True)}, relief_started={1: 80 if blocked else 50})
+            self.assertEqual(relief_excluded(t, mem), set())
+            self.assertFalse(mem.relief)
+            self.assertFalse(mem.relief_started)
+
+    def test_damage_memory_ignores_skipped_rounds_and_duplicate_requests(self):
+        p = scenario()
+        mem = Memory(day=1, last_round=79, worker_health={1: 240})
+        mem.observe(Turn(p, Config()), Config())
+        self.assertEqual(mem.worker_damage[1], 40)
+        mem.last_round = 78
+        mem.observe(Turn(p, Config()), Config())
+        self.assertEqual(mem.worker_damage, {})
+
+    def test_cooldown_keeps_healthy_incumbent_when_alternative_is_equivalent(self):
+        p = scenario()
+        for r in p['teamOur']['roles'][-3:]:
+            r['cooldown'] = 2
+        t, _, n, ledger = setup_case(p, layout_mode='explicit')
+        pairs, posts = crew_plan(t, n, ledger, previous={1: ((4, 5), (20, 21, 22))})
+        self.assertEqual({h.id for h, _ in pairs}, {1})
+        self.assertEqual(posts[1][0], (4, 5))
+
+    def test_equal_health_spare_keeps_economy_instead_of_pointless_rotation(self):
+        p = scenario()
+        t, n, ledger, pairs, posts = plan(p)
+        mem = Memory()
+        prepare_relief(t, n, ledger, pairs, posts, mem)
+        self.assertFalse(mem.relief)
+        self.assertNotIn('2', ledger.commands)
+
+    def test_missing_attack_power_is_not_assumed_safe(self):
+        from agent.combat import post_damage
+        p = scenario()
+        p['robot']['roles'][0].pop('attackPower')
+        p['robot']['roles'][0]['pos'] = {'x': 6, 'y': 5}
+        t = Turn(p, Config())
+        self.assertEqual(post_damage(t, (4, 5)), 40)

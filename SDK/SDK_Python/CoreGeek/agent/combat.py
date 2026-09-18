@@ -13,6 +13,33 @@ def crew_groups(pairs):
     return groups
 
 
+def post_damage(turn, point, horizon=1):
+    """Conservative exposure, not a prediction of robot targeting or wall damage.
+
+    Allow one cell of approach per round; unknown attack power is not zero risk.
+    Include all nearby robots because incidental attacks need not target our base.
+    """
+    return sum((r.power if r.power > 0 else 40) * max(0, horizon - max(0, distance(point, r.pos)
+               - (r.attack_range if r.attack_range > 0 else 3) - 1)) for r in turn.robots)
+
+
+def retreat_endangered(turn, ledger, guarded):
+    """A lethal control cell must not trap the released worker in economy code."""
+    for hero in turn.workers:
+        if (hero.id in ledger.used or hero.id not in guarded
+                and not any(turn.adjacent(hero.pos, w.pos) for w in turn.weapons)):
+            continue
+        risk = post_damage(turn, hero.pos)
+        if risk < hero.health:
+            continue
+        exits = [p for p in neighbours(hero.pos) if turn.inside(p)
+                 and p not in turn.blocked and p not in ledger.reserved
+                 and post_damage(turn, p) < risk]
+        if exits:
+            target = min(exits, key=lambda p: (post_damage(turn, p), turn.base_distance(p), p))
+            ledger.add(hero.id, command("move", target))
+
+
 def crew_plan(turn, nav, ledger, wall_sites=(), excluded=(), previous=None):
     """Jointly choose a reachable post and a tower group for each operator."""
     towers = turn.weapons[:3]
@@ -38,7 +65,11 @@ def crew_plan(turn, nav, ledger, wall_sites=(), excluded=(), previous=None):
                 for p in sorted(cells):
                     route = nav.search(h, {p}, ledger.reserved)
                     if route is not None:
-                        danger = sum(distance(p, r.pos) <= r.attack_range + 2 for r in turn.robots)
+                        exposure = post_damage(turn, p)
+                        if not turn.is_day and exposure >= h.health:
+                            continue
+                        # Broad bands avoid churn for insignificant risk changes.
+                        danger = min(3, exposure * 4 // max(1, h.health)) if not turn.is_day else 0
                         choices.append((p, route[0], danger))
                 options[h.id, mask] = choices
     finally:
@@ -66,10 +97,11 @@ def crew_plan(turn, nav, ledger, wall_sites=(), excluded=(), previous=None):
                        for _, length, _ in choices) if turn.is_day else 0
             held = sum(h.pos == p and h.id in previous and previous[h.id][0] == p
                        for (h, _), (p, _, _) in zip(crew, choices)) if not turn.is_day else 0
-            cost = (-immediate, -sum(o >= 0 for o in owners), late, -held,
+            cost = (max(d for _, _, d in choices), -immediate,
+                    -sum(o >= 0 for o in owners), late,
                     sum(h.health <= 165 for h, _ in crew),
                     sum(h.kind != "worker" for h, _ in crew), len(crew),
-                    sum(d for _, _, d in choices), changes,
+                    -held, changes, sum(d for _, _, d in choices),
                     sum(length for _, length, _ in choices),
                     sum(turn.base_distance(p) for p, _, _ in choices) if turn.station else 0)
             if best is None or cost < best:
@@ -82,8 +114,14 @@ def crew_plan(turn, nav, ledger, wall_sites=(), excluded=(), previous=None):
 def relief_excluded(turn, mem):
     """Keep an outgoing worker out of the assignment until relief completes."""
     live = {h.id for h in turn.heroes}
+    static = turn.blocked - {h.pos for h in turn.heroes}
+    static.update(p for u in (*turn.ours, *turn.enemies)
+                  if u.kind not in ("worker", "pioneer") for p in u.cells)
     mem.relief = {old: entry for old, entry in mem.relief.items()
-                  if old in live and entry[0] in live}
+                  if old in live and entry[0] in live and entry[1] not in static
+                  and turn.round - mem.relief_started.get(old, turn.round) <= 20
+                  and any(turn.adjacent(entry[1], w.pos) for w in turn.weapons)}
+    mem.relief_started = {old: started for old, started in mem.relief_started.items() if old in mem.relief}
     return {old for old, (_, _, vacated) in mem.relief.items() if vacated}
 
 
@@ -96,37 +134,56 @@ def prepare_relief(turn, nav, ledger, pairs, posts, mem):
     if turn.is_day or not ledger.cfg.shared_operators:
         return
     groups = crew_groups(pairs)
+    claimed = set(groups)
     for old, (replacement, post, vacated) in list(mem.relief.items()):
-        if vacated and replacement in groups and groups[replacement][0].pos == post:
+        if (vacated and replacement in groups and groups[replacement][0].pos == post
+                or not vacated and (old not in groups or posts.get(old) != post)):
             del mem.relief[old]
     for uid, (hero, guns) in groups.items():
         post = posts.get(uid)
-        if (hero.kind != "worker" or hero.health > 165 or hero.pos != post
+        if (hero.kind != "worker" or hero.pos != post
                 or hero.id in ledger.used):
             continue
         candidates = []
         for helper in turn.workers:
-            if helper.id in groups or helper.id in ledger.used or helper.health <= 165:
+            if (helper.id in claimed or helper.id in ledger.used or helper.health <= 165
+                    or helper.health <= hero.health
+                    or helper.health <= post_damage(turn, post)):
                 continue
             route = nav.approach(helper, {post}, ledger.reserved)
-            if route is not None:
-                candidates.append((route[0], helper.id, helper, route))
+            if route is not None and post_damage(turn, route[1] or helper.pos) < helper.health:
+                horizon = route[0] + 2 + ledger.cfg.return_margin
+                loss = max(post_damage(turn, post, horizon),
+                           mem.worker_damage.get(uid, 0) * horizon)
+                if hero.health > 165 and hero.health > loss:
+                    continue
+                incumbent = mem.relief.get(uid, (None,))[0]
+                candidates.append((helper.id != incumbent, route[0], helper.id, helper, route))
         if not candidates:
+            mem.relief.pop(uid, None)
+            mem.relief_started.pop(uid, None)
             continue
-        _, _, helper, route = min(candidates, key=lambda x: x[:2])
+        _, _, _, helper, route = min(candidates, key=lambda x: x[:3])
+        claimed.add(helper.id)
+        mem.relief_started.setdefault(uid, turn.round)
         mem.relief[uid] = (helper.id, post, False)
         if route[1] is not None:
             ledger.add(helper.id, command("move", route[1]))
             continue
         if all(turn.adjacent(helper.pos, gun.pos) for gun in guns):
+            # Already in range: transfer the actual attack plan this round.
+            pairs[:] = [(helper if h.id == uid else h, w) for h, w in pairs]
+            posts.pop(uid, None)
+            posts[helper.id] = helper.pos
             mem.relief[uid] = (helper.id, helper.pos, True)
-            ledger.used.add(helper.id)
+            ledger.used.add(uid)
             continue
         exits = [p for p in neighbours(post) if turn.inside(p) and p not in turn.blocked
-                 and p not in ledger.reserved and p != helper.pos]
+                 and p not in ledger.reserved and p != helper.pos
+                 and post_damage(turn, p) < hero.health]
         if exits:
             exit_cell = min(exits, key=lambda p: (
-                sum(distance(p, r.pos) <= r.attack_range + 2 for r in turn.robots),
+                post_damage(turn, p),
                 turn.base_distance(p) if turn.station else 0, p))
             if ledger.add(uid, command("move", exit_cell)):
                 mem.relief[uid] = (helper.id, post, True)
@@ -301,6 +358,9 @@ def threat(turn, robot):
     score = 10.0 / (1 + turn.base_distance(robot.pos))
     if robot.target_team == turn.team:
         score *= 2
+    if any(distance(p, robot.pos) <= robot.attack_range + 2
+           for p in getattr(turn, "control_posts", ())):
+        score += 3
     return score + {"bossRobot": 2, "largeRobot": 1, "middleRobot": .5}.get(robot.kind, .2)
 
 
@@ -397,6 +457,8 @@ def defend(turn, nav, ledger, pairs=None, posts=None):
             posts = {uid: p for uid, (p, _) in planned.items()}
         if posts:
             yield_spare_worker(turn, nav, ledger, pairs, posts)
+        turn.control_posts = {h.pos for h, w in pairs if turn.adjacent(h.pos, w.pos)
+                              and h.id not in ledger.used}
         for hero, towers in crew_groups(pairs).values():
             if hero.id in ledger.used:
                 continue
