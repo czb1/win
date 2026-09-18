@@ -89,6 +89,86 @@ def run_sandbox(response, directory):
 
 
 class TaskCompletionTests(unittest.TestCase):
+    def test_log_protocol_marker_is_rejected_before_sandbox(self):
+        for code in ("print('query')\nPYTHON", "if True:\n    PYTHON"):
+            p = task_payload(12, "query")
+            p['llmResp'] = 'PYTHON\n' + code
+            mem = Memory(task_text='query', task_started=10, pending=('task', 11))
+            t, cfg, _, _ = setup_case(p)
+            mem.observe(t, cfg)
+            self.assertIsNone(mem.python)
+            self.assertIn('残留协议标记', mem.history[-1]['error'])
+
+    def test_judger_rejection_blocks_reordered_json_but_allows_correction(self):
+        p = task_payload(19, 'query')
+        p['errors'] = [{'errorCode': 2, 'description': 'world_heritage_count: 数值不符'}]
+        mem = Memory(task_text='query', task_started=10, bootstrap_done=True,
+                     submitted=(18, '{"city":"北京","world_heritage_count":0}'))
+        t, cfg, _, ledger = setup_case(p)
+        mem.observe(t, cfg)
+        mem.answer = '{ "world_heritage_count": 0, "city": "北京" }'
+        prompt, cmd = Intelligence(t, cfg, mem).task(ledger)
+        self.assertIsNone(mem.answer)
+        self.assertIsNone(mem.submitted)
+        self.assertIn('禁止原样重交', prompt)
+        mem.pending = None
+        mem.answer = '{"city":"北京","world_heritage_count":7}'
+        Intelligence(t, cfg, mem).task(ledger)
+        self.assertIsNotNone(mem.submitted)
+        self.assertEqual(mem.submitted[0], 19)
+        self.assertIn(':7', mem.submitted[1])
+
+    def test_query_discovery_survives_later_output_and_resets_for_new_task(self):
+        mem = Memory(task_text='query', task_started=10, bootstrap_done=True)
+        for round_no, output in ((13, '404 /docs'), (15, 'API_SCHEMA_FROM_QUERY'), (17, 'DATA')):
+            p = task_payload(round_no, 'query')
+            p['lastCmdResult'] = '[exitCode:0]\n' + output
+            mem.pending = ('cmd', round_no - 1)
+            mem.running_python = "print('fixture')"
+            t, cfg, _, ledger = setup_case(p)
+            mem.observe(t, cfg)
+        prompt, _ = Intelligence(t, cfg, mem).task(ledger)
+        self.assertIn('API_SCHEMA_FROM_QUERY', prompt)
+        self.assertIn('404 /docs', prompt)
+        self.assertIn('不等于空数据', prompt)
+        p = task_payload(18, 'new task')
+        mem.observe(Turn(p, cfg), cfg)
+        self.assertFalse(mem.exploration)
+        self.assertFalse(mem.rejected_answers)
+
+    def test_sandbox_final_cannot_resubmit_rejected_answer(self):
+        from agent.intelligence import answer_identity
+        p = task_payload(22, 'query')
+        p['lastCmdResult'] = '[exitCode:0]\nFINAL_ANSWER\n{"count":0}'
+        mem = Memory(task_text='query', task_started=10, bootstrap_done=True,
+                     pending=('cmd', 21), running_python='print("FINAL_ANSWER")',
+                     rejected_answers={answer_identity('{"count":0}')})
+        t, cfg, _, ledger = setup_case(p)
+        mem.observe(t, cfg)
+        self.assertIsNotNone(mem.answer)
+        Intelligence(t, cfg, mem).task(ledger)
+        self.assertIsNone(mem.submitted)
+        self.assertIsNone(mem.answer)
+
+    def test_completed_solution_keeps_exploration_for_next_task(self):
+        p = task_payload(4)
+        p['lastRoundRoleActionResults'] = {'11': True}
+        mem = Memory(task_text='query Beijing', task_point=(6, 5), task_started=1,
+                     submitted=(3, '42'), submitted_python='print(42)')
+        mem.exploration.append({'python': 'read_schema()', 'sandbox': 'API_SCHEMA', 'status': 'ok'})
+        mem.observe(Turn(p, Config()), Config())
+        self.assertFalse(mem.exploration)
+        self.assertEqual(mem.skills[0]['exploration'][0]['sandbox'], 'API_SCHEMA')
+        p = task_payload(40, 'query Shanghai')
+        mem.task_text = p['phaseTask']
+        mem.task_point = (6, 5)
+        mem.task_started = 40
+        mem.bootstrap_done = True
+        t, cfg, _, ledger = setup_case(p)
+        prompt, _ = Intelligence(t, cfg, mem).task(ledger)
+        self.assertIn('API_SCHEMA', prompt)
+        self.assertIn('必须重新查询', prompt)
+
     def test_actual_log_question_triggers_bootstrap_without_llm(self):
         for question in ('请阅读task_1_alpha.md，获取任务信息', '请阅读task_1_beijing.md，获取任务信息',
                          '文件：task_1_alpha.md', '阅读：`/tmp/current/spec.md`', '请阅读./task_1_alpha.md'):
