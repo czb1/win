@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - develop
+      - personal/cyf-develop
 
 permissions:
   contents: write
@@ -26,7 +27,7 @@ jobs:
         id: archive
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.ref_name == 'main' && format('v1.0.{0}', github.run_number) || format('v1.0.dev.{0}', github.run_number) }}
+          RELEASE_TAG: ${{ github.ref_name == 'main' && format('v1.0.{0}', github.run_number) || github.ref_name == 'personal/cyf-develop' && format('v1.0.cyf.dev.{0}', github.run_number) || format('v1.0.dev.{0}', github.run_number) }}
         run: |
           set -euo pipefail
 
@@ -70,7 +71,7 @@ jobs:
               --clobber
           else
             release_flags=()
-            if [[ "$SOURCE_BRANCH" == "develop" ]]; then
+            if [[ "$SOURCE_BRANCH" == "develop" || "$SOURCE_BRANCH" == "personal/cyf-develop" ]]; then
               release_flags+=(--prerelease)
             fi
             gh release create "$RELEASE_TAG" "$ARCHIVE_PATH" \
