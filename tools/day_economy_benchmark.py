@@ -124,13 +124,6 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
     initial_mines = [{"kind": k, "pos": list(p), "remaining": n} for p, (k, n) in active.items()]
     respawns = []
     cfg, actions, purchases = Config(llm_enabled=False), Counter(), Counter()
-    if getattr(cfg, "shared_operators", False):
-        # Independent fixture geometry for the forward cluster; retain legacy sites.
-        bx, by = (5, 15) if profile == "controlled" else (10, 24)
-        wall_sites |= {flip((x, y)) for x in range(bx, bx+5) for y in range(by-3, by+3)
-                       if x == bx+4 or y in (by-3, by+2)}
-        weapon_sites |= {flip((bx+3, y)) for y in range(by-2, by+2)}
-        front = {flip((bx+4, y)) for y in range(by-3, by+3)}
     agent = Agent(cfg)
     state = {"roundNo": 1, "mapInfo": {"width": width, "height": height, "zones": []},
              "teamOur": {"type": "defender" if mirror else "challenger", "teamId": "opening",

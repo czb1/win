@@ -212,21 +212,45 @@ class SharedCrewTests(unittest.TestCase):
 
 
 class SharedLayoutTests(unittest.TestCase):
-    def test_common_post_and_independent_base_access_four_corners(self):
+    def test_main_build_zones_and_crew_coverage_four_corners(self):
         for station in ((3, 11), (10, 4), (3, 4), (10, 11)):
-            p = payload(roles=[unit(13, "station", *station), unit(1, "worker", 0, 7)])
+            p = payload(roles=[unit(13, "station", *station)] +
+                        [unit(i+1, "worker", 0, 6+i) for i in range(3)])
             cfg = Config()
-            towers, walls = layout(Turn(p, cfg), cfg)
+            initial = Turn(p, cfg)
+            towers, walls = layout(initial, cfg)
             self.assertEqual(len(towers), 3)
-            self.assertEqual(len(walls), 14)
+            self.assertEqual(len(walls), 12)
+            self.assertTrue(all(initial.base_distance(q) == 1 for q in towers))
+            self.assertTrue(all(initial.base_distance(q) == 2 for q in walls))
+            self.assertEqual((towers, walls), layout(initial, Config(shared_operators=False)))
             p["teamOur"]["roles"] += [unit(20+i, "rocket", *q) for i, q in enumerate(towers)]
             p["teamOur"]["roles"] += [unit(100+i, "wall", *q) for i, q in enumerate(walls)]
-            t, _, n, _ = setup_case(p)
-            common = set.intersection(*(set(neighbours(w)) for w in towers)) - t.blocked
-            reachable = {p for p in common if n.search(t.workers[0], {p}) is not None}
-            self.assertTrue(reachable)
-            t.blocked |= reachable
+            t, _, n, ledger = setup_case(p)
+            pairs, posts = crew_plan(t, n, ledger, walls)
+            self.assertEqual({w.id for _, w in pairs}, {20, 21, 22})
+            for hero, tower in pairs:
+                self.assertTrue(t.adjacent(posts[hero.id][0], tower.pos))
+                self.assertIsNotNone(n.search(hero, {posts[hero.id][0]}))
             self.assertIsNotNone(n.approach(t.workers[0], t.station.cells))
+
+    def test_match_log_coordinates_restore_main_positions(self):
+        p = payload(roles=[unit(13, "station", 9, 22), unit(1, "worker", 8, 22,
+                           backpack=["stone"])])
+        p["mapInfo"].update(width=41, height=32)
+        t, cfg, n, ledger = setup_case(p)
+        towers, walls = layout(t, cfg)
+        self.assertEqual(towers, [(11, 22), (11, 23), (11, 20)])
+        self.assertEqual(set(walls[:6]), {(12, y) for y in range(19, 25)})
+        self.assertTrue({(12, 20), (12, 21), (12, 22)}.isdisjoint(towers))
+        self.assertTrue({(13, y) for y in range(19, 25)}.isdisjoint(walls))
+        # Put the builder in range so rejection is caused by the zone whitelist.
+        p["teamOur"]["roles"][1]["pos"] = {"x": 11, "y": 21}
+        _, _, _, ledger = setup_case(p)
+        self.assertFalse(ledger.add(1, command("build", (12, 21), name="rocket")))
+        p["teamOur"]["roles"][1]["pos"] = {"x": 12, "y": 21}
+        _, _, _, ledger = setup_case(p)
+        self.assertFalse(ledger.add(1, command("build", (13, 21), name="wall")))
 
     def test_old_and_explicit_layouts_are_preserved(self):
         p = scenario(1)

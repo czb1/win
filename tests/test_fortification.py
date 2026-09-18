@@ -26,7 +26,7 @@ class LayoutRegressionTests(unittest.TestCase):
         for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
             t = Turn(payload(roles=[unit(13, "station", x, y)]), Config())
             _, walls = layout(t, Config())
-            front_x = x + 4 if x < 7 else x - 3
+            front_x = x + 3 if x < 7 else x - 2
             front = {(front_x, v) for v in range(y - 3, y + 3)}
             self.assertTrue(front <= set(walls))
             self.assertEqual(set(walls[:6]), front)
@@ -51,11 +51,11 @@ class LayoutRegressionTests(unittest.TestCase):
     def test_front_is_anchored_to_entire_station_footprint(self):
         t, c, _, _ = setup_case(payload())
         towers, walls = layout(t, c)
-        self.assertEqual(len(walls), 14)
+        self.assertEqual(len(walls), 12)
         self.assertEqual(len(set(walls)), len(walls))
-        self.assertTrue(all(2 <= t.base_distance(p) <= 3 for p in walls))
-        self.assertTrue(all(p[0] == 7 or p[1] in (8, 13) for p in walls))
-        self.assertTrue(all(t.base_distance(p) == 2 for p in towers))
+        self.assertTrue(all(t.base_distance(p) == 2 for p in walls))
+        self.assertTrue(all(p[0] == 6 or p[1] in (8, 13) for p in walls))
+        self.assertTrue(all(t.base_distance(p) == 1 for p in towers))
         # Two contiguous rear gate cells.
         self.assertNotIn((1, 10), walls)
         self.assertNotIn((1, 11), walls)
@@ -123,7 +123,7 @@ class LayoutRegressionTests(unittest.TestCase):
 
 class ConstructionRegressionTests(unittest.TestCase):
     def test_distant_enemy_side_precedes_nearby_rear_wall(self):
-        for station, worker_pos, front_x in (((3, 11), (0, 10), 7), ((10, 4), (14, 4), 7)):
+        for station, worker_pos, front_x in (((3, 11), (0, 10), 6), ((10, 4), (14, 4), 8)):
             p = payload(roles=[unit(13, "station", *station),
                                unit(1, "worker", *worker_pos, backpack=["stone"])])
             t, cfg, nav, ledger = setup_case(p)
@@ -226,7 +226,7 @@ class ConstructionRegressionTests(unittest.TestCase):
     def test_first_day_replay_completes_front_with_two_builders(self):
         for mirrored in (False, True):
             result = simulate_day(Agent, Config, mirrored)
-            self.assertEqual(result["walls_day1"], 14, result)
+            self.assertEqual(result["walls_day1"], 12, result)
             self.assertEqual(result["disconnected_builds"], 0, result)
             self.assertFalse(result["front_missing"], result)
             self.assertFalse(result["blueprint_missing"], result)

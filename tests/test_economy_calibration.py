@@ -35,7 +35,7 @@ class EconomyCalibrationTests(unittest.TestCase):
                         self.assertEqual(len(dusk["weapon_levels"]), 3)
                         self.assertEqual(dusk["operators_ready"], 3)
                         self.assertEqual(dusk["operable_towers"], 3)
-                        self.assertEqual(dusk["minimum_ready_operators"], 1)
+                        self.assertEqual(dusk["minimum_ready_operators"], 2)
                         # Spending must fund actual upgrades, not phantom starting assets.
                         self.assertGreaterEqual(dusk["spent"], 75 + 100 * sum(l >= 2 for l in dusk["weapon_levels"]))
                         for event in result["respawns"]:

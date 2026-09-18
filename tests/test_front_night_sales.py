@@ -116,16 +116,16 @@ class NightMiningTests(unittest.TestCase):
 
 
 class FrontOnlyTests(unittest.TestCase):
-    def test_shared_front_keeps_front_first_and_rear_open_in_each_corner(self):
+    def test_main_front_keeps_front_first_and_rear_open_in_each_corner(self):
         for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
             cfg = Config()
             t = Turn(payload(roles=[unit(13, 'station', x, y)]), cfg)
             _, walls = layout(t, cfg)
-            self.assertEqual(len(walls), 14)
-            self.assertEqual({p[0] for p in walls[:6]}, {x + 4 if x < 7 else x - 3})
-            self.assertEqual(len(set(walls)), 14)
+            self.assertEqual(len(walls), 12)
+            self.assertEqual({p[0] for p in walls[:6]}, {x + 3 if x < 7 else x - 2})
+            self.assertEqual(len(set(walls)), 12)
             self.assertEqual(sorted(sum(p[1] == y0 for p in walls[6:])
-                                    for y0 in {p[1] for p in walls[6:]}), [4, 4])
+                                    for y0 in {p[1] for p in walls[6:]}), [3, 3])
             rear_x = x - 2 if x < 7 else x + 3
             self.assertNotIn(rear_x, {p[0] for p in walls})
 
@@ -163,8 +163,8 @@ class FrontOnlyTests(unittest.TestCase):
 
     def test_second_builder_can_extend_same_turn_actual_build(self):
         p = payload(45, [unit(13, 'station', 3, 11),
-                         unit(1, 'worker', 6, 8, backpack=['stone']),
-                         unit(2, 'worker', 6, 9, backpack=['stone'])])
+                         unit(1, 'worker', 5, 8, backpack=['stone']),
+                         unit(2, 'worker', 5, 9, backpack=['stone'])])
         t, cfg, nav, ledger = setup_case(p)
         walls = layout(t, cfg)[1]
         for hero in t.workers:

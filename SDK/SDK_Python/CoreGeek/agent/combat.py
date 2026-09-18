@@ -53,6 +53,14 @@ def crew_plan(turn, nav, ledger, wall_sites=(), excluded=(), previous=None):
         if not turn.is_day and not w.cooldown:
             select_targets(turn, w, damage, nav.deadline)
         firepower[w.id] = sum(damage.get(r.id, 0) * threat(turn, r) for r in turn.robots)
+    # In the compact main layout, the stone carrier must not be committed to
+    # the opposite end of the front while a nearby gap still needs closing.
+    xs = [p[0] for p in turn.station.cells] if turn.station else []
+    front_x = (max(p[0] for p in wall_sites) if min(xs) + max(xs) < turn.width - 1
+               else min(p[0] for p in wall_sites)) if wall_sites and xs else None
+    gaps = [p for p in wall_sites if p[0] == front_x and p not in turn.blocked]
+    builder = max((h for h in heroes if h.kind == "worker" and h.inventory["stone"]),
+                  key=lambda h: (h.inventory["stone"], -h.id), default=None)
     original = turn.blocked
     options = {}
     try:
@@ -97,11 +105,17 @@ def crew_plan(turn, nav, ledger, wall_sites=(), excluded=(), previous=None):
                        for _, length, _ in choices) if turn.is_day else 0
             held = sum(h.pos == p and h.id in previous and previous[h.id][0] == p
                        for (h, _), (p, _, _) in zip(crew, choices)) if not turn.is_day else 0
+            preparation = min((max(0, distance(h.pos, gap) - 1) + max(0, distance(p, gap) - 1)
+                               for (h, _), (p, _, _) in zip(crew, choices)
+                               if h == builder
+                               for gap in gaps), default=0) if turn.is_day else 0
             cost = (max(d for _, _, d in choices), -immediate,
-                    -sum(o >= 0 for o in owners), late,
+                    -sum(o >= 0 for o in owners),
+                    (sum(length >= turn.day_left for _, length, _ in choices)
+                     if turn.is_day and builder and gaps else late),
                     sum(h.health <= 165 for h, _ in crew),
                     sum(h.kind != "worker" for h, _ in crew), len(crew),
-                    -held, changes, sum(d for _, _, d in choices),
+                    -held, preparation, late, changes, sum(d for _, _, d in choices),
                     sum(length for _, length, _ in choices),
                     sum(turn.base_distance(p) for p, _, _ in choices) if turn.station else 0)
             if best is None or cost < best:
