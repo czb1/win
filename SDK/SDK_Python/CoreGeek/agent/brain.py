@@ -7,7 +7,7 @@ from .config import Config
 from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
-from .combat import assignments, return_plan, defend, emergency_items
+from .combat import assignments, return_plan, defend, emergency_items, shared_crew, shared_defend
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
@@ -108,6 +108,7 @@ class Agent:
         intel = Intelligence(turn, self.cfg, mem)
         prompt, execute = "", ""
         pairs = []
+        shared = None
         try:
             h = turn.pioneer
             within_timeout = bool(h and turn.phase_task and turn.round - mem.task_started <
@@ -127,10 +128,19 @@ class Agent:
             hold_task = within_timeout and not danger and not first_watch and not mem.stop_reason
             if not turn.is_day:
                 emergency_items(turn, ledger)
-            pairs = assignments(turn, nav, ledger, excluded={h.id} if hold_task else (),
-                                fixed=mem.return_targets if turn.is_day else None)
-            pairs, posts = (return_plan(turn, nav, pairs, walls, mem.return_targets, mem.return_posts)
-                            if turn.is_day else (pairs, {}))
+            shared = shared_crew(turn, self.cfg, mem, nav, towers, walls)
+            if shared is not None:
+                pairs, posts = shared
+                # Previous multi-operator assignments must not recall the miner.
+                mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items()
+                                      if uid == mem.gunner_id}
+                mem.return_posts = {uid: p for uid, p in mem.return_posts.items()
+                                    if uid == mem.gunner_id}
+            else:
+                pairs = assignments(turn, nav, ledger, excluded={h.id} if hold_task else (),
+                                    fixed=mem.return_targets if turn.is_day else None)
+                pairs, posts = (return_plan(turn, nav, pairs, walls, mem.return_targets, mem.return_posts)
+                                if turn.is_day else (pairs, {}))
             if not turn.is_day:
                 # Recall from the current position early enough for an approaching
                 # wave, but release workers immediately when local danger ends.
@@ -143,7 +153,8 @@ class Agent:
                         turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius, lead + r.attack_range)
                         or distance(tower.pos, r.pos) <= tower.attack_range + 1)
                         or distance(hero.pos, r.pos) <= r.attack_range + 2 for r in turn.robots)
-                pairs = [(hero, tower) for hero, tower in pairs if needs_defence(hero, tower)]
+                if shared is None:
+                    pairs = [(hero, tower) for hero, tower in pairs if needs_defence(hero, tower)]
                 mem.return_targets.clear()
                 mem.return_posts.clear()
             ledger.return_pairs = pairs
@@ -199,13 +210,22 @@ class Agent:
                                        "first_wave_deadline" if first_watch else "task_deadline")
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             if not turn.is_day:
-                defend(turn, nav, ledger, pairs)
+                if shared is not None:
+                    shared_defend(turn, nav, ledger, mem, pairs, towers)
+                else:
+                    defend(turn, nav, ledger, pairs)
+                if shared is not None and mem.gunner_post:
+                    ledger.reserved.add(mem.gunner_post)
                 for hero in turn.heroes:
                     if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
                         continue
                     if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs}:
+                        if shared is not None and hero.pos == mem.gunner_post:
+                            vacate_site(turn, nav, ledger, hero, towers + walls + [mem.gunner_post])
+                        if hero.id in ledger.used:
+                            continue
                         if hero.kind == "worker":
-                            night_mine(turn, self.cfg, mem, nav, ledger, hero)
+                            night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=shared is not None)
                         elif turn.station:
                             walk(nav, ledger, hero, turn.station.cells)
             else:
@@ -214,6 +234,10 @@ class Agent:
                         finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)
                 defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning], ledger.operator_posts)
                 workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
+                if shared is not None and mem.gunner_post:
+                    for idle in turn.workers:
+                        if idle.id != mem.gunner_id and idle.id not in ledger.used:
+                            vacate_site(turn, nav, ledger, idle, towers + walls + [mem.gunner_post])
                 if h and h.id not in ledger.used and h.id not in returning:
                     if turn.phase_task:
                         if not hold_task and turn.station:
@@ -221,14 +245,17 @@ class Agent:
                     else:
                         pioneer(turn, self.cfg, mem, nav, ledger, h)
                         if h.id not in ledger.used:
-                            vacate_site(turn, nav, ledger, h, towers + walls)
+                            vacate_site(turn, nav, ledger, h, towers + walls +
+                                        ([mem.gunner_post] if shared is not None and mem.gunner_post else []))
                 if not prompt and not execute:
                     prompt = intel.news()
         except DeadlineExceeded:
             LOG.warning("round=%s budget reached; returning %s validated actions", turn.round, len(ledger.commands))
         response = ledger.response(prompt, execute)
         if not turn.is_day or turn.tick in (0, 69):
-            battle_diagnostics(turn, mem, pairs, response)
+            diagnostic_pairs = ([(hero, w) for hero, _ in pairs for w in turn.weapons]
+                                if shared is not None else pairs)
+            battle_diagnostics(turn, mem, diagnostic_pairs, response)
         for uid, action in response["roleCommandMap"].items():
             if action["action"] == "build" or (action["action"] in ("buy", "use")
                                                 and ("UpgradeVoucher" in action.get("name", "")
@@ -245,3 +272,4 @@ class Agent:
         LOG.debug("round=%s day=%s phase=%s commands=%s latency_ms=%.2f", turn.round, turn.day,
                  "day" if turn.is_day else "night", len(ledger.commands), (monotonic()-started)*1000)
         return json.loads(json.dumps(response))
+

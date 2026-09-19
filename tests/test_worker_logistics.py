@@ -251,7 +251,7 @@ class LogisticsReplayTests(unittest.TestCase):
             with self.subTest(mirror=mirror):
                 result = simulate(Agent, Config, profile="controlled", case="remote_ore", mirror=mirror)
                 self.assertEqual(result["invalid_actions"], 0)
-                self.assertEqual(result["checkpoints"]["69"]["operators_ready"], 3)
+                self.assertEqual(result["checkpoints"]["69"]["shared_guns_ready"], 3)
                 self.assertEqual(result["checkpoints"]["69"]["front_walls"], 6)
 
     @replay_test
@@ -262,7 +262,7 @@ class LogisticsReplayTests(unittest.TestCase):
                 self.assertEqual(result["invalid_actions"], 0)
                 self.assertEqual(result["destroyed_walls"], 4)
                 nights = [result["checkpoints"][str(r)] for r in (69, 199, 329)]
-                self.assertTrue(all(n["operators_ready"] == 3 and n["front_walls"] == 6 for n in nights))
+                self.assertTrue(all(n["shared_guns_ready"] == 3 and n["front_walls"] == 6 for n in nights))
                 self.assertTrue(all(6 <= n["walls"] <= 12 for n in nights))
                 self.assertGreater(nights[-1]["walls"], 6)
                 self.assertGreaterEqual(nights[2]["walls"], nights[1]["walls"])
@@ -282,3 +282,4 @@ class LogisticsReplayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

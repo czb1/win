@@ -100,12 +100,9 @@ def layout(turn, cfg):
     def world(p):
         return origin[0] + sx * p[0], origin[1] + sy * p[1]
 
-    # Group towers along the front. Spreading them around the 2x2 base cuts
-    # the inner walking ring into pockets, forcing connectivity checks to
-    # leave extra wall holes. Keep both flanks connected to the rear gate.
-    # Leave (2, 1) as an operator/circulation cell; three consecutive towers
-    # would leave their middle tower without a usable controller position.
-    tower_order = [(2, 0), (2, -1), (2, 2)]
+    # Rear corner: all three guns touch the free control cell (-1, 0).
+    # Keep the original one-cell weapon ring and the front/flank wall blueprint.
+    tower_order = [(-1, -1), (0, -1), (-1, 1)]
     towers = [world(p) for p in tower_order[:len(cfg.loadout)] if turn.inside(world(p))]
     # Close the six-cell front first, then add three cells on each flank.
     # Leave the rear open for mining, deliveries and operator circulation.
@@ -133,3 +130,4 @@ def wall_priority(turn, cfg, sites, index, hits=None):
     # first, while neighbouring expansion keeps its normal front/breach order.
     urgent = turn.day >= 2 and x != front_x and hits.get(target, 0)
     return (int(not urgent), int(x != front_x), int(not breach), index)
+

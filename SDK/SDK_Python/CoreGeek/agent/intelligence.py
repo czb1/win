@@ -182,6 +182,9 @@ class Memory:
     calls: int = 0
     news: list = field(default_factory=list)
     news_dirty: bool = False
+    gunner_id: int | None = None
+    gunner_post: tuple | None = None
+    next_gun: int = 0
     pending: tuple | None = None
     task_text: str = ""
     task_started: int = 0
@@ -924,3 +927,4 @@ class Intelligence:
         if result:
             self.mem.news_dirty = False
         return result
+

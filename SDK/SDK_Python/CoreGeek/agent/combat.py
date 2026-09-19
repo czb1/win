@@ -1,4 +1,5 @@
 """Defence assignment and weapon-specific targeting. No simulated enemy moves."""
+import logging
 from itertools import permutations, product
 from .model import distance, dump, neighbours
 from .commands import command
@@ -305,3 +306,71 @@ def emergency_items(turn, ledger):
             area_used = ledger.add(hero.id, command("use", target.pos, name="Bomb"))
         elif hero.inventory["DizzyWeapon"] and len(nearby) >= 2:
             area_used = ledger.add(hero.id, command("use", target.pos, name="DizzyWeapon"))
+
+
+
+def shared_crew(turn, cfg, mem, nav, sites, walls):
+    """Return one persistent worker/post, or None for non-clustered layouts."""
+    if len(sites) != 3 or any(w.pos not in sites or w.kind != "rocket" for w in turn.weapons):
+        return None
+    common = set(neighbours(sites[0]))
+    for point in sites[1:]:
+        common.intersection_update(neighbours(point))
+    mobile = {h.pos for h in turn.heroes}
+    common -= set(sites) | set(walls) | (turn.blocked - mobile)
+    common = {p for p in common if turn.inside(p)}
+    if not common:
+        return None
+    # Keep a living gunner even while medicine consumes this turn's action.
+    gunner = next((h for h in turn.workers if h.id == mem.gunner_id and
+                   (not turn.is_day or h.id in mem.return_targets)), None)
+    original = turn.blocked
+    # Keep the stone carrier available for existing daytime construction;
+    # among equally free workers use the shortest return route.
+    unfinished_walls = any(p not in turn.blocked for p in walls)
+    try:
+        turn.blocked = original - mobile
+        candidates = []
+        for hero in ([gunner] if gunner else turn.workers):
+            for post in sorted(common):
+                route = nav.search(hero, {post})
+                if route is not None:
+                    candidates.append((bool(turn.is_day and route[0] + cfg.return_margin > turn.day_left),
+                                       bool(turn.is_day and unfinished_walls and hero.inventory["stone"]),
+                                       post != mem.gunner_post, route[0], hero.id, post, hero))
+    finally:
+        turn.blocked = original
+    if not candidates:
+        return [], {}
+    _, _, _, length, _, post, hero = min(candidates, key=lambda c: c[:6])
+    if mem.gunner_id != hero.id:
+        logging.getLogger(__name__).info('round=%s gunner_change=%s->%s post=%s',
+                                        turn.round, mem.gunner_id, hero.id, post)
+    mem.gunner_id, mem.gunner_post = hero.id, post
+    towers = sorted(turn.weapons, key=lambda w: sites.index(w.pos))
+    return ([(hero, towers[0])] if towers else []), {hero.id: (post, length)}
+
+
+def shared_defend(turn, nav, ledger, mem, pairs, sites):
+    """One action per worker; platform cooldown is authoritative."""
+    if not pairs:
+        return
+    hero = pairs[0][0]
+    if hero.id in ledger.used:
+        return
+    route = nav.search(hero, {mem.gunner_post}, ledger.reserved)
+    if not route:
+        return
+    if route[1] is not None:
+        ledger.add(hero.id, command('move', route[1]))
+        return
+    for offset in range(len(sites)):
+        index = (mem.next_gun + offset) % len(sites)
+        tower = next((w for w in turn.weapons if w.pos == sites[index]), None)
+        if tower is None or tower.cooldown or distance(hero.pos, tower.pos) != 1:
+            continue
+        targets = select_targets(turn, tower, {}, nav.deadline)
+        if targets and ledger.add(tower.id, {'action': 'attack', 'controllerId': str(hero.id),
+                                           'targetPos': [dump(p) for p in targets]}):
+            mem.next_gun = (index + 1) % len(sites)
+            return
