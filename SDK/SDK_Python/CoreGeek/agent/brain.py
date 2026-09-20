@@ -7,7 +7,7 @@ from .config import Config
 from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
-from .combat import assignments, return_plan, defend, emergency_items, shared_crew, shared_defend
+from .combat import assignments, return_plan, defend, emergency_items, shared_crew, shared_defend, clear_gunner_route
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
@@ -34,7 +34,8 @@ def battle_diagnostics(turn, mem, pairs, response):
         elif hero is None:
             reason = "no_operator"
         elif distance(hero.pos, tower.pos) > 1:
-            reason = "operator_en_route"
+            reason = ("operator_en_route" if commands.get(str(hero.id), {}).get("action") == "move"
+                      else "operator_waiting")
         elif commands.get(str(hero.id)):
             reason = "operator_other_action"
         elif tower.attack_range <= 0:
@@ -60,7 +61,10 @@ def battle_diagnostics(turn, mem, pairs, response):
         "hostileTotal": len(hostile), "hostileWithin6": len(near),
         "hostileNear": [{"id": r.id, "kind": r.kind, "pos": r.pos, "health": r.health}
                         for r in near[:12]], "walls": walls, "towers": towers,
-        "previousShots": previous_shots}, ensure_ascii=False, separators=(",", ":")))
+        "previousShots": previous_shots,
+        "gunner": {"id": mem.gunner_id, "post": mem.gunner_post, "stalled": mem.gunner_stalled},
+        "crew": [{"id": h.id, "pos": h.pos, "action": commands.get(str(h.id))}
+                 for h in turn.heroes]}, ensure_ascii=False, separators=(",", ":")))
 
 
 class Agent:
@@ -128,7 +132,8 @@ class Agent:
             hold_task = within_timeout and not danger and not first_watch and not mem.stop_reason
             if not turn.is_day:
                 emergency_items(turn, ledger)
-            shared = shared_crew(turn, self.cfg, mem, nav, towers, walls)
+            shared = shared_crew(turn, self.cfg, mem, nav, towers, walls,
+                                 excluded={h.id} if h and hold_task else ())
             if shared is not None:
                 pairs, posts = shared
                 # Previous multi-operator assignments must not recall the miner.
@@ -211,7 +216,9 @@ class Agent:
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             if not turn.is_day:
                 if shared is not None:
+                    corridor = clear_gunner_route(turn, nav, ledger, mem, pairs)
                     shared_defend(turn, nav, ledger, mem, pairs, towers)
+                    ledger.reserved.update(corridor or ())
                 else:
                     defend(turn, nav, ledger, pairs)
                 if shared is not None and mem.gunner_post:
@@ -232,7 +239,10 @@ class Agent:
                 for hero, tower in pairs:
                     if hero.id in returning and hero.id not in ledger.used:
                         finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)
+                corridor = (clear_gunner_route(turn, nav, ledger, mem, pairs)
+                            if shared is not None and returning else None)
                 defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning], ledger.operator_posts)
+                ledger.reserved.update(corridor or ())
                 workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
                 if shared is not None and mem.gunner_post:
                     for idle in turn.workers:

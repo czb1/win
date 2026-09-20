@@ -122,7 +122,7 @@ class SharedGunnerTests(unittest.TestCase):
             self.assertEqual([uid for uid, c in commands.items() if c['action'] == 'attack'],
                              [str(expected)])
 
-    def test_full_miner_yields_the_reserved_post(self):
+    def test_worker_already_on_post_takes_over_blocked_gunner(self):
         agent = Agent(Config(llm_enabled=False))
         p = self.case()
         agent.decide(p)
@@ -130,8 +130,8 @@ class SharedGunnerTests(unittest.TestCase):
         p['teamOur']['roles'][1]['pos'] = {'x': 2, 'y': 11}
         p['teamOur']['roles'][2].update(pos={'x': 4, 'y': 11}, backpack=['copper'] * 100)
         commands = agent.decide(p)['roleCommandMap']
-        self.assertEqual(commands['2']['action'], 'move')
-        self.assertNotEqual(commands['2']['targetPos'], [{'x': 4, 'y': 11}])
+        self.assertTrue(any(c.get('controllerId') == '2' for c in commands.values()))
+        self.assertEqual(next(iter(agent.sessions.values())).gunner_id, 2)
 
     def test_idle_pioneer_yields_post_before_first_night(self):
         p = self.case(67)
@@ -160,3 +160,78 @@ class SharedGunnerTests(unittest.TestCase):
         agent = Agent(Config(llm_enabled=False))
         agent.decide(p)
         self.assertEqual(next(iter(agent.sessions.values())).gunner_id, 1)
+
+
+    def blocked_match(self):
+        p = payload(467, [unit(13, 'station', 30, 10, health=1500),
+            unit(20012, 'worker', 29, 8), unit(20010, 'worker', 36, 16),
+            unit(20011, 'pioneer', 30, 11),
+            unit(20040, 'rocket', 32, 10, level=3, attackRange=2147483647),
+            unit(20041, 'rocket', 32, 8, level=3, attackRange=2147483647),
+            unit(20042, 'rocket', 31, 8, level=3, attackRange=2147483647)])
+        p['mapInfo'].update(width=40, height=24)
+        walls = [(28, y) for y in range(7, 13)] + [(x, y) for x in (29, 30, 31) for y in (7, 12)]
+        p['teamOur']['roles'] += [unit(100+i, 'wall', *point) for i, point in enumerate(walls)]
+        p['robot']['roles'] = [unit(31138, 'largeRobot', 24, 8, health=500, targetTeam='challenger')]
+        p['mapInfo']['zones'] = [{'neutralType': 'copper', 'pos': {'x': 36, 'y': 17}}]
+        return p
+
+    def advance_moves(self, p, commands):
+        occupied = {tuple(h['pos'].values()) for h in p['teamOur']['roles'] if h['health'] > 0}
+        destinations = set()
+        for uid, c in commands.items():
+            if c['action'] == 'move':
+                dest = tuple(c['targetPos'][0].values())
+                self.assertNotIn(dest, occupied)
+                self.assertNotIn(dest, destinations)
+                destinations.add(dest)
+                next(h for h in p['teamOur']['roles'] if h['id'] == int(uid))['pos'] = c['targetPos'][0]
+        p['roundNo'] += 1
+
+    def test_match_choke_pioneer_takes_over_and_fires(self):
+        p = self.blocked_match()
+        agent = Agent(Config(llm_enabled=False))
+        for _ in range(8):
+            commands = agent.decide(p)['roleCommandMap']
+            if any(c.get('controllerId') == '20011' for c in commands.values()):
+                break
+            self.advance_moves(p, commands)
+        else:
+            self.fail('living blocked gunner left all three ready rockets idle')
+
+    def test_idle_ally_clears_return_corridor_without_collision(self):
+        from agent.combat import clear_gunner_route
+        from agent.intelligence import Memory
+        p = self.blocked_match()
+        turn, cfg, nav, ledger = setup_case(p)
+        mem = Memory(gunner_id=20012, gunner_post=(32, 9))
+        gunner = next(h for h in turn.heroes if h.id == 20012)
+        corridor = clear_gunner_route(turn, nav, ledger, mem, [(gunner, turn.weapons[0])])
+        self.assertIn((30, 11), corridor)
+        self.assertEqual(ledger.commands['20011']['action'], 'move')
+        self.assertNotIn(tuple(ledger.commands['20011']['targetPos'][0].values()), corridor)
+        self.advance_moves(p, ledger.commands)
+
+    def test_sole_pioneer_can_operate_when_workers_dead(self):
+        p = self.case()
+        for h in p['teamOur']['roles'][1:3]:
+            h['health'] = 0
+        p['teamOur']['roles'].append(unit(3, 'pioneer', 4, 11))
+        commands = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
+        self.assertTrue(any(c.get('controllerId') == '3' for c in commands.values()))
+
+    def test_fire_adjacent_gun_before_reaching_common_post(self):
+        p = self.case()
+        p['teamOur']['roles'][1]['pos'] = {'x': 3, 'y': 9}
+        commands = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
+        self.assertEqual(commands['22']['controllerId'], '1')
+
+    def test_repeated_failed_moves_recall_miner(self):
+        p = self.case()
+        p['teamOur']['roles'][1]['pos'] = {'x': 1, 'y': 11}
+        agent = Agent(Config(llm_enabled=False))
+        for r in range(70, 73):
+            p['roundNo'] = r
+            commands = agent.decide(p)['roleCommandMap']
+        self.assertEqual(next(iter(agent.sessions.values())).gunner_id, 2)
+        self.assertEqual(commands['2']['action'], 'move')

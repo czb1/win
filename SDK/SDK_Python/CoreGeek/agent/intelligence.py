@@ -182,6 +182,8 @@ class Memory:
     calls: int = 0
     news: list = field(default_factory=list)
     news_dirty: bool = False
+    gunner_observation: tuple | None = None
+    gunner_stalled: int = 0
     gunner_id: int | None = None
     gunner_post: tuple | None = None
     next_gun: int = 0
