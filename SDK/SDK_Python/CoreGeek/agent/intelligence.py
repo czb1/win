@@ -13,6 +13,7 @@ from .model import ORES, pos
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
 from .task_runtime import runtime_code, runtime_result
 from .task_sop import answer_contract, answer_error, engineering_code
+from .task_query import reference_paths, query_config, query_code
 from .movement import MovementMemory
 from .task_skills import (bind_recipe, recipe_proposal, compatible, learned_method,
                           output_supports, promote)
@@ -234,6 +235,7 @@ class Memory:
     query_blocked: bool = False
     contract: dict = field(default_factory=dict)
     sop_attempted: bool = False
+    query_sop_attempted: bool = False
     check_pending: bool = False
     work_deadline: int | None = None
     task_stats: dict = field(default_factory=dict)
@@ -421,6 +423,7 @@ class Memory:
             self.query_blocked = False
             self.contract.clear()
             self.sop_attempted = self.check_pending = False
+            self.query_sop_attempted = False
             self.work_deadline = None
             self.task_stats = {"llmCalls": 0, "sandboxCalls": 0, "submissions": 0, "rejections": 0}
             self.task_start_gold = turn.gold
@@ -466,8 +469,10 @@ class Memory:
         if purpose == "cmd":
             raw = turn.raw.get("lastCmdResult") or ""
             tool = self.running_tool or {}
-            result, report = runtime_result(raw) if not tool else (raw, {})
+            result, report = runtime_result(raw) if not tool or tool.get('kind') == 'query' else (raw, {})
             status, body, answer = sandbox_result(result)
+            if tool.get('kind') == 'query' and status != 'ok':
+                self.query_blocked = True
             if report.get("http_errors"):
                 self.query_blocked = True
                 status, answer = "query_failed", None
@@ -498,7 +503,7 @@ class Memory:
             if not tool:
                 self.exploration.append({"python": excerpt(self.running_python, 2400),
                                          "sandbox": excerpt(str(raw), 3000), "status": status})
-            if tool.get("kind") in ("engineering", "check"):
+            if tool.get("kind") in ("engineering", "check", "query"):
                 self.last_attempt["python"] = ""
                 self.last_attempt["tool"] = tool["kind"]
             if status == "ok":
@@ -506,7 +511,7 @@ class Memory:
                     if call not in self.method_calls:
                         self.method_calls.append(call)
                 self.method_calls = self.method_calls[-12:]
-                if not tool or tool.get('kind') in ('engineering', 'check'):
+                if not tool or tool.get('kind') in ('engineering', 'check', 'query'):
                     self.supported_output, self.supported_python = body, self.running_python
                 self.successful_python, self.successful_output = self.running_python, body
                 self.task_failures = 0
@@ -534,7 +539,7 @@ class Memory:
                     # Model-generated output is not proof of a checker token.
                     # Verify the current workspace ourselves before submission.
                     self.check_pending = True
-                elif answer is not None and (not self.running_tool or checker):
+                elif answer is not None and (not self.running_tool or checker or tool.get('kind') == 'query'):
                     if checker and not answer_error(answer, self.contract):
                         self.query_blocked = False  # An independent check is authoritative for token tasks.
                     error = ("查询错误尚未解决；必须成功重查，不能把失败当作空数据提交。"
@@ -842,13 +847,22 @@ class Intelligence:
             entry = self.mem.documents[0]
             read_paths = {d.get("path") for d in self.mem.documents}
             read_paths.update(d.get("resolved_path") for d in self.mem.documents)
-            for path in document_paths(entry.get("output", "")):
+            paths = document_paths(entry.get("output", ""))
+            paths += reference_paths(self.mem.documents, self.mem.knowledge, self.mem.task_point)
+            for path in paths:
                 if path in read_paths or path in self.mem.reference_reads:
                     continue
                 self.mem.reference_reads.add(path)
                 self.mem.python = document_code(path, base=self.mem.task_directory())
                 self.mem.running_tool = {"kind": "read", "path": path, "start": 0}
                 break
+        if (self.mem.python is None and self.mem.pending is None
+                and not self.mem.query_sop_attempted and remaining >= 3):
+            config = query_config(self.mem.documents, self.mem.contract)
+            if config:
+                self.mem.query_sop_attempted = True
+                self.mem.python = query_code(config)
+                self.mem.running_tool = {"kind": "query"}
         if self.mem.python is not None and self.mem.pending is None:
             code, self.mem.python = self.mem.python, None
             self.mem.pending = ("cmd", self.turn.round)
@@ -879,7 +893,9 @@ class Intelligence:
         context = {"task": excerpt(self.turn.phase_task, 32000), "remainingRounds": remaining,
                    "history": history, "lastErrors": self.mem.task_feedback[:2000],
                    "lastAttempt": attempt,
-                   "exploration": list(self.mem.exploration),
+                   "exploration": [{"status": item.get("status"),
+                                    "sandbox": tail_excerpt(item.get("sandbox", ""), 1000)}
+                                   for item in list(self.mem.exploration)[:-1][-2:]],
                    "submissionFeedback": self.mem.submission_feedback,
                    "documents": self.mem.documents,
                    "submissionContract": self.mem.contract,
