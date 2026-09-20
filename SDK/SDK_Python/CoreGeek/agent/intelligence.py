@@ -56,14 +56,14 @@ def tail_excerpt(text, limit=SANDBOX_ERROR_EXCERPT):
 def sandbox_failure_fingerprint(text, report=None):
     """Group semantically identical runtime failures across slightly different code."""
     text = str(text)
-    matches = re.findall(r"(?m)^([A-Za-z_][\\w.]*(?:Error|Exception)):\\s*(.+)$", text)
+    matches = re.findall(r"(?m)^([A-Za-z_][\w.]*(?:Error|Exception)):\s*(.+)$", text)
     if matches:
         kind, message = matches[-1]
     else:
         header, _, _ = text.partition("\n")
         kind, message = header[:80] or "missing", tail_excerpt(text, 240)
-    message = re.sub(r"'[^'\\n]*'|\"[^\"\\n]*\"", "'?'", message)
-    message = re.sub(r"\\b\\d+\\b", "#", message)
+    message = re.sub(r"'[^'\n]*'|\"[^\"\n]*\"", "'?'", message)
+    message = re.sub(r"\b\d+\b", "#", message)
     calls = []
     if isinstance(report, dict):
         for call in report.get("http_calls", [])[:4]:
