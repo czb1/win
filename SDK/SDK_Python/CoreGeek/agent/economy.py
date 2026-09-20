@@ -92,13 +92,13 @@ def voucher_for(building):
     return f"{prefix}UpgradeVoucher{building.level}" if prefix and building.level < 3 else None
 
 
-def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
+def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None, repair_only=False):
     if hero.health <= (165 if hero.kind == "worker" else 150) and hero.inventory["Medicine"]:
         return ledger.add(hero.id, command("use", name="Medicine"))
     upgrades = []
     for building in turn.ours:
         name = voucher_for(building)
-        if name and hero.inventory[name] and building.id not in ledger.upgrade_claims:
+        if not repair_only and name and hero.inventory[name] and building.id not in ledger.upgrade_claims:
             route = nav.approach(hero, building.cells, ledger.reserved)
             if route and (not local_only or route[0] == 0):
                 upgrades.append((upgrade_order(turn, building, mem), route[0], name, building, route))
@@ -110,7 +110,10 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
     if upgrades:
         _, _, name, building, route = min(upgrades, key=lambda o: (o[0], o[1], o[3].id))
         if route[1] is None:
-            return ledger.add(hero.id, command("use", building.pos, name=name))
+            if ledger.add(hero.id, command("use", building.pos, name=name)):
+                (ledger.repair_claims if name == "WallFixer" else ledger.upgrade_claims).add(building.id)
+                return True
+            return False
         if ledger.add(hero.id, command("move", route[1])):
             (ledger.repair_claims if name == "WallFixer" else ledger.upgrade_claims).add(building.id)
             return True
@@ -118,7 +121,7 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
 
 
 def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
-             planned=(), bulk=False):
+             planned=(), bulk=False, repair_only=False):
     """Return an affordable, applicable purchase and its shopping route.
 
     Routes are checked before committing to shopping. A full backpack can be
@@ -138,7 +141,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         carried = Counter(item for h in turn.heroes for item in h.backpack)
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
         first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
-        for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
+        for building in ([] if repair_only else sorted(buildings, key=lambda b: upgrade_order(turn, b, mem))):
             name = voucher_for(building)
             if not name:
                 continue
@@ -158,7 +161,10 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
             candidates.append((upgrade_order(turn, building, mem), name, building.cells))
         damaged = [w for w in turn.ours if w.kind == "wall" and w.health < 500]
         if damaged and not any(h.inventory["WallFixer"] for h in turn.heroes):
-            candidates.append(((1.5,), "WallFixer", damaged[0].cells))
+            candidates.extend(((1.5,), "WallFixer", w.cells) for w in damaged)
+        if turn.is_day and turn.day >= 2 and not repair_only:
+            held = sum(h.inventory["WallFixer"] for h in turn.heroes)
+            reserve += max(0, len(damaged) - held) * turn.shop.get("WallFixer", 0)
     seen = set()
     for _, name, destinations in sorted(candidates, key=lambda c: c[0]):
         if name in seen:
@@ -458,6 +464,46 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
 
 
 
+def maintain_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
+    """Give one worker daylight breach/critical-health work before earning gold."""
+    if not turn.is_day or turn.day < 2 or not free:
+        return
+    front = set(front_sites(turn, wall_sites))
+    structures = {p for u in (*turn.ours, *turn.enemies)
+                  if u.kind not in HEROES for p in u.cells}
+    gaps = [p for p in wall_sites if p not in structures
+            and p not in mem.build_failures and turn.zones.get(p, "land") == "land"
+            and (p in front or mem.wall_hits.get(p, 0))]
+    damaged = [w for w in turn.ours if w.kind == "wall" and w.health < 500]
+    if not gaps and not damaged:
+        return
+    shops = [p for p, kind in turn.zones.items() if kind == "weaponShop"]
+    def order(h):
+        carrying = bool(damaged and h.inventory["WallFixer"])
+        targets = ([p for w in damaged for p in w.cells] if carrying
+                   else gaps if gaps else shops)
+        route = nav.approach(h, targets, ledger.reserved) if targets else None
+        return (not carrying, not bool(gaps and h.inventory["stone"]),
+                route[0] if route else 999, h.id)
+    for hero in sorted(free, key=order):
+        if damaged and hero.inventory["WallFixer"]:
+            if use_inventory(turn, nav, ledger, hero, mem=mem, repair_only=True):
+                return
+        if gaps:
+            if hero.inventory["stone"] >= cfg.wall_stones:
+                if build(turn, cfg, mem, nav, ledger, hero, gaps, lambda _: "wall"):
+                    return
+            elif mine(turn, cfg, mem, nav, ledger, hero, want_stone=True):
+                return
+        if damaged:
+            plan = supplies(turn, cfg, mem, nav, ledger, hero, bulk=True, repair_only=True)
+            if buy_supply(turn, ledger, hero, plan):
+                return
+        if not hero.space or damaged and ledger.gold < turn.shop.get("WallFixer", 0):
+            if earn(turn, cfg, mem, nav, ledger, hero, force_sale=True):
+                return
+
+
 def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     """Allocate only today's outstanding jobs; all other worker time earns gold."""
     free = [h for h in turn.workers if h.id not in ledger.used and h.id not in excluded]
@@ -478,10 +524,15 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     for h in sorted(turn.workers, key=lambda h: (-h.inventory["stone"], h.id)):
         mem.stone_reserves[h.id] = min(stone_need, h.inventory["stone"])
         stone_need -= mem.stone_reserves[h.id]
+    maintain_walls(turn, cfg, mem, nav, ledger, free, wall_sites)
+    free = [h for h in free if h.id not in ledger.used]
+    if not free:
+        return
     trading = {h.id for h in free if trade_available(turn, mem, nav, h)}
     planned = planned_weapons(turn, cfg, mem, tower_sites)
     built_walls = {w.pos for w in turn.ours if w.kind == "wall"}
-    work_remains = (any(w.id < 0 or w.level < 3 for w in planned)
+    work_remains = (any(w.kind == "wall" and w.health < 500 for w in turn.ours)
+                    or any(w.id < 0 or w.level < 3 for w in planned)
                     or turn.station and turn.station.level < 3 and bool(turn.shop)
                     or any(p not in built_walls and p not in mem.build_failures for p in wall_sites))
     cutoff = (preparation_start(turn, cfg, mem, nav, free, tower_sites) if work_remains else 70) if trading else 0

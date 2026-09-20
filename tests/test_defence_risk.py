@@ -4,7 +4,7 @@ import unittest
 from test_agent import payload, setup_case, unit
 from agent.brain import Agent
 from agent.config import Config
-from agent.economy import build, exposed_wall, supplies
+from agent.economy import build, exposed_wall, supplies, workers
 from agent.intelligence import Memory
 from agent.model import Turn
 
@@ -65,6 +65,81 @@ class WallRiskTests(unittest.TestCase):
         turn, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[])
         self.assertEqual(supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0], bulk=True)[0],
                          "WallUpgradeVoucher1")
+
+
+class DayMaintenanceTests(unittest.TestCase):
+    def case(self, round_no=520, gap=False, backpack=(), gold=53):
+        roles = [unit(1, "worker", 8, 9, backpack=list(backpack)),
+                 unit(13, "station", 3, 9, level=3, health=1130),
+                 unit(20, "rocket", 5, 8, level=3),
+                 unit(21, "rocket", 6, 8, level=3),
+                 unit(22, "rocket", 7, 8, level=3),
+                 unit(30, "wall", 9, 8, level=2, health=75),
+                 unit(32, "wall", 9, 10, level=2, health=240)]
+        if not gap:
+            roles.append(unit(31, "wall", 9, 9, health=1000))
+        p = payload(round_no, roles)
+        p["teamOur"]["goldNum"] = gold
+        p["mapInfo"]["zones"] = [
+            {"neutralType": "weaponShop", "pos": {"x": 7, "y": 9}},
+            {"neutralType": "vendor", "pos": {"x": 5, "y": 5}},
+            {"neutralType": "copper", "pos": {"x": 11, "y": 5}},
+            {"neutralType": "stone", "pos": {"x": 7, "y": 10}}]
+        p["vendorShopList"] = [{"name": "copper", "price": 10}]
+        p["weaponShopList"] = [{"name": "WallFixer", "price": 10},
+                               {"name": "WallUpgradeVoucher2", "price": 30}]
+        return setup_case(p, layout_mode="explicit", wall_cells=[[9,8],[9,9],[9,10]],
+                          weapon_cells=[[5,8],[6,8],[7,8]])
+
+    def decide(self, case):
+        turn, cfg, nav, ledger = case
+        workers(turn, cfg, Memory(), nav, ledger, list(ledger.tower_cells),
+                sorted(ledger.wall_cells))
+        return ledger.commands.get("1", {})
+
+    def test_single_survivor_closes_breach_at_dawn(self):
+        c = self.decide(self.case(gap=True, backpack=["stone"]))
+        self.assertEqual((c["action"], c["name"]), ("build", "wall"))
+        self.assertEqual(c["targetPos"], [{"x":9, "y":9}])
+
+    def test_breach_without_material_starts_stone_collection_at_dawn(self):
+        c = self.decide(self.case(gap=True))
+        self.assertEqual(c["action"], "collect")
+        self.assertEqual(c["targetPos"], [{"x":7, "y":10}])
+
+    def test_after_breach_closed_buys_two_repairs_not_upgrade(self):
+        c = self.decide(self.case())
+        self.assertEqual((c["action"], c["name"], c["num"]), ("buy", "WallFixer", 2))
+
+    def test_repair_budget_is_sufficient_with_only_twenty_gold(self):
+        c = self.decide(self.case(gold=20))
+        self.assertEqual((c["name"], c["num"]), ("WallFixer", 2))
+
+    def test_carried_repairs_take_precedence_over_upgrade_delivery(self):
+        c = self.decide(self.case(backpack=["WallFixer", "WallUpgradeVoucher2"]))
+        self.assertEqual((c["action"], c["name"]), ("use", "WallFixer"))
+        self.assertEqual(c["targetPos"], [{"x":9, "y":8}])
+
+    def test_remaining_wall_is_repaired_after_first_wall_heals(self):
+        turn, cfg, nav, ledger = self.case(backpack=["WallFixer"])
+        from dataclasses import replace
+        turn.ours = tuple(replace(w, health=1500) if w.id == 30 else w for w in turn.ours)
+        c = self.decide((turn, cfg, nav, ledger))
+        self.assertEqual((c["action"], c["name"]), ("use", "WallFixer"))
+        self.assertEqual(c["targetPos"], [{"x":9, "y":10}])
+
+    def test_other_purchases_cannot_spend_repair_reserve(self):
+        turn, cfg, nav, ledger = self.case(gold=40)
+        from dataclasses import replace
+        turn.ours = tuple(replace(w, level=2) if w.id == 20 else w for w in turn.ours)
+        turn.shop["WeaponUpgradeVoucher2"] = 30
+        self.assertIsNone(supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0], bulk=True))
+
+    def test_first_day_does_not_enter_emergency_maintenance(self):
+        from agent.economy import maintain_walls
+        turn, cfg, nav, ledger = self.case(round_no=0)
+        maintain_walls(turn, cfg, Memory(), nav, ledger, turn.workers, list(ledger.wall_cells))
+        self.assertFalse(ledger.commands)
 
 
 class BattleDiagnosticsTests(unittest.TestCase):
