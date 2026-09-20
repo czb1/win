@@ -121,7 +121,7 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None, repair_on
 
 
 def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
-             planned=(), bulk=False, repair_only=False):
+             planned=(), bulk=False, repair_only=False, wall_upgrades=None):
     """Return an affordable, applicable purchase and its shopping route.
 
     Routes are checked before committing to shopping. A full backpack can be
@@ -163,8 +163,35 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         if damaged and not any(h.inventory["WallFixer"] for h in turn.heroes):
             candidates.extend(((1.5,), "WallFixer", w.cells) for w in damaged)
         if turn.is_day and turn.day >= 2 and not repair_only:
+            front = set(front_sites(turn, ledger.wall_cells))
+            upgrades = sorted((w for w in turn.ours if w.kind == "wall" and w.level < 3
+                               and w.pos in ledger.wall_cells
+                               and (w.pos in front or mem.wall_hits.get(w.pos, 0))),
+                              key=lambda w: (w.level, w.health, w.id))
+            stock = Counter(item for h in turn.heroes for item in h.backpack)
+            covered, next_cost = set(), 0
+            for wall in upgrades:
+                name = voucher_for(wall)
+                if stock[name]:
+                    stock[name] -= 1
+                    covered.add(wall.id)
+                elif not next_cost and 0 <= turn.shop.get(name, -1) <= ledger.gold - reserve:
+                    next_cost = turn.shop[name]
+                    covered.add(wall.id)
             held = sum(h.inventory["WallFixer"] for h in turn.heroes)
-            reserve += max(0, len(damaged) - held) * turn.shop.get("WallFixer", 0)
+            reserve += next_cost + max(0, sum(w.id not in covered for w in damaged) - held) * turn.shop.get("WallFixer", 0)
+    if wall_upgrades is not None:
+        # Dedicated wall phase: never let general weapon/base ordering intervene.
+        candidates = [c for c in candidates if c[1] == "Medicine"]
+        carried = Counter(item for h in turn.heroes for item in h.backpack)
+        for wall in wall_upgrades:
+            name = voucher_for(wall)
+            if not name:
+                continue
+            if carried[name]:
+                carried[name] -= 1
+                continue
+            candidates.append(((wall.level, wall.health, wall.id), name, wall.cells))
     seen = set()
     for _, name, destinations in sorted(candidates, key=lambda c: c[0]):
         if name in seen:
@@ -475,25 +502,48 @@ def maintain_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
             and p not in mem.build_failures and turn.zones.get(p, "land") == "land"
             and (p in front or mem.wall_hits.get(p, 0))]
     damaged = [w for w in turn.ours if w.kind == "wall" and w.health < 500]
-    if not gaps and not damaged:
+    upgrade_walls = sorted((w for w in turn.ours if w.kind == "wall" and w.level < 3
+                            and w.pos in wall_sites and (w.pos in front or mem.wall_hits.get(w.pos, 0))),
+                           key=lambda w: (w.level, w.health, w.id))
+    if not gaps and not damaged and not upgrade_walls:
         return
-    shops = [p for p, kind in turn.zones.items() if kind == "weaponShop"]
-    def order(h):
-        carrying = bool(damaged and h.inventory["WallFixer"])
-        targets = ([p for w in damaged for p in w.cells] if carrying
-                   else gaps if gaps else shops)
-        route = nav.approach(h, targets, ledger.reserved) if targets else None
-        return (not carrying, not bool(gaps and h.inventory["stone"]),
-                route[0] if route else 999, h.id)
-    for hero in sorted(free, key=order):
-        if damaged and hero.inventory["WallFixer"]:
-            if use_inventory(turn, nav, ledger, hero, mem=mem, repair_only=True):
-                return
-        if gaps:
+    def near(hero, targets):
+        route = nav.approach(hero, targets, ledger.reserved) if targets else None
+        return route[0] if route else 999
+    # Finish the breach phase across all available workers before any item use.
+    if gaps:
+        for hero in sorted(free, key=lambda h: (h.inventory["stone"] < cfg.wall_stones,
+                                               near(h, gaps), h.id)):
             if hero.inventory["stone"] >= cfg.wall_stones:
                 if build(turn, cfg, mem, nav, ledger, hero, gaps, lambda _: "wall"):
                     return
             elif mine(turn, cfg, mem, nav, ledger, hero, want_stone=True):
+                return
+            if not hero.space and earn(turn, cfg, mem, nav, ledger, hero, force_sale=True):
+                return
+    # Actual observed level/health advances the phase; no model or optimistic state.
+    for wall in upgrade_walls:
+        name = voucher_for(wall)
+        for hero in sorted(free, key=lambda h: (near(h, wall.cells), h.id)):
+            if not hero.inventory[name] or wall.id in ledger.upgrade_claims:
+                continue
+            route = nav.approach(hero, wall.cells, ledger.reserved)
+            if route and route[0] + 1 + cfg.return_margin < turn.day_left:
+                action = (command("use", wall.pos, name=name) if route[1] is None
+                          else command("move", route[1]))
+                if ledger.add(hero.id, action):
+                    ledger.upgrade_claims.add(wall.id)
+                    return
+        # Purchase lower-level upgrades before delivering higher-level vouchers.
+        for hero in sorted(free, key=lambda h: h.id):
+            plan = supplies(turn, cfg, mem, nav, ledger, hero, bulk=True, repair_only=True,
+                            wall_upgrades=[w for w in upgrade_walls if w.level == wall.level])
+            if buy_supply(turn, ledger, hero, plan):
+                return
+    # Full-level walls, or upgrades unavailable/unaffordable/too late: heal danger.
+    for hero in sorted(free, key=lambda h: (not h.inventory["WallFixer"], h.id)):
+        if damaged and hero.inventory["WallFixer"]:
+            if use_inventory(turn, nav, ledger, hero, mem=mem, repair_only=True):
                 return
         if damaged:
             plan = supplies(turn, cfg, mem, nav, ledger, hero, bulk=True, repair_only=True)

@@ -196,7 +196,11 @@ class SuppliesTests(unittest.TestCase):
         self.assertEqual(result["invalid_actions"], 0)
         self.assertEqual(result["weapon_levels"], [3, 3, 3])
         self.assertEqual(result["station_level"], 3)
-        self.assertEqual(result["purchases"].get("WallUpgradeVoucher2", 0), 0)
+        # Daylight maintenance now upgrades the whole front before healing.
+        self.assertEqual(result["purchases"].get("WallUpgradeVoucher2", 0), result["walls"])
+        self.assertEqual(result["upgrades"].get("WallUpgradeVoucher2", 0), result["walls"])
+        self.assertLess(result["first_rounds"]["used_WallUpgradeVoucher1"],
+                        result["first_rounds"]["used_WallUpgradeVoucher2"])
         self.assertGreater(result["purchases"]["Medicine"], 0)
         self.assertLess(result["first_rounds"]["used_WeaponUpgradeVoucher2"], 70)
         self.assertGreater(result["gold"], 2660)
