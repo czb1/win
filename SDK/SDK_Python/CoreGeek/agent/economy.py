@@ -87,6 +87,8 @@ def upgrade_order(turn, building, mem=None):
 
 
 def voucher_for(building):
+    if building.kind == "wall" and building.level >= 2:
+        return None
     prefix = ("Weapon" if building.kind in WEAPONS else "Station" if building.kind == "station"
               else "Wall" if building.kind == "wall" else None)
     return f"{prefix}UpgradeVoucher{building.level}" if prefix and building.level < 3 else None
@@ -164,7 +166,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
             candidates.extend(((1.5,), "WallFixer", w.cells) for w in damaged)
         if turn.is_day and turn.day >= 2 and not repair_only:
             front = set(front_sites(turn, ledger.wall_cells))
-            upgrades = sorted((w for w in turn.ours if w.kind == "wall" and w.level < 3
+            upgrades = sorted((w for w in turn.ours if w.kind == "wall" and w.level < 2
                                and w.pos in ledger.wall_cells
                                and (w.pos in front or mem.wall_hits.get(w.pos, 0))),
                               key=lambda w: (w.level, w.health, w.id))
@@ -502,7 +504,7 @@ def maintain_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
             and p not in mem.build_failures and turn.zones.get(p, "land") == "land"
             and (p in front or mem.wall_hits.get(p, 0))]
     damaged = [w for w in turn.ours if w.kind == "wall" and w.health < 500]
-    upgrade_walls = sorted((w for w in turn.ours if w.kind == "wall" and w.level < 3
+    upgrade_walls = sorted((w for w in turn.ours if w.kind == "wall" and w.level < 2
                             and w.pos in wall_sites and (w.pos in front or mem.wall_hits.get(w.pos, 0))),
                            key=lambda w: (w.level, w.health, w.id))
     if not gaps and not damaged and not upgrade_walls:

@@ -74,8 +74,8 @@ class DayMaintenanceTests(unittest.TestCase):
                  unit(20, "rocket", 5, 8, level=3),
                  unit(21, "rocket", 6, 8, level=3),
                  unit(22, "rocket", 7, 8, level=3),
-                 unit(30, "wall", 9, 8, level=2, health=75),
-                 unit(32, "wall", 9, 10, level=2, health=240)]
+                 unit(30, "wall", 9, 8, level=1, health=75),
+                 unit(32, "wall", 9, 10, level=1, health=240)]
         if not gap:
             roles.append(unit(31, "wall", 9, 9, health=1000))
         p = payload(round_no, roles)
@@ -87,6 +87,7 @@ class DayMaintenanceTests(unittest.TestCase):
             {"neutralType": "stone", "pos": {"x": 7, "y": 10}}]
         p["vendorShopList"] = [{"name": "copper", "price": 10}]
         p["weaponShopList"] = [{"name": "WallFixer", "price": 10},
+                               {"name": "WallUpgradeVoucher1", "price": 30},
                                {"name": "WallUpgradeVoucher2", "price": 30}]
         return setup_case(p, layout_mode="explicit", wall_cells=[[9,8],[9,9],[9,10]],
                           weapon_cells=[[5,8],[6,8],[7,8]])
@@ -109,21 +110,21 @@ class DayMaintenanceTests(unittest.TestCase):
 
     def test_after_breach_closed_buys_upgrade_before_repairs(self):
         c = self.decide(self.case())
-        self.assertEqual((c["action"], c["name"], c["num"]), ("buy", "WallUpgradeVoucher2", 1))
+        self.assertEqual((c["action"], c["name"], c["num"]), ("buy", "WallUpgradeVoucher1", 1))
 
     def test_repair_budget_is_sufficient_with_only_twenty_gold(self):
         c = self.decide(self.case(gold=20))
         self.assertEqual((c["name"], c["num"]), ("WallFixer", 2))
 
     def test_carried_upgrade_takes_precedence_over_repair(self):
-        c = self.decide(self.case(backpack=["WallFixer", "WallUpgradeVoucher2"]))
-        self.assertEqual((c["action"], c["name"]), ("use", "WallUpgradeVoucher2"))
+        c = self.decide(self.case(backpack=["WallFixer", "WallUpgradeVoucher1"]))
+        self.assertEqual((c["action"], c["name"]), ("use", "WallUpgradeVoucher1"))
         self.assertEqual(c["targetPos"], [{"x":9, "y":8}])
 
     def test_remaining_wall_is_repaired_after_first_wall_heals(self):
         turn, cfg, nav, ledger = self.case(backpack=["WallFixer"])
         from dataclasses import replace
-        turn.ours = tuple(replace(w, level=3, health=2000 if w.id == 30 else w.health) if w.kind == "wall" else w for w in turn.ours)
+        turn.ours = tuple(replace(w, level=2, health=2000 if w.id == 30 else w.health) if w.kind == "wall" else w for w in turn.ours)
         c = self.decide((turn, cfg, nav, ledger))
         self.assertEqual((c["action"], c["name"]), ("use", "WallFixer"))
         self.assertEqual(c["targetPos"], [{"x":9, "y":10}])
@@ -136,20 +137,25 @@ class DayMaintenanceTests(unittest.TestCase):
         self.assertIsNone(supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0], bulk=True))
 
     def test_gap_precedes_both_carried_upgrade_and_repair(self):
-        c = self.decide(self.case(gap=True, backpack=["stone", "WallFixer", "WallUpgradeVoucher2"]))
+        c = self.decide(self.case(gap=True, backpack=["stone", "WallFixer", "WallUpgradeVoucher1"]))
         self.assertEqual((c["action"], c["name"]), ("build", "wall"))
 
-    def test_lower_level_wall_upgrade_precedes_higher_level(self):
+    def test_carried_level_three_voucher_does_not_raise_two_level_target(self):
+        from dataclasses import replace
         case = self.case(backpack=["WallUpgradeVoucher2"])
-        case[0].shop["WallUpgradeVoucher1"] = 20
+        turn = case[0]
+        turn.ours = tuple(replace(w, level=2, health=2000) if w.kind == "wall" else w
+                          for w in turn.ours)
+        self.assertIsNone(supplies(turn, case[1], Memory(), case[2], case[3],
+                                   turn.workers[0], bulk=True))
         c = self.decide(case)
-        self.assertEqual((c["action"], c["name"]), ("buy", "WallUpgradeVoucher1"))
+        self.assertNotEqual(c.get("name"), "WallUpgradeVoucher2")
 
     def test_upgraded_full_health_walls_do_not_consume_repairs(self):
         from dataclasses import replace
         from agent.economy import maintain_walls
         turn, cfg, nav, ledger = self.case(backpack=["WallFixer"] * 100)
-        turn.ours = tuple(replace(w, level=3, health=2000) if w.kind == "wall" else w for w in turn.ours)
+        turn.ours = tuple(replace(w, level=2, health=2000) if w.kind == "wall" else w for w in turn.ours)
         maintain_walls(turn, cfg, Memory(), nav, ledger, turn.workers, list(ledger.wall_cells))
         self.assertFalse(ledger.commands)
 
@@ -163,7 +169,19 @@ class DayMaintenanceTests(unittest.TestCase):
         turn = case[0]
         turn.ours = tuple(replace(w, health=1500) if w.kind == "wall" else w for w in turn.ours)
         c = self.decide(case)
-        self.assertEqual((c["action"], c["name"]), ("buy", "WallUpgradeVoucher2"))
+        self.assertEqual((c["action"], c["name"]), ("buy", "WallUpgradeVoucher1"))
+
+    def test_two_level_walls_leave_base_upgrade_available(self):
+        from dataclasses import replace
+        case = self.case()
+        turn = case[0]
+        turn.ours = tuple(replace(w, level=2, health=2000) if w.kind == "wall"
+                          else replace(w, level=1) if w.kind == "station" else w for w in turn.ours)
+        turn.shop["StationUpgradeVoucher1"] = 20
+        self.assertEqual(supplies(turn, case[1], Memory(), case[2], case[3], turn.workers[0],
+                                  bulk=True)[0], "StationUpgradeVoucher1")
+        c = self.decide(case)
+        self.assertIn(c["action"], ("move", "buy"))
 
     def test_first_day_does_not_enter_emergency_maintenance(self):
         from agent.economy import maintain_walls
