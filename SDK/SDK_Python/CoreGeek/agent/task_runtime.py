@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit, parse_qs
 
-report = {'http_successes': 0, 'http_errors': [], 'http_calls': []}
+report = {'http_successes': 0, 'http_errors': [], 'http_calls': [], 'json_shapes': []}
 
 def remember_call(method, url, headers=None, params=None):
     address = urlsplit(str(url))
@@ -66,6 +66,41 @@ def payload_error(url, value):
     if isinstance(value, dict) and (value.get('status') in ('error', 'failed')
                                    or value.get('success') is False):
         failure(url, json.dumps(value, ensure_ascii=False))
+
+def json_shape(value, depth=0):
+    """Return bounded structural metadata without scalar response values."""
+    if depth >= 3:
+        return {'type': type(value).__name__}
+    if isinstance(value, dict):
+        raw_keys = list(value.keys())[:20]
+        shape = {'type': 'dict', 'keys': [str(k)[:120] for k in raw_keys]}
+        children = {}
+        for key in raw_keys:
+            child = value.get(key)
+            if isinstance(child, (dict, list)):
+                children[str(key)[:120]] = json_shape(child, depth + 1)
+        if children:
+            shape['children'] = children
+        return shape
+    if isinstance(value, list):
+        shape = {'type': 'list', 'length': len(value)}
+        item_types = []
+        for item in value[:8]:
+            name = type(item).__name__
+            if name not in item_types:
+                item_types.append(name)
+        if item_types:
+            shape['item_types'] = item_types
+        if value:
+            shape['item'] = json_shape(value[0], depth + 1)
+        return shape
+    return {'type': type(value).__name__}
+
+def remember_json_shape(url, value):
+    path = urlsplit(str(url)).path[:240]
+    entry = {'path': path, 'shape': json_shape(value)}
+    if entry not in report['json_shapes'] and len(report['json_shapes']) < 4:
+        report['json_shapes'].append(entry)
 
 original_urlopen = urllib.request.urlopen
 def checked_urlopen(url, *args, **kwargs):
@@ -123,6 +158,7 @@ else:
         except ValueError:
             failure(response.url, 'invalid JSON response')
             raise
+        remember_json_shape(response.url, value)
         payload_error(response.url, value)
         return value
 
