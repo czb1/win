@@ -53,6 +53,28 @@ def tail_excerpt(text, limit=SANDBOX_ERROR_EXCERPT):
     return text if len(text) <= limit else "[tail omitted]" + text[-limit:]
 
 
+def sandbox_failure_fingerprint(text, report=None):
+    """Group semantically identical runtime failures across slightly different code."""
+    text = str(text)
+    matches = re.findall(r"(?m)^([A-Za-z_][\\w.]*(?:Error|Exception)):\\s*(.+)$", text)
+    if matches:
+        kind, message = matches[-1]
+    else:
+        header, _, _ = text.partition("\n")
+        kind, message = header[:80] or "missing", tail_excerpt(text, 240)
+    message = re.sub(r"'[^'\\n]*'|\"[^\"\\n]*\"", "'?'", message)
+    message = re.sub(r"\\b\\d+\\b", "#", message)
+    calls = []
+    if isinstance(report, dict):
+        for call in report.get("http_calls", [])[:4]:
+            if isinstance(call, dict):
+                calls.append({key: call.get(key) for key in
+                              ("method", "endpoint", "auth", "parameters")})
+    basis = json.dumps({"kind": kind, "message": message[:320], "calls": calls},
+                       ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return digest_text(basis)
+
+
 def task_reply_kind(parsed):
     if not isinstance(parsed, dict):
         return "invalid"
@@ -197,6 +219,7 @@ class Memory:
     task_feedback: str = ""
     task_failures: int = 0
     proposal_counts: dict = field(default_factory=dict)
+    failure_fingerprints: dict = field(default_factory=dict)
     rejected_answers: set = field(default_factory=set)
     exploration: deque = field(default_factory=lambda: deque(maxlen=4))
     submitted: tuple | None = None
@@ -407,6 +430,7 @@ class Memory:
             self.history.clear()
             self.task_failures = 0
             self.proposal_counts.clear()
+            self.failure_fingerprints.clear()
             self.rejected_answers.clear()
             self.exploration.clear()
             if self.pending and self.pending[0] in ("task", "cmd"):
@@ -463,6 +487,14 @@ class Memory:
                                  "sandbox": excerpt(str(raw), 7000), "status": status}
             if report:
                 self.last_attempt["http"] = report
+                if report.get("json_shapes"):
+                    self.last_attempt["jsonShapes"] = report["json_shapes"]
+            if status != "ok":
+                fingerprint = sandbox_failure_fingerprint(raw, report)
+                repeats = self.failure_fingerprints.get(fingerprint, 0) + 1
+                self.failure_fingerprints[fingerprint] = repeats
+                self.last_attempt["failureFingerprint"] = fingerprint
+                self.last_attempt["failureRepeatCount"] = repeats
             if not tool:
                 self.exploration.append({"python": excerpt(self.running_python, 2400),
                                          "sandbox": excerpt(str(raw), 3000), "status": status})
@@ -520,7 +552,20 @@ class Memory:
             else:
                 self.supported_output = self.supported_python = ""
                 self.fail_skill("execution_failed")
-                self.reject("沙盒未成功完成：" + status + "。根据输出修复；不要把报错当答案。")
+                shapes = self.last_attempt.get("jsonShapes") or []
+                repeats = self.last_attempt.get("failureRepeatCount", 0)
+                if report.get("http_successes", 0) and shapes:
+                    if repeats >= 2:
+                        self.reject("同类解析失败已重复；HTTP 已成功且 lastAttempt.jsonShapes 已记录真实 JSON 结构。"
+                                    "禁止继续猜 data/results 包装或重复同类大脚本；按结构定位记录列表并增加类型守卫。")
+                    else:
+                        self.reject("HTTP 请求已成功，但响应解析程序失败。请以 lastAttempt.jsonShapes 的真实结构为准"
+                                    "修正容器路径和类型检查，不要把 200 当成已完成统计。")
+                elif repeats >= 2:
+                    self.reject("同类运行时失败已重复；禁止只做表面改写后重试。缩小为一个诊断步骤，"
+                                "根据 lastAttempt 的具体错误改变失败假设。")
+                else:
+                    self.reject("沙盒未成功完成：" + status + "。根据输出修复；不要把报错当答案。")
             self.running_python = ""
             self.running_tool = None
             return
@@ -850,6 +895,14 @@ class Intelligence:
         elif remaining <= 7:
             step = ("时间有限：利用 documents/lastAttempt 完成答案；如需 PYTHON，必须在本次执行"
                     "直接打印 FINAL_ANSWER。")
+        elif attempt.get("failureRepeatCount", 0) >= 2 and attempt.get("jsonShapes"):
+            step = ("同类解析失败已重复。HTTP 已成功；只按 lastAttempt.jsonShapes 修正真实容器路径和类型守卫，"
+                    "禁止继续猜 data/results 包装或重复同类聚合脚本。")
+        elif attempt.get("failureRepeatCount", 0) >= 2:
+            step = ("同类运行时失败已重复。先改变失败假设并做一个最小诊断步骤，禁止只改变量名或包装后重跑。")
+        elif attempt.get("status", "ok") != "ok" and attempt.get("jsonShapes"):
+            step = ("HTTP 已成功但解析失败；lastAttempt.jsonShapes 是运行时观察到的真实响应结构，"
+                    "按它修正解析和类型检查后再聚合。")
         else:
             step = ("修复 lastAttempt 中的报错，只改失败的那一步。" if self.mem.last_attempt.get("status", "ok") != "ok"
                 else "读取原题指定工作区的 spec.md；修复文件后由程序运行 ./check 验证并提取 token。" if self.mem.contract.get("kind") == "check_token"
@@ -884,6 +937,8 @@ class Intelligence:
                   "沙盒会记录requests/urllib的HTTP失败；即使try/except吞掉错误也禁止提交，修正后重新完整查询。\n"
                   "临近截止也只能在查询成功且数据完整时打印FINAL_ANSWER；失败时保留诊断，不能强凑答案。\n"
                   "HTTP失败、404、解析失败或缺少字段不等于空数据；禁止用默认0、空列表或空字符串冒充查询结论。\n"
+                  "lastAttempt.jsonShapes 是运行时从成功 JSON 响应自动提取的无值结构证据，只含类型、键名和有界列表长度；解析异常时优先按它定位真实 records 路径。\n"
+                  "HTTP 200 后若出现 AttributeError/TypeError/KeyError，禁止再次猜 data/results 包装；只有确认记录容器为 list 且记录为 dict 后才允许聚合，并加入显式类型守卫。\n"
                   "聚合前验证响应结构并按文档处理分页；输出请求路径、状态与必要字段，便于下一步纠错。\n"
                   "文档在沙盒文件中时，先用READ读取指定文件；不要臆造API、路径或方法。\n"
                   "相对 READ 由程序在当前任务目录内定位；不要从 / 递归扫描或复用旧任务的 ws 路径。\n"
