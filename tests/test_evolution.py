@@ -12,6 +12,7 @@ from agent.brain import Agent
 from agent.config import Config
 from agent.intelligence import Memory, Intelligence, parse_task_reply, sandbox_result
 from agent.task_tools import document_code
+from agent.task_runtime import runtime_result
 from agent.model import Turn
 
 
@@ -244,6 +245,60 @@ class EvolutionTests(unittest.TestCase):
         t, cfg, _, ledger = setup_case(p)
         mem.observe(t, cfg)
         self.assertIn("ValueError: important detail", Intelligence(t, cfg, mem).task(ledger)[0])
+
+    def test_runtime_result_preserves_json_shape_evidence(self):
+        report = {"http_successes": 1, "http_errors": [], "http_calls": [],
+                  "json_shapes": [{"path": "/api/search",
+                                   "shape": {"type": "dict", "keys": ["data"],
+                                             "children": {"data": {"type": "dict",
+                                                                     "keys": ["items"]}}}}]}
+        raw = ("[exitCode:1]\nTASK_RUNTIME " + json.dumps(report, ensure_ascii=False)
+               + "\nAttributeError: bad parse")
+        cleaned, parsed = runtime_result(raw)
+        self.assertEqual(cleaned, "[exitCode:1]\nAttributeError: bad parse")
+        self.assertEqual(parsed["json_shapes"][0]["shape"]["children"]["data"]["type"], "dict")
+
+    def test_repeated_http_parse_failure_uses_observed_shape(self):
+        shape = {"path": "/api/v1/heritage/search",
+                 "shape": {"type": "dict", "keys": ["data"],
+                           "children": {"data": {"type": "dict", "keys": ["items", "pagination"],
+                                                   "children": {"items": {"type": "list", "length": 2,
+                                                                              "item_types": ["dict"],
+                                                                              "item": {"type": "dict",
+                                                                                       "keys": ["name", "era"]}}}}}}}
+        report = {"http_successes": 1, "http_errors": [],
+                  "http_calls": [{"method": "GET",
+                                  "endpoint": "http://localhost:8899/api/v1/heritage/search",
+                                  "auth": "Bearer",
+                                  "parameters": ["location", "page", "page_size"]}],
+                  "json_shapes": [shape]}
+        raw = ("[exitCode:1]\nTASK_RUNTIME " + json.dumps(report, ensure_ascii=False)
+               + "\nTraceback (most recent call last):\n"
+                 "AttributeError: 'str' object has no attribute 'keys'")
+
+        p = task_payload(3, "query")
+        p["lastCmdResult"] = raw
+        mem = Memory(task_text="query", task_started=1, bootstrap_done=True,
+                     pending=("cmd", 2), running_python="first parser")
+        t, cfg, _, _ = setup_case(p)
+        mem.observe(t, cfg)
+        self.assertEqual(mem.last_attempt["failureRepeatCount"], 1)
+        self.assertEqual(mem.last_attempt["jsonShapes"], [shape])
+        self.assertIn("真实结构", mem.history[-1]["error"])
+
+        p = task_payload(5, "query")
+        p["lastCmdResult"] = raw
+        mem.pending = ("cmd", 4)
+        mem.running_python = "second parser with superficial edits"
+        t, cfg, _, ledger = setup_case(p)
+        mem.observe(t, cfg)
+        self.assertEqual(mem.last_attempt["failureRepeatCount"], 2)
+        self.assertEqual(len(mem.failure_fingerprints), 1)
+        prompt, command = Intelligence(t, cfg, mem).task(ledger)
+        self.assertFalse(command)
+        self.assertIn("同类解析失败已重复", prompt)
+        self.assertIn("lastAttempt.jsonShapes", prompt)
+        self.assertIn("禁止继续猜 data/results", prompt)
 
 
 if __name__ == "__main__":
