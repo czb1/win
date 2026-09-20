@@ -69,7 +69,7 @@ def payload_error(url, value):
 
 def json_shape(value, depth=0):
     """Return bounded structural metadata without scalar response values."""
-    if depth >= 3:
+    if depth >= 4:
         return {'type': type(value).__name__}
     if isinstance(value, dict):
         raw_keys = list(value.keys())[:20]
