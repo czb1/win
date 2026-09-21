@@ -16,14 +16,6 @@ def planned_weapons(turn, cfg, mem, sites):
     return weapons
 
 
-def core_upgrades_complete(turn, cfg, planned=()):
-    """True only when the station and the full configured weapon set are level 3."""
-    weapons = list(planned) if planned else list(turn.weapons)
-    return bool(turn.station and turn.station.level >= 3
-                and len(weapons) >= len(cfg.loadout)
-                and all(w.id >= 0 and w.level >= 3 for w in weapons))
-
-
 def via(nav, hero, groups, reserved=(), final_exact=False):
     """Shortest reachable first stop, then a feasible walk through later stops.
 
@@ -67,18 +59,19 @@ def preparation_start(turn, cfg, mem, nav, heroes, sites):
     shops = [p for p, k in turn.zones.items() if k == "weaponShop"]
     missing = sum(w.id < 0 for w in weapons)
     upgrades = sum(w.level < 3 for w in weapons)
-    # Once core upgrades are complete, budget one wall-upgrade shopping batch
-    # so healthy walls do not miss every daylight delivery window.
-    if (core_upgrades_complete(turn, cfg, weapons)
-            and any(w.kind == "wall" and w.level < 3 for w in turn.ours)):
-        upgrades += 1
+    # Base vouchers also need a shop visit and delivery, even after all guns
+    # are maxed. Reserve the actual station leg rather than only weapon cells.
+    station = (turn.station if turn.station and turn.station.level < 3
+               and not upgrades else None)
+    upgrades += int(station is not None)
     budgets = []
     for hero in heroes:
         if not home:
             continue
         # One batch sale, up to two voucher purchases, delivery/use, and a
         # congestion margin. Building and shopping can proceed in parallel.
-        groups = ([vendors] if vendors else []) + ([shops] if shops and upgrades else []) + [home]
+        groups = (([vendors] if vendors else []) + ([shops] if shops and upgrades else [])
+                  + ([station.cells] if station else []) + [home])
         route = via(nav, hero, groups)
         if route is not None:
             build_route = nav.approach(hero, home)

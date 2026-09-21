@@ -157,55 +157,6 @@ class WallRepairTests(unittest.TestCase):
         self.assertEqual(m.wall_rebuild_levels, {(5, 8): 3, (6, 8): 3, (6, 9): 3})
         self.assertNotIn((5, 9), m.wall_rebuild_levels)
 
-    def healthy_upgrade_case(self, wall_level=2, round_no=170):
-        p = payload(round_no, [unit(1, "worker", 5, 7),
-                               unit(13, "station", 1, 10, health=1500, level=3),
-                               unit(20, "rocket", 3, 10, level=3),
-                               unit(30, "wall", 5, 9, health=1000, level=wall_level)])
-        p["teamOur"]["goldNum"] = 600
-        p["mapInfo"]["zones"] = [
-            {"neutralType": "weaponShop", "pos": {"x": 4, "y": 7}},
-            {"neutralType": "vendor", "pos": {"x": 6, "y": 7}},
-            {"neutralType": "copper", "pos": {"x": 7, "y": 7}},
-        ]
-        p["weaponShopList"] = [
-            {"name": "WallUpgradeVoucher1", "price": 20},
-            {"name": "WallUpgradeVoucher2", "price": 30},
-            {"name": "WeaponUpgradeVoucher2", "price": 50},
-            {"name": "StationUpgradeVoucher2", "price": 50},
-        ]
-        p["vendorShopList"] = [{"name": "copper", "price": 10}]
-        settings = dict(layout_mode="explicit", loadout=["rocket"],
-                        weapon_cells=[[3, 10]], wall_cells=[[5, 9]])
-        return p, settings
-
-    def test_healthy_walls_buy_both_upgrade_levels_after_core_is_maxed(self):
-        for level, name in ((1, "WallUpgradeVoucher1"), (2, "WallUpgradeVoucher2")):
-            with self.subTest(level=level):
-                p, settings = self.healthy_upgrade_case(level)
-                t, c, n, l = setup_case(p, **settings)
-                plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
-                self.assertIsNotNone(plan)
-                self.assertEqual(plan[0], name)
-
-    def test_healthy_wall_waits_until_weapon_and_station_upgrades_are_done(self):
-        p, settings = self.healthy_upgrade_case(2)
-        rocket = next(r for r in p["teamOur"]["roles"] if r["roleType"] == "rocket")
-        rocket["level"] = 2
-        t, c, n, l = setup_case(p, **settings)
-        plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
-        self.assertIsNotNone(plan)
-        self.assertEqual(plan[0], "WeaponUpgradeVoucher2")
-
-    def test_workers_enter_preparation_for_healthy_wall_upgrade(self):
-        p, settings = self.healthy_upgrade_case(2, round_no=170)
-        t, c, n, l = setup_case(p, **settings)
-        mem = Memory()
-        workers(t, c, mem, n, l, [(3, 10)], [(5, 9)])
-        self.assertIn(1, mem.preparation_workers)
-        self.assertEqual(mem.supply_worker, 1)
-        self.assertIn(l.commands["1"]["action"], ("move", "buy"))
-
     def repair_case(self, neighbour_level=3):
         p = payload(129, [unit(1, "worker", 5, 7),
                           unit(13, "station", 3, 11, health=1500, level=3),

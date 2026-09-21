@@ -29,11 +29,19 @@ class DailySaleTests(unittest.TestCase):
             self.assertEqual(ledger.commands.get('1', {}).get('action'), expected)
             mem.last_round, mem.last_commands = rno, ledger.commands
 
-    def test_sold_worker_does_not_start_another_daytime_mining_trip(self):
-        p = mining_case(45, zones=[('iron', 9, 5), ('vendor', 4, 5)])
+    def test_sold_worker_returns_home_instead_of_starting_remote_daytime_mining_trip(self):
+        p = mining_case(
+            45,
+            zones=[('iron', 14, 5), ('vendor', 4, 5)],
+            workers=[unit(1, 'worker', 5, 5), unit(13, 'station', 10, 5)],
+        )
         t, cfg, nav, ledger = setup_case(p)
-        self.assertFalse(earn(t, cfg, Memory(day=1, sold_workers={1}), nav, ledger, t.workers[0]))
-        self.assertFalse(ledger.commands)
+        mem = Memory(day=1, sold_workers={1})
+        self.assertTrue(earn(t, cfg, mem, nav, ledger, t.workers[0]))
+        self.assertEqual(ledger.commands['1']['action'], 'move')
+        self.assertIn(1, mem.sold_workers)
+        self.assertNotEqual(mem.mine_targets.get(1), (14, 5))
+
         p['roundNo'] = 80
         t, cfg, nav, ledger = setup_case(p)
         self.assertTrue(earn(t, cfg, Memory(day=1, sold_workers={1}), nav, ledger, t.workers[0]))
@@ -64,7 +72,7 @@ class DailySaleTests(unittest.TestCase):
 class NightMiningTests(unittest.TestCase):
     def night_case(self, rno=80):
         p = payload(rno, [unit(1, 'worker', 5, 5), unit(20, 'rocket', 5, 6),
-                          unit(13, 'station', 3, 11)])
+                          unit(13, 'station', 3, 7)])
         p['mapInfo']['zones'] = [{'neutralType': 'copper', 'pos': {'x': 6, 'y': 5}}]
         p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
         return p
@@ -102,8 +110,8 @@ class NightMiningTests(unittest.TestCase):
 
     def test_far_opponent_wave_does_not_hold_workers(self):
         p = self.night_case()
-        p['mapInfo'].update(width=41, height=15)
-        p['robot']['roles'] = [unit(90, 'smallRobot', 30, 10, attackRange=1, targetTeam='defender')]
+        p['mapInfo'].update(width=41, height=32)
+        p['robot']['roles'] = [unit(90, 'smallRobot', 30, 25, attackRange=1, targetTeam='defender')]
         self.assertEqual(Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']['1']['action'], 'collect')
 
     def test_unarmed_worker_wont_cross_monster_range_to_mine(self):
@@ -113,47 +121,6 @@ class NightMiningTests(unittest.TestCase):
         p['robot']['roles'] = [unit(90, 'smallRobot', 7, 5, attackRange=3, targetTeam='defender')]
         p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
         self.assertFalse(Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap'])
-
-
-    def test_top_left_base_keeps_night_worker_off_right_side(self):
-        p = payload(80, [unit(1, 'worker', 2, 5), unit(13, 'station', 3, 4)])
-        p['mapInfo']['zones'] = [{'neutralType': 'copper', 'pos': {'x': 8, 'y': 5}}]
-        p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
-        commands = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
-        self.assertNotIn('1', commands)
-
-        p['mapInfo']['zones'].append({'neutralType': 'copper', 'pos': {'x': 1, 'y': 5}})
-        commands = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
-        self.assertEqual(commands['1']['action'], 'collect')
-        self.assertEqual(commands['1']['targetPos'][0], {'x': 1, 'y': 5})
-
-    def test_bottom_right_base_keeps_night_worker_off_left_side(self):
-        p = payload(80, [unit(1, 'worker', 12, 10), unit(13, 'station', 10, 11)])
-        p['mapInfo']['zones'] = [{'neutralType': 'copper', 'pos': {'x': 7, 'y': 10}}]
-        p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
-        commands = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
-        self.assertNotIn('1', commands)
-
-        p['mapInfo']['zones'].append({'neutralType': 'copper', 'pos': {'x': 13, 'y': 10}})
-        commands = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
-        self.assertEqual(commands['1']['action'], 'collect')
-        self.assertEqual(commands['1']['targetPos'][0], {'x': 13, 'y': 10})
-
-    def test_top_left_worker_already_right_of_base_retreats_left(self):
-        p = payload(80, [unit(1, 'worker', 7, 5), unit(13, 'station', 3, 4)])
-        p['mapInfo']['zones'] = [{'neutralType': 'copper', 'pos': {'x': 9, 'y': 5}}]
-        p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
-        command = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']['1']
-        self.assertEqual(command['action'], 'move')
-        self.assertLess(command['targetPos'][0]['x'], 7)
-
-    def test_bottom_right_worker_already_left_of_base_retreats_right(self):
-        p = payload(80, [unit(1, 'worker', 7, 10), unit(13, 'station', 10, 11)])
-        p['mapInfo']['zones'] = [{'neutralType': 'copper', 'pos': {'x': 5, 'y': 10}}]
-        p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
-        command = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']['1']
-        self.assertEqual(command['action'], 'move')
-        self.assertGreater(command['targetPos'][0]['x'], 7)
 
 
 class FrontOnlyTests(unittest.TestCase):

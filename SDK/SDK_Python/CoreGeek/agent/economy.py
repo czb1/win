@@ -4,8 +4,7 @@ from .commands import command
 from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, sale_inventory
-from .economy_plan import (planned_weapons, via, trade_available, preparation_start, front_sites,
-                           core_upgrades_complete)
+from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites
 
 
 def walk(nav, ledger, hero, targets):
@@ -106,20 +105,31 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
     upgrades = []
     for building in turn.ours:
         name = voucher_for(building)
-        if name and hero.inventory[name] and building.id not in ledger.upgrade_claims:
+        if (name and hero.inventory[name] and building.id not in ledger.upgrade_claims
+                and not (mem and mem.movement.avoids(hero.id, building.pos))):
             route = nav.approach(hero, building.cells, ledger.reserved)
             if route and (not local_only or route[0] == 0):
                 upgrades.append((upgrade_order(turn, building, mem), route[0], name, building, route))
         if (building.kind == "wall" and hero.inventory["WallFixer"] and building.health < 500
-                and building.id not in ledger.repair_claims):
+                and building.id not in ledger.repair_claims
+                and not (mem and turn.day >= 4 and hero.id == mem.wall_watch_id)):
             route = nav.approach(hero, building.cells, ledger.reserved)
             if route and (not local_only or route[0] == 0):
                 upgrades.append(((1.5, building.health, building.id), route[0], "WallFixer", building, route))
     if upgrades:
-        _, _, name, building, route = min(upgrades, key=lambda o: (o[0], o[1], o[3].id))
+        previous = mem.upgrade_targets.get(hero.id) if mem else None
+        # Keep emergency base healing and replacement-wall upgrades ahead of
+        # the current delivery; hold the target among ordinary deliveries.
+        _, _, name, building, route = min(upgrades, key=lambda o: (
+            min(0, o[0][0]), o[3].pos != previous, o[0], o[1], o[3].id))
         if route[1] is None:
-            return ledger.add(hero.id, command("use", building.pos, name=name))
+            used = ledger.add(hero.id, command("use", building.pos, name=name))
+            if used and mem:
+                mem.upgrade_targets.pop(hero.id, None)
+            return used
         if ledger.add(hero.id, command("move", route[1])):
+            if mem:
+                mem.upgrade_targets[hero.id] = building.pos
             (ledger.repair_claims if name == "WallFixer" else ledger.upgrade_claims).add(building.id)
             return True
     return False
@@ -135,7 +145,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     """
     shops = [p for p, k in turn.zones.items() if k == "weaponShop"]
     routes = [(r[0], p, r) for p in shops
-              if (r := nav.approach(hero, [p], ledger.reserved)) is not None]
+              if not mem.movement.avoids(hero.id, p)
+              and (r := nav.approach(hero, [p], ledger.reserved)) is not None]
     if not routes:
         return None
     candidates = []
@@ -146,9 +157,6 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         carried = Counter(item for h in turn.heroes for item in h.backpack)
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
         first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
-        core_upgrade_pending = any(
-            b.level < 3 and b.kind in (*WEAPONS, "station") for b in buildings)
-        core_complete = core_upgrades_complete(turn, cfg, planned)
         for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
             name = voucher_for(building)
             if not name:
@@ -163,16 +171,14 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                 continue
             urgent_wall = (rebuilding_wall(turn, building, mem)
                            or not first_level_gun and exposed_wall(turn, building, mem))
-            # Preserve the old damaged-wall fallback once every existing core
-            # building is maxed, but only let healthy ordinary walls consume
-            # surplus after the full configured core is actually complete.
             if building.kind == "wall" and not urgent_wall and (
-                    core_upgrade_pending
-                    or bulk and building.health >= 500 and not core_complete):
+                    any(b.level < 3 and b.kind in (*WEAPONS, "station") for b in buildings)
+                    or bulk and building.health >= 500):
                 continue
             candidates.append((upgrade_order(turn, building, mem), name, building.cells))
         damaged = [w for w in turn.ours if w.kind == "wall" and w.health < 500]
-        if damaged and not any(h.inventory["WallFixer"] for h in turn.heroes):
+        if (damaged and mem.wall_watch_id is None
+                and not any(h.inventory["WallFixer"] for h in turn.heroes)):
             candidates.append(((1.5,), "WallFixer", damaged[0].cells))
     seen = set()
     for _, name, destinations in sorted(candidates, key=lambda c: c[0]):
@@ -185,7 +191,11 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
             continue
         if price > ledger.gold - reserve:
             # Do not divert scarce weapon funds to cheaper, lower-priority items.
-            return None
+            if turn.tick < cfg.economy_rounds:
+                return None
+            # During preparation use affordable, deliverable alternatives;
+            # never spend gold reserved for missing guns.
+            continue
         matches = [c[2] for c in candidates if c[1] == name]
         count = min(len(matches) if bulk else 1, max(1, hero.space),
                     (ledger.gold - reserve) // price if price else len(matches))
@@ -562,16 +572,13 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     trading = {h.id for h in free if trade_available(turn, mem, nav, h)}
     planned = planned_weapons(turn, cfg, mem, tower_sites)
     built_walls = {w.pos for w in turn.ours if w.kind == "wall"}
-    core_complete = core_upgrades_complete(turn, cfg, planned)
-    ordinary_wall_upgrades = core_complete and any(
-        w.kind == "wall" and w.level < 3 for w in turn.ours)
     work_remains = (any(w.id < 0 or w.level < 3 for w in planned)
                     or turn.station and turn.station.level < 3 and bool(turn.shop)
                     or any(rebuilding_wall(turn, w, mem) for w in turn.ours)
-                    or ordinary_wall_upgrades
                     or any(p not in built_walls and p not in mem.build_failures for p in wall_sites))
     cutoff = (preparation_start(turn, cfg, mem, nav, free, tower_sites) if work_remains else 70) if trading else 0
     developing = {h.id for h in free if h.id not in trading or turn.tick >= cutoff
+                  or h.id in mem.preparation_workers
                   or h.id in mem.sold_workers
                   or any("UpgradeVoucher" in k or k == "WallFixer" for k in h.backpack)}
     repair_sites = repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites)
@@ -590,6 +597,12 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     # Liquidate the last farming load before either actor leaves for the base
     # or the shop. Otherwise unspent ore can split one bulk order into two trips.
     for h in free:
+        # A voucher already paid for must not sit behind the sale trip. Keep
+        # bulk buying at the shop intact; away from it finish delivery first.
+        at_shop = any(k == "weaponShop" and turn.adjacent(h.pos, p) for p, k in turn.zones.items())
+        if (turn.station and h.inventory[voucher_for(turn.station)] and not at_shop
+                and use_inventory(turn, nav, ledger, h, mem=mem)):
+            continue
         if h.id in developing and h.id not in mem.preparation_workers:
             mem.preparation_workers.add(h.id)
             if h.id in trading and h.id not in mem.sold_workers and sale_inventory(turn, mem, h):

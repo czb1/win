@@ -31,23 +31,17 @@ def return_destination(turn, nav, ledger, hero):
     return (tower.cells if tower else mining_home(turn, nav, hero, ledger.reserved)), False
 
 
-def night_worker_boundary(turn):
-    """Return the monster-facing horizontal boundary for diagonal bases."""
-    if not turn.station:
-        return None
-    xs = [p[0] for p in turn.station.cells]
-    ys = [p[1] for p in turn.station.cells]
-    center_x = sum(xs) / len(xs)
-    center_y = sum(ys) / len(ys)
-    if center_x < turn.width / 2 and center_y < turn.height / 2:
-        return "right", max(xs)
-    if center_x > turn.width / 2 and center_y > turn.height / 2:
-        return "left", min(xs)
-    return None
+def reserve_watch_space(turn, mem, hero):
+    if turn.is_day and turn.day >= 4 and hero.id == mem.wall_watch_id:
+        price = turn.shop.get("WallFixer")
+        if price is not None and 0 <= price <= turn.gold:
+            return replace(hero, capacity=max(0, hero.capacity - max(0, 3 - hero.inventory["WallFixer"])))
+    return hero
 
 
 def spare_mine(turn, cfg, mem, nav, ledger, hero):
     """Use otherwise idle daylight near ore; carry it to a later day's sale."""
+    hero = reserve_watch_space(turn, mem, hero)
     if not turn.is_day or not hero.space:
         LOG.debug("round=%s worker=%s spare_mining=unavailable day=%s free_space=%s",
                   turn.round, hero.id, turn.is_day, hero.space)
@@ -104,6 +98,7 @@ def sale_inventory(turn, mem, hero):
 
 def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
          deadline=None, stockpile=False, dedicated=False):
+    hero = reserve_watch_space(turn, mem, hero)
     if not hero.space:
         LOG.debug("round=%s worker=%s mining=backpack_full", turn.round, hero.id)
         return False
@@ -224,8 +219,24 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
     if not total:
         mem.sale_workers.discard(hero.id)
         mem.sale_targets.pop(hero.id, None)
-    if not turn.is_day or (hero.id in mem.sold_workers and hero.id not in mem.sale_workers):
-        return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=turn.is_day)
+    if not turn.is_day:
+        if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True):
+            return True
+        return allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero)
+    if hero.id in mem.sold_workers and hero.id not in mem.sale_workers:
+        if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=True):
+            return True
+        if allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero):
+            return True
+        # A completed daily sale forbids another vendor visit, not useful
+        # repositioning. Leave the vendor and return to a base/operator area.
+        home, exact = return_destination(turn, nav, ledger, hero)
+        if home:
+            back = (nav.search(hero, home, ledger.reserved) if exact
+                    else nav.approach(hero, home, ledger.reserved))
+            if back and back[1] is not None:
+                return ledger.add(hero.id, command("move", back[1]))
+        return False
     vendors = [p for p, k in turn.zones.items() if k == "vendor"]
     options = [(r[0] != 0, p != mem.sale_targets.get(hero.id), r[0], p, r) for p in vendors
                if (hero.id not in mem.sold_workers or p == mem.sale_targets.get(hero.id))
@@ -281,73 +292,34 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
 
 
 def night_mine(turn, cfg, mem, nav, ledger, hero, dedicated=False):
-    """Stockpile until daylight without entering the monster-facing base side."""
-    boundary = night_worker_boundary(turn)
-    side, edge = boundary if boundary else (None, None)
-    outside = bool(boundary and (
-        side == "right" and hero.pos[0] > edge
-        or side == "left" and hero.pos[0] < edge
-    ))
-    original = turn.blocked
-
-    def side_blocks(retreating=False):
-        if not boundary:
-            return set()
-        cutoff = hero.pos[0] if retreating and outside else edge
-        if side == "right":
-            return {(x, y) for x in range(cutoff + 1, turn.width)
-                    for y in range(turn.height)}
-        return {(x, y) for x in range(0, cutoff)
-                for y in range(turn.height)}
-
-    def retreat():
-        # If already exposed, allow lateral/inward steps but never move farther
-        # toward the monster spawn. Otherwise keep the whole danger side closed.
-        turn.blocked = original | side_blocks(retreating=True)
-        if not turn.station:
-            return False
-        if outside:
-            targets = {
-                q for p in turn.station.cells for q in neighbours(p)
-                if turn.inside(q) and q not in turn.station.cells
-                and (q[0] <= edge if side == "right" else q[0] >= edge)
-                and q not in turn.blocked
-            }
-            route = nav.search(hero, targets, ledger.reserved) if targets else None
-        else:
+    """Stockpile until daylight; exclude danger cells from the entire route."""
+    threats = [r for r in turn.robots if turn.threatens_us(r)]
+    if not dedicated and any(turn.base_distance(r.pos) <= max(cfg.task_danger_radius, r.attack_range + 2)
+                             for r in threats):
+        if turn.station:
             route = nav.approach(hero, turn.station.cells, ledger.reserved)
-        if route and route[1] is not None:
-            return ledger.add(hero.id, command("move", route[1]))
+            if route and route[1] is not None:
+                return ledger.add(hero.id, command("move", route[1]))
         return False
-
+    original = turn.blocked
     try:
-        threats = [r for r in turn.robots if turn.threatens_us(r)]
-        if not dedicated and any(
-                turn.base_distance(r.pos) <= max(cfg.task_danger_radius, r.attack_range + 2)
-                for r in threats):
-            return retreat()
-
         danger = set()
         # Even an opponent-bound robot makes a poor mining neighbour. Do not
         # approach or route through its range merely because our base is safe.
         for robot in turn.robots:
             radius = robot.attack_range + 2
             danger.update((x, y)
-                          for x in range(max(0, robot.pos[0] - radius),
-                                         min(turn.width, robot.pos[0] + radius + 1))
-                          for y in range(max(0, robot.pos[1] - radius),
-                                         min(turn.height, robot.pos[1] + radius + 1)))
-
-        # A night worker that is already on the monster-facing side stops work
-        # immediately and moves back without taking any farther-out step.
-        if outside:
-            return retreat()
-
-        turn.blocked = original | danger | side_blocks()
+                          for x in range(max(0, robot.pos[0] - radius), min(turn.width, robot.pos[0] + radius + 1))
+                          for y in range(max(0, robot.pos[1] - radius), min(turn.height, robot.pos[1] + radius + 1)))
+        turn.blocked = original | danger
         # A threatened unassigned worker retreats instead of starting a new run.
         if hero.pos in danger:
-            return retreat()
+            turn.blocked = original
+            if turn.station:
+                route = nav.approach(hero, turn.station.cells, ledger.reserved)
+                if route and route[1] is not None:
+                    return ledger.add(hero.id, command("move", route[1]))
+            return False
         return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, dedicated=dedicated)
     finally:
         turn.blocked = original
-

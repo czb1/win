@@ -10,6 +10,7 @@ import re
 import shlex
 from .commands import command
 from .model import ORES, pos
+from .recovery import Recovery
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
 from .task_runtime import runtime_code, runtime_result
 from .task_sop import answer_contract, answer_error, engineering_code
@@ -208,6 +209,8 @@ class Memory:
     news_dirty: bool = False
     gunner_observation: tuple | None = None
     gunner_stalled: int = 0
+    wall_watch_id: int | None = None
+    wall_watch_health: dict = field(default_factory=dict)
     gunner_id: int | None = None
     gunner_post: tuple | None = None
     next_gun: int = 0
@@ -277,6 +280,8 @@ class Memory:
     mine_collected: dict = field(default_factory=dict)
     supply_worker: int | None = None
     build_targets: dict = field(default_factory=dict)
+    upgrade_targets: dict = field(default_factory=dict)
+    recovery: Recovery = field(default_factory=Recovery)
     stone_reserves: dict = field(default_factory=dict)
     return_targets: dict = field(default_factory=dict)
     return_posts: dict = field(default_factory=dict)
@@ -292,6 +297,7 @@ class Memory:
 
     def observe(self, turn, cfg):
         self.movement.observe(turn, self)
+        self.recovery.observe(turn, self)
         current_walls = {wall.pos: (wall.id, wall.health) for wall in turn.ours if wall.kind == "wall"}
         if self.last_round == turn.round - 1:
             for location, (uid, health) in self.wall_health.items():
@@ -606,6 +612,9 @@ class Memory:
         raw_reply = str(turn.raw.get("llmResp") or "")
         parsed = (parse_task_reply(turn.raw.get("llmResp")) if purpose == "task"
                   else parse_object(turn.raw.get("llmResp")))
+        if purpose == "recovery":
+            self.recovery.accept(parsed, turn)
+            return
         if purpose == "task":
             LOG.info("round=%s task_llm kind=%s chars=%s sha=%s detail=%s", turn.round,
                      task_reply_kind(parsed), len(raw_reply), digest_text(raw_reply),
