@@ -33,7 +33,7 @@ class EconomyCalibrationTests(unittest.TestCase):
                             self.assertGreaterEqual(checkpoint["gold"], 0)
                         dusk = result["checkpoints"]["69"]
                         self.assertEqual(len(dusk["weapon_levels"]), 3)
-                        self.assertEqual(dusk["operators_ready"], 3)
+                        self.assertEqual(dusk["shared_guns_ready"], 3)
                         # Spending must fund actual upgrades, not phantom starting assets.
                         self.assertGreaterEqual(dusk["spent"], 75 + 100 * sum(l >= 2 for l in dusk["weapon_levels"]))
                         for event in result["respawns"]:
@@ -110,3 +110,4 @@ class EconomyCalibrationTests(unittest.TestCase):
                        {"profile": "random", "mines_per_kind": 0}):
             with self.assertRaises(ValueError):
                 simulate(Idle, Config, **kwargs)
+

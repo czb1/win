@@ -88,7 +88,7 @@ def sale_inventory(turn, mem, hero):
 
 
 def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
-         deadline=None, stockpile=False):
+         deadline=None, stockpile=False, dedicated=False):
     if not hero.space:
         LOG.debug("round=%s worker=%s mining=backpack_full", turn.round, hero.id)
         return False
@@ -156,7 +156,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         share = max(1, (remaining + len(others)) // (1 + len(others)))
         amount = min(hero.space, share)
         sale_walk = min((sale_dist[q] for q in cells), default=None)
-        if stockpile and home and (turn.is_day or wave_budget is not None):
+        if stockpile and home and not dedicated and (turn.is_day or wave_budget is not None):
             home_walk = min((home_dist[q] for q in neighbours(p) if q in home_dist), default=None)
             if home_walk is None:
                 continue
@@ -265,11 +265,11 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
     return False
 
 
-def night_mine(turn, cfg, mem, nav, ledger, hero):
+def night_mine(turn, cfg, mem, nav, ledger, hero, dedicated=False):
     """Stockpile until daylight; exclude danger cells from the entire route."""
     threats = [r for r in turn.robots if turn.threatens_us(r)]
-    if any(turn.base_distance(r.pos) <= max(cfg.task_danger_radius, r.attack_range + 2)
-           for r in threats):
+    if not dedicated and any(turn.base_distance(r.pos) <= max(cfg.task_danger_radius, r.attack_range + 2)
+                             for r in threats):
         if turn.station:
             route = nav.approach(hero, turn.station.cells, ledger.reserved)
             if route and route[1] is not None:
@@ -294,6 +294,7 @@ def night_mine(turn, cfg, mem, nav, ledger, hero):
                 if route and route[1] is not None:
                     return ledger.add(hero.id, command("move", route[1]))
             return False
-        return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True)
+        return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, dedicated=dedicated)
     finally:
         turn.blocked = original
+

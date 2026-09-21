@@ -2,7 +2,7 @@ from collections import Counter
 from dataclasses import replace
 from .commands import command
 from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
-from .navigation import wall_priority
+from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, sale_inventory
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites
 
@@ -68,12 +68,19 @@ def exposed_wall(turn, wall, mem):
                                      and wall_sector(turn, w) == sector for w in turn.ours))
 
 
+def rebuilding_wall(turn, building, mem):
+    return (turn.is_day and mem is not None and building.kind == "wall"
+            and building.level < mem.wall_rebuild_levels.get(building.pos, 1))
+
+
 def upgrade_order(turn, building, mem=None):
     """Upgrade all weapons to level 2, then 3, before a healthy base.
 
-    A damaged base gets the full-heal benefit immediately. Wall upgrades are
-    deliberately last: upgrading every wall first would starve the guns.
+    A damaged base gets the full-heal benefit immediately. Rebuilt walls catch
+    up with their neighbours next; ordinary wall upgrades remain last.
     """
+    if rebuilding_wall(turn, building, mem):
+        return (-.75, building.level, building.id)
     if building.kind == "station":
         return (-1 if building.health < 750 else 2 if building.level == 1 else 3, building.id)
     if building.kind in WEAPONS:
@@ -150,7 +157,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                 name = voucher_for(building) if bulk else None
             if not name:
                 continue
-            urgent_wall = (not first_level_gun and exposed_wall(turn, building, mem))
+            urgent_wall = (rebuilding_wall(turn, building, mem)
+                           or not first_level_gun and exposed_wall(turn, building, mem))
             if building.kind == "wall" and not urgent_wall and (
                     any(b.level < 3 and b.kind in (*WEAPONS, "station") for b in buildings)
                     or bulk and building.health >= 500):
@@ -280,6 +288,8 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
     pending_wall = any(name == "wall" for _, name in ledger.build_claims.values())
     front = set(front_sites(turn, ledger.wall_cells))
     missing_front = front - wall_chain
+    gaps = wall_gaps(turn, ledger.wall_cells, mem.wall_hits) | (
+        set(mem.wall_rebuild_levels) - wall_chain)
     for index, target in enumerate(sites):
         if name_for(index) == "wall" and cfg.layout_mode != "explicit":
             # Shared edges, not diagonal contact: grow one continuous wall.
@@ -289,7 +299,7 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
                 continue
             if not wall_chain and pending_wall:
                 continue
-            if missing_front and target not in front:
+            if missing_front and target not in front and target not in gaps:
                 continue
         if (target in turn.blocked or target in ledger.reserved
                 or target in ledger.build_claims or target in mem.build_failures
@@ -301,9 +311,8 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
             priority = (wall_priority(turn, cfg, sites, index, mem.wall_hits)
                         if name_for(index) == "wall" else (0, 0, route[0]))
             if name_for(index) == "wall":
-                # Retain the established front/breach/continuity ordering when
-                # no attacked flank is urgent.
-                priority = priority[:3] + (0, target != mem.build_targets.get(hero.id))
+                # Close gaps first, then retain the established expansion order.
+                priority = (int(target not in gaps),) + priority[:3] + (0, target != mem.build_targets.get(hero.id))
             previous = mem.build_targets.get(hero.id)
             continuity = distance(target, previous) if name_for(index) == "wall" and previous else 0
             options.append((priority, route[0], continuity, index, target, route))
@@ -330,6 +339,7 @@ def finish_preparation(turn, cfg, mem, nav, ledger, hero, tower, wall_sites):
     if hero.kind != "worker" or hero.inventory["stone"] < cfg.wall_stones:
         return False
     front = set(front_sites(turn, wall_sites))
+    gaps = wall_gaps(turn, wall_sites, mem.wall_hits) | set(mem.wall_rebuild_levels)
     options = []
     for target in wall_sites:
         if target in turn.blocked:
@@ -348,8 +358,9 @@ def finish_preparation(turn, cfg, mem, nav, ledger, hero, tower, wall_sites):
                 turn.blocked = original
             margin = 2 if target in front else cfg.return_margin
             if after and turn.day_left > work[0] + after[0] + margin:
-                options.append((target not in front, work[0], work[0] + after[0], target, cell))
-    for _, _, _, target, cell in sorted(options):
+                options.append((target not in gaps, target not in front, work[0],
+                                work[0] + after[0], target, cell))
+    for _, _, _, _, target, cell in sorted(options):
         if build(turn, cfg, mem, nav, ledger, hero, [target], lambda _: "wall", work_cell=cell):
             return True
     return False
@@ -367,9 +378,20 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
             return
         earn(turn, cfg, mem, nav, ledger, hero, deadline)
         return
+    # Repair real gaps before shopping or extending the blueprint. Decisions
+    # are deterministic and still pass the normal access/claim checks.
+    gaps = wall_gaps(turn, wall_sites, mem.wall_hits) | (
+        set(mem.wall_rebuild_levels) - {w.pos for w in turn.ours if w.kind == "wall"})
+    if gaps and (builder or shopping or hero.inventory["stone"] >= cfg.wall_stones):
+        if hero.inventory["stone"] >= cfg.wall_stones:
+            if build(turn, cfg, mem, nav, ledger, hero, sorted(gaps), lambda _: "wall"):
+                return
+        elif mine(turn, cfg, mem, nav, ledger, hero, want_stone=True):
+            return
     # Close a nearby front breach before a courier leaves to deliver upgrades.
     # This spends reserved stone in-place and avoids a later repair round trip.
-    if hero.inventory["stone"] >= cfg.wall_stones and (builder or len(turn.weapons) >= len(cfg.loadout)):
+    if (hero.inventory["stone"] >= cfg.wall_stones and (builder or len(turn.weapons) >= len(cfg.loadout))
+            and not any(rebuilding_wall(turn, w, mem) for w in turn.ours)):
         local_front = [p for p in front_sites(turn, wall_sites) if turn.adjacent(hero.pos, p)]
         if build(turn, cfg, mem, nav, ledger, hero, local_front, lambda _: "wall"):
             return
@@ -488,6 +510,8 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     developing = {h.id for h in free if h.id not in trading or turn.tick >= cutoff
                   or h.id in mem.sold_workers
                   or any("UpgradeVoucher" in k or k == "WallFixer" for k in h.backpack)}
+    if mem.wall_rebuild_levels:
+        developing.update(h.id for h in free)
     # Liquidate the last farming load before either actor leaves for the base
     # or the shop. Otherwise unspent ore can split one bulk order into two trips.
     for h in free:

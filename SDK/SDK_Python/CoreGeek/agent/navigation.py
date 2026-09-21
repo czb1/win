@@ -100,12 +100,9 @@ def layout(turn, cfg):
     def world(p):
         return origin[0] + sx * p[0], origin[1] + sy * p[1]
 
-    # Group towers along the front. Spreading them around the 2x2 base cuts
-    # the inner walking ring into pockets, forcing connectivity checks to
-    # leave extra wall holes. Keep both flanks connected to the rear gate.
-    # Leave (2, 1) as an operator/circulation cell; three consecutive towers
-    # would leave their middle tower without a usable controller position.
-    tower_order = [(2, 0), (2, -1), (2, 2)]
+    # Rear corner: all three guns touch the free control cell (-1, 0).
+    # Keep the original one-cell weapon ring and the front/flank wall blueprint.
+    tower_order = [(-1, -1), (0, -1), (-1, 1)]
     towers = [world(p) for p in tower_order[:len(cfg.loadout)] if turn.inside(world(p))]
     # Close the six-cell front first, then add three cells on each flank.
     # Leave the rear open for mining, deliveries and operator circulation.
@@ -113,6 +110,30 @@ def layout(turn, cfg):
     order += [(u, v) for u in (2, 1, 0) for v in (-2, 3)]
     return towers, [world(p) for p in order if turn.inside(world(p))]
 
+
+
+def wall_gaps(turn, sites, hits=None):
+    """Missing blueprint components bounded by walls, or observed destroyed cells."""
+    walls = {u.pos for u in turn.ours if u.kind == "wall"}
+    missing = set(sites) - walls
+    gaps = set()
+    while missing:
+        pending = [missing.pop()]
+        component, boundary = set(), set()
+        while pending:
+            p = pending.pop()
+            component.add(p)
+            for q in ((p[0]-1, p[1]), (p[0]+1, p[1]),
+                      (p[0], p[1]-1), (p[0], p[1]+1)):
+                if q in walls:
+                    boundary.add(q)
+                if q in missing:
+                    missing.remove(q)
+                    pending.append(q)
+        if len(boundary) >= 2:
+            gaps.update(component)
+        gaps.update(p for p in component if (hits or {}).get(p))
+    return gaps
 
 
 def wall_priority(turn, cfg, sites, index, hits=None):

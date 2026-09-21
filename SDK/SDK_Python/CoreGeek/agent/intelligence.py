@@ -15,6 +15,7 @@ from .task_runtime import runtime_code, runtime_result
 from .task_sop import answer_contract, answer_error, engineering_code
 from .task_query import reference_paths, query_config, query_code
 from .movement import MovementMemory
+from .navigation import layout, wall_gaps
 from .task_skills import (bind_recipe, recipe_proposal, compatible, learned_method,
                           output_supports, promote)
 
@@ -205,6 +206,11 @@ class Memory:
     calls: int = 0
     news: list = field(default_factory=list)
     news_dirty: bool = False
+    gunner_observation: tuple | None = None
+    gunner_stalled: int = 0
+    gunner_id: int | None = None
+    gunner_post: tuple | None = None
+    next_gun: int = 0
     pending: tuple | None = None
     task_text: str = ""
     task_started: int = 0
@@ -279,6 +285,7 @@ class Memory:
     last_digest: str = ""
     wall_health: dict = field(default_factory=dict)
     wall_hits: dict = field(default_factory=dict)
+    wall_rebuild_levels: dict = field(default_factory=dict)
     station_health: int | None = None
 
     def observe(self, turn, cfg):
@@ -289,6 +296,24 @@ class Memory:
                 next_wall = current_walls.get(location)
                 if next_wall is None or next_wall[0] == uid and next_wall[1] < health:
                     self.wall_hits[location] = min(10, self.wall_hits.get(location, 0) + 1)
+        # Keep repair intent across day boundaries and replacement unit IDs.
+        sites = layout(turn, cfg)[1]
+        lost = set(self.wall_health) - set(current_walls)
+        gaps = wall_gaps(turn, sites, self.wall_hits) | (lost & set(sites))
+        levels = {w.pos: w.level for w in turn.ours if w.kind == "wall"}
+        for p in gaps:
+            self.wall_rebuild_levels.setdefault(p, 1)
+        # Propagate intact boundary levels through multi-cell breaches.
+        for _ in range(len(gaps) + 1):
+            for p in self.wall_rebuild_levels:
+                adjacent = [q for q in (*levels, *self.wall_rebuild_levels)
+                            if abs(p[0]-q[0]) + abs(p[1]-q[1]) == 1]
+                self.wall_rebuild_levels[p] = max(
+                    [self.wall_rebuild_levels[p]]
+                    + [max(levels.get(q, 1), self.wall_rebuild_levels.get(q, 1)) for q in adjacent])
+        for p, level in list(self.wall_rebuild_levels.items()):
+            if levels.get(p, 0) >= level:
+                del self.wall_rebuild_levels[p]
         self.wall_health = current_walls
         if self.day != turn.day:
             self.day, self.calls = turn.day, 0
