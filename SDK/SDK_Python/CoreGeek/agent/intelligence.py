@@ -209,6 +209,8 @@ class Memory:
     news_dirty: bool = False
     gunner_observation: tuple | None = None
     gunner_stalled: int = 0
+    wall_watch_id: int | None = None
+    wall_watch_health: dict = field(default_factory=dict)
     gunner_id: int | None = None
     gunner_post: tuple | None = None
     next_gun: int = 0
