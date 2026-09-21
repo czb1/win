@@ -112,6 +112,30 @@ def layout(turn, cfg):
 
 
 
+def wall_gaps(turn, sites, hits=None):
+    """Missing blueprint components bounded by walls, or observed destroyed cells."""
+    walls = {u.pos for u in turn.ours if u.kind == "wall"}
+    missing = set(sites) - walls
+    gaps = set()
+    while missing:
+        pending = [missing.pop()]
+        component, boundary = set(), set()
+        while pending:
+            p = pending.pop()
+            component.add(p)
+            for q in ((p[0]-1, p[1]), (p[0]+1, p[1]),
+                      (p[0], p[1]-1), (p[0], p[1]+1)):
+                if q in walls:
+                    boundary.add(q)
+                if q in missing:
+                    missing.remove(q)
+                    pending.append(q)
+        if len(boundary) >= 2:
+            gaps.update(component)
+        gaps.update(p for p in component if (hits or {}).get(p))
+    return gaps
+
+
 def wall_priority(turn, cfg, sites, index, hits=None):
     """Strategic side and existing breaches precede walking distance."""
     target = sites[index]
@@ -130,4 +154,3 @@ def wall_priority(turn, cfg, sites, index, hits=None):
     # first, while neighbouring expansion keeps its normal front/breach order.
     urgent = turn.day >= 2 and x != front_x and hits.get(target, 0)
     return (int(not urgent), int(x != front_x), int(not breach), index)
-
