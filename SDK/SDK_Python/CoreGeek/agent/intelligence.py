@@ -286,6 +286,8 @@ class Memory:
     wall_health: dict = field(default_factory=dict)
     wall_hits: dict = field(default_factory=dict)
     wall_rebuild_levels: dict = field(default_factory=dict)
+    wall_repair_worker: int | None = None
+    wall_repair_delivering: bool = False
     station_health: int | None = None
 
     def observe(self, turn, cfg):
@@ -317,6 +319,8 @@ class Memory:
         self.wall_health = current_walls
         if self.day != turn.day:
             self.day, self.calls = turn.day, 0
+            self.wall_repair_worker = None
+            self.wall_repair_delivering = False
             self.preparation_tick = 70
             self.preparation_workers.clear()
             self.sold_workers.clear()

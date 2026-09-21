@@ -366,6 +366,73 @@ def finish_preparation(turn, cfg, mem, nav, ledger, hero, tower, wall_sites):
     return False
 
 
+def repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
+    """Borrow one worker for a material batch; leave normal day phases alone."""
+    walls = {w.pos for w in turn.ours if w.kind == "wall"}
+    gaps = (wall_gaps(turn, wall_sites, mem.wall_hits) | set(mem.wall_rebuild_levels)) - walls
+    gaps &= set(wall_sites) - set(mem.build_failures)
+    structures = {p for u in (*turn.ours, *turn.enemies) if u.kind not in HEROES for p in u.cells}
+    gaps = {p for p in gaps if p not in structures and turn.zones.get(p, "land") == "land"}
+    options = []
+    for hero in free:
+        if hero.health <= 110:
+            continue
+        reachable = [p for p in sorted(gaps) if not mem.movement.avoids(hero.id, p)
+                     and (r := nav.approach(hero, [p], ledger.reserved)) is not None
+                     and r[0] + 1 + cfg.return_margin < turn.day_left
+                     and wall_keeps_access(turn, nav, ledger, p)]
+        if not reachable:
+            continue
+        held = hero.inventory["stone"]
+        capacity = (held + hero.space) // cfg.wall_stones
+        direct = nav.approach(hero, reachable, ledger.reserved)[0]
+        batches = []
+        for amount in range(min(len(reachable), capacity), 0, -1):
+            needed = max(0, amount * cfg.wall_stones - held)
+            if needed:
+                trips = [length for p, kind in turn.zones.items()
+                         if kind == "stone" and p not in mem.collect_failures
+                         and not mem.movement.avoids(hero.id, p)
+                         and (length := via(nav, hero, [[p], reachable], ledger.reserved)) is not None]
+                trip = min(trips, default=None)
+            else:
+                trip = direct
+            if trip is not None and trip + needed + 2 * amount + cfg.return_margin < turn.day_left:
+                batches.append((amount * cfg.wall_stones, trip))
+                break
+        if batches:
+            goal, trip = batches[0]
+            options.append((hero.id != mem.wall_repair_worker, -min(held, goal), trip,
+                            hero.id, hero, reachable, goal))
+    for _, _, _, _, hero, sites, goal in sorted(options, key=lambda o: o[:4]):
+        if hero.id != mem.wall_repair_worker:
+            mem.wall_repair_delivering = False
+        mem.wall_repair_worker = hero.id
+        if hero.health <= 165 and hero.inventory["Medicine"]:
+            if ledger.add(hero.id, command("use", name="Medicine")):
+                return gaps
+        held = hero.inventory["stone"]
+        if held < cfg.wall_stones:
+            mem.wall_repair_delivering = False
+        # Once delivery starts, finish the carried batch rather than refilling
+        # after each wall or switching to a shopping trip.
+        if not mem.wall_repair_delivering and held < goal:
+            if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True):
+                return gaps
+        if held >= cfg.wall_stones:
+            mem.wall_repair_delivering = True
+            if build(turn, cfg, mem, nav, ledger, hero, sites, lambda _: "wall"):
+                mem.mine_targets.pop(hero.id, None)
+                return gaps
+        mem.wall_repair_worker = None
+        mem.wall_repair_delivering = False
+    # No feasible action, no exclusive job. The caller immediately resumes
+    # ordinary work, including after the last gap closes (even if upgrades remain).
+    mem.wall_repair_worker = None
+    mem.wall_repair_delivering = False
+    return set()
+
+
 def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
            develop=True, shopping=True, deadline=None, gather_first=False):
     if hero.health <= 165 and hero.inventory["Medicine"]:
@@ -378,16 +445,6 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
             return
         earn(turn, cfg, mem, nav, ledger, hero, deadline)
         return
-    # Repair real gaps before shopping or extending the blueprint. Decisions
-    # are deterministic and still pass the normal access/claim checks.
-    gaps = wall_gaps(turn, wall_sites, mem.wall_hits) | (
-        set(mem.wall_rebuild_levels) - {w.pos for w in turn.ours if w.kind == "wall"})
-    if gaps and (builder or shopping or hero.inventory["stone"] >= cfg.wall_stones):
-        if hero.inventory["stone"] >= cfg.wall_stones:
-            if build(turn, cfg, mem, nav, ledger, hero, sorted(gaps), lambda _: "wall"):
-                return
-        elif mine(turn, cfg, mem, nav, ledger, hero, want_stone=True):
-            return
     # Close a nearby front breach before a courier leaves to deliver upgrades.
     # This spends reserved stone in-place and avoids a later repair round trip.
     if (hero.inventory["stone"] >= cfg.wall_stones and (builder or len(turn.weapons) >= len(cfg.loadout))
@@ -495,23 +552,30 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     structures = {p for r in (*turn.ours, *turn.enemies) if r.kind not in HEROES for p in r.cells}
     missing = [p for p in wall_sites if p not in structures and p not in mem.build_failures
                and turn.zones.get(p, "land") == "land"]
-    stone_need = len(missing) * cfg.wall_stones
-    mem.stone_reserves.clear()
-    for h in sorted(turn.workers, key=lambda h: (-h.inventory["stone"], h.id)):
-        mem.stone_reserves[h.id] = min(stone_need, h.inventory["stone"])
-        stone_need -= mem.stone_reserves[h.id]
     trading = {h.id for h in free if trade_available(turn, mem, nav, h)}
     planned = planned_weapons(turn, cfg, mem, tower_sites)
     built_walls = {w.pos for w in turn.ours if w.kind == "wall"}
     work_remains = (any(w.id < 0 or w.level < 3 for w in planned)
                     or turn.station and turn.station.level < 3 and bool(turn.shop)
+                    or any(rebuilding_wall(turn, w, mem) for w in turn.ours)
                     or any(p not in built_walls and p not in mem.build_failures for p in wall_sites))
     cutoff = (preparation_start(turn, cfg, mem, nav, free, tower_sites) if work_remains else 70) if trading else 0
     developing = {h.id for h in free if h.id not in trading or turn.tick >= cutoff
                   or h.id in mem.sold_workers
                   or any("UpgradeVoucher" in k or k == "WallFixer" for k in h.backpack)}
-    if mem.wall_rebuild_levels:
-        developing.update(h.id for h in free)
+    repair_sites = repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites)
+    free = [h for h in free if h.id not in ledger.used]
+    wall_sites = [p for p in wall_sites if p not in repair_sites]
+    # Only the assigned carrier's stone funds its repair batch. Everyone else
+    # keeps the original construction, shopping and income allocation.
+    stone_need = sum(p not in repair_sites for p in missing) * cfg.wall_stones
+    mem.stone_reserves.clear()
+    for h in sorted(turn.workers, key=lambda h: (-h.inventory["stone"], h.id)):
+        if h.id == mem.wall_repair_worker:
+            mem.stone_reserves[h.id] = min(len(repair_sites) * cfg.wall_stones, h.inventory["stone"])
+        else:
+            mem.stone_reserves[h.id] = min(stone_need, h.inventory["stone"])
+            stone_need -= mem.stone_reserves[h.id]
     # Liquidate the last farming load before either actor leaves for the base
     # or the shop. Otherwise unspent ore can split one bulk order into two trips.
     for h in free:
