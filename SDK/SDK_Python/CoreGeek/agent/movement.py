@@ -11,8 +11,10 @@ class MovementMemory:
     trails: dict = field(default_factory=dict)
     targets: dict = field(default_factory=dict)
     buildings: dict = field(default_factory=dict)
+    looped: set = field(default_factory=set)
 
     def observe(self, turn, mem):
+        self.looped.clear()
         self.failures = {k: r for k, r in self.failures.items()
                          if r > turn.round and k[0] in turn.units}
         self.targets = {k: r for k, r in self.targets.items()
@@ -39,14 +41,16 @@ class MovementMemory:
             trail = self.trails.setdefault(hero.id, deque(maxlen=8))
             trail.append(hero.pos)
             if len(trail) == 8 and len(set(trail)) <= 4:
+                self.looped.add(hero.id)
                 # Release a repeatedly unproductive destination for this actor.
                 for p in (mem.mine_targets.get(hero.id), mem.build_targets.get(hero.id),
-                          mem.sale_targets.get(hero.id)):
+                          mem.sale_targets.get(hero.id), mem.upgrade_targets.get(hero.id)):
                     if p is not None:
                         self.targets[hero.id, p] = turn.round + 8
                 mem.mine_targets.pop(hero.id, None)
                 mem.build_targets.pop(hero.id, None)
                 mem.sale_targets.pop(hero.id, None)
+                mem.upgrade_targets.pop(hero.id, None)
                 trail.clear()
         # Neutral zones are supplied globally by v1.0; never retain exhausted
         # mines as obstacles. Enemy weapons, however, disappear outside vision.

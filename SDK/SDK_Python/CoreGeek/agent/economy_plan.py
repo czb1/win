@@ -59,13 +59,19 @@ def preparation_start(turn, cfg, mem, nav, heroes, sites):
     shops = [p for p, k in turn.zones.items() if k == "weaponShop"]
     missing = sum(w.id < 0 for w in weapons)
     upgrades = sum(w.level < 3 for w in weapons)
+    # Base vouchers also need a shop visit and delivery, even after all guns
+    # are maxed. Reserve the actual station leg rather than only weapon cells.
+    station = (turn.station if turn.station and turn.station.level < 3
+               and not upgrades else None)
+    upgrades += int(station is not None)
     budgets = []
     for hero in heroes:
         if not home:
             continue
         # One batch sale, up to two voucher purchases, delivery/use, and a
         # congestion margin. Building and shopping can proceed in parallel.
-        groups = ([vendors] if vendors else []) + ([shops] if shops and upgrades else []) + [home]
+        groups = (([vendors] if vendors else []) + ([shops] if shops and upgrades else [])
+                  + ([station.cells] if station else []) + [home])
         route = via(nav, hero, groups)
         if route is not None:
             build_route = nav.approach(hero, home)

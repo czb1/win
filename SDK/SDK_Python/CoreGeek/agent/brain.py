@@ -243,7 +243,11 @@ class Agent:
                             if shared is not None and returning else None)
                 defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning], ledger.operator_posts)
                 ledger.reserved.update(corridor or ())
+                if not turn.phase_task:
+                    mem.recovery.resume(turn, self.cfg, mem, nav, ledger, returning)
+                    mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning, loops_only=True)
                 workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
+                mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning)
                 if shared is not None and mem.gunner_post:
                     for idle in turn.workers:
                         if idle.id != mem.gunner_id and idle.id not in ledger.used:
@@ -259,6 +263,8 @@ class Agent:
                                         ([mem.gunner_post] if shared is not None and mem.gunner_post else []))
                 if not prompt and not execute:
                     prompt = intel.news()
+                    if not prompt:
+                        prompt = mem.recovery.prompt(intel)
         except DeadlineExceeded:
             LOG.warning("round=%s budget reached; returning %s validated actions", turn.round, len(ledger.commands))
         response = ledger.response(prompt, execute)
@@ -282,4 +288,3 @@ class Agent:
         LOG.debug("round=%s day=%s phase=%s commands=%s latency_ms=%.2f", turn.round, turn.day,
                  "day" if turn.is_day else "night", len(ledger.commands), (monotonic()-started)*1000)
         return json.loads(json.dumps(response))
-

@@ -209,8 +209,24 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
     if not total:
         mem.sale_workers.discard(hero.id)
         mem.sale_targets.pop(hero.id, None)
-    if not turn.is_day or (hero.id in mem.sold_workers and hero.id not in mem.sale_workers):
-        return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=turn.is_day)
+    if not turn.is_day:
+        if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True):
+            return True
+        return allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero)
+    if hero.id in mem.sold_workers and hero.id not in mem.sale_workers:
+        if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=True):
+            return True
+        if allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero):
+            return True
+        # A completed daily sale forbids another vendor visit, not useful
+        # repositioning. Leave the vendor and return to a base/operator area.
+        home, exact = return_destination(turn, nav, ledger, hero)
+        if home:
+            back = (nav.search(hero, home, ledger.reserved) if exact
+                    else nav.approach(hero, home, ledger.reserved))
+            if back and back[1] is not None:
+                return ledger.add(hero.id, command("move", back[1]))
+        return False
     vendors = [p for p, k in turn.zones.items() if k == "vendor"]
     options = [(r[0] != 0, p != mem.sale_targets.get(hero.id), r[0], p, r) for p in vendors
                if (hero.id not in mem.sold_workers or p == mem.sale_targets.get(hero.id))
@@ -297,4 +313,3 @@ def night_mine(turn, cfg, mem, nav, ledger, hero, dedicated=False):
         return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, dedicated=dedicated)
     finally:
         turn.blocked = original
-
