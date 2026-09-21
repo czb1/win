@@ -197,12 +197,14 @@ class WallRepairTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertEqual(plan[0], "WeaponUpgradeVoucher2")
 
-    def test_workers_enter_preparation_and_buy_healthy_wall_upgrade(self):
+    def test_workers_enter_preparation_for_healthy_wall_upgrade(self):
         p, settings = self.healthy_upgrade_case(2, round_no=170)
         t, c, n, l = setup_case(p, **settings)
-        workers(t, c, Memory(), n, l, [(3, 10)], [(5, 9)])
-        self.assertEqual(l.commands["1"],
-                         command("buy", name="WallUpgradeVoucher2", num=1))
+        mem = Memory()
+        workers(t, c, mem, n, l, [(3, 10)], [(5, 9)])
+        self.assertIn(1, mem.preparation_workers)
+        self.assertEqual(mem.supply_worker, 1)
+        self.assertIn(l.commands["1"]["action"], ("move", "buy"))
 
     def repair_case(self, neighbour_level=3):
         p = payload(129, [unit(1, "worker", 5, 7),

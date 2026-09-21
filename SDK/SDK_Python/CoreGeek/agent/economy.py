@@ -146,6 +146,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         carried = Counter(item for h in turn.heroes for item in h.backpack)
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
         first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
+        core_upgrade_pending = any(
+            b.level < 3 and b.kind in (*WEAPONS, "station") for b in buildings)
         core_complete = core_upgrades_complete(turn, cfg, planned)
         for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
             name = voucher_for(building)
@@ -161,10 +163,12 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                 continue
             urgent_wall = (rebuilding_wall(turn, building, mem)
                            or not first_level_gun and exposed_wall(turn, building, mem))
-            # Healthy ordinary walls consume surplus only after the configured
-            # weapon set and station are actually level 3. Emergency/rebuilt
-            # walls keep their earlier priority.
-            if building.kind == "wall" and not urgent_wall and not core_complete:
+            # Preserve the old damaged-wall fallback once every existing core
+            # building is maxed, but only let healthy ordinary walls consume
+            # surplus after the full configured core is actually complete.
+            if building.kind == "wall" and not urgent_wall and (
+                    core_upgrade_pending
+                    or bulk and building.health >= 500 and not core_complete):
                 continue
             candidates.append((upgrade_order(turn, building, mem), name, building.cells))
         damaged = [w for w in turn.ours if w.kind == "wall" and w.health < 500]

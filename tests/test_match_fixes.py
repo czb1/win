@@ -196,10 +196,14 @@ class SuppliesTests(unittest.TestCase):
         self.assertEqual(result["invalid_actions"], 0)
         self.assertEqual(result["weapon_levels"], [3, 3, 3])
         self.assertEqual(result["station_level"], 3)
-        self.assertEqual(result["purchases"].get("WallUpgradeVoucher2", 0), 0)
+        wall_level_two = result["purchases"].get("WallUpgradeVoucher2", 0)
+        self.assertGreater(wall_level_two, 0)
+        self.assertEqual(result["upgrades"].get("WallUpgradeVoucher2", 0), result["walls"])
         self.assertGreater(result["purchases"]["Medicine"], 0)
         self.assertLess(result["first_rounds"]["used_WeaponUpgradeVoucher2"], 70)
-        self.assertGreater(result["gold"], 2660)
+        # Keep the previous income floor after adding back the intentional
+        # level-2 wall spend introduced by the surplus-upgrade policy.
+        self.assertGreater(result["gold"] + 30 * wall_level_two, 2660)
         self.assertLess(result["worst_ms"], 1000)
 
 
