@@ -4,7 +4,8 @@ from .commands import command
 from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, sale_inventory
-from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites
+from .economy_plan import (planned_weapons, via, trade_available, preparation_start, front_sites,
+                           core_upgrades_complete)
 
 
 def walk(nav, ledger, hero, targets):
@@ -145,6 +146,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         carried = Counter(item for h in turn.heroes for item in h.backpack)
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
         first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
+        core_complete = core_upgrades_complete(turn, cfg, planned)
         for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
             name = voucher_for(building)
             if not name:
@@ -159,9 +161,10 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                 continue
             urgent_wall = (rebuilding_wall(turn, building, mem)
                            or not first_level_gun and exposed_wall(turn, building, mem))
-            if building.kind == "wall" and not urgent_wall and (
-                    any(b.level < 3 and b.kind in (*WEAPONS, "station") for b in buildings)
-                    or bulk and building.health >= 500):
+            # Healthy ordinary walls consume surplus only after the configured
+            # weapon set and station are actually level 3. Emergency/rebuilt
+            # walls keep their earlier priority.
+            if building.kind == "wall" and not urgent_wall and not core_complete:
                 continue
             candidates.append((upgrade_order(turn, building, mem), name, building.cells))
         damaged = [w for w in turn.ours if w.kind == "wall" and w.health < 500]
@@ -555,9 +558,13 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     trading = {h.id for h in free if trade_available(turn, mem, nav, h)}
     planned = planned_weapons(turn, cfg, mem, tower_sites)
     built_walls = {w.pos for w in turn.ours if w.kind == "wall"}
+    core_complete = core_upgrades_complete(turn, cfg, planned)
+    ordinary_wall_upgrades = core_complete and any(
+        w.kind == "wall" and w.level < 3 for w in turn.ours)
     work_remains = (any(w.id < 0 or w.level < 3 for w in planned)
                     or turn.station and turn.station.level < 3 and bool(turn.shop)
                     or any(rebuilding_wall(turn, w, mem) for w in turn.ours)
+                    or ordinary_wall_upgrades
                     or any(p not in built_walls and p not in mem.build_failures for p in wall_sites))
     cutoff = (preparation_start(turn, cfg, mem, nav, free, tower_sites) if work_remains else 70) if trading else 0
     developing = {h.id for h in free if h.id not in trading or turn.tick >= cutoff
