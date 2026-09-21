@@ -1,5 +1,7 @@
 """Defence assignment and weapon-specific targeting. No simulated enemy moves."""
+import logging
 from itertools import permutations, product
+from collections import deque
 from .model import distance, dump, neighbours
 from .commands import command
 from .navigation import check_time
@@ -305,3 +307,125 @@ def emergency_items(turn, ledger):
             area_used = ledger.add(hero.id, command("use", target.pos, name="Bomb"))
         elif hero.inventory["DizzyWeapon"] and len(nearby) >= 2:
             area_used = ledger.add(hero.id, command("use", target.pos, name="DizzyWeapon"))
+
+
+
+def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
+    """Return one persistent worker/post, or None for non-clustered layouts."""
+    if len(sites) != 3 or any(w.pos not in sites or w.kind != "rocket" for w in turn.weapons):
+        return None
+    common = set(neighbours(sites[0]))
+    for point in sites[1:]:
+        common.intersection_update(neighbours(point))
+    mobile = {h.pos for h in turn.heroes}
+    common -= set(sites) | set(walls) | (turn.blocked - mobile)
+    common = {p for p in common if turn.inside(p)}
+    if not common:
+        return None
+    # Keep a living gunner even while medicine consumes this turn's action.
+    gunner = next((h for h in turn.heroes if h.id not in excluded and h.id == mem.gunner_id and
+                   (not turn.is_day or h.id in mem.return_targets)), None)
+    if gunner and mem.gunner_observation is not None:
+        old_round, old_id, old_pos = mem.gunner_observation
+        stalled = (old_round == turn.round - 1 and old_id == gunner.id
+                   and old_pos == gunner.pos and gunner.pos != mem.gunner_post)
+        mem.gunner_stalled = mem.gunner_stalled + 1 if stalled else 0
+    else:
+        mem.gunner_stalled = 0
+    # A living but inaccessible operator is not a working defence assignment.
+    actual = {(h.id, p): nav.search(h, {p}) for h in turn.heroes
+              if h.id not in excluded for p in common}
+    if gunner and (mem.gunner_stalled >= 2 or not any(actual.get((gunner.id, p)) for p in common)):
+        gunner = None
+    crew = [h for h in turn.heroes if h.id not in excluded
+            and (h.kind == 'worker' or not turn.is_day)]
+    original = turn.blocked
+    # Keep the stone carrier available for existing daytime construction;
+    # among equally free workers use the shortest return route.
+    unfinished_walls = any(p not in turn.blocked for p in walls)
+    try:
+        turn.blocked = original - mobile
+        candidates = []
+        for hero in ([gunner] if gunner else crew):
+            for post in sorted(common):
+                route = nav.search(hero, {post})
+                if route is not None:
+                    candidates.append((bool(not turn.is_day and actual.get((hero.id, post)) is None),
+                                       bool(turn.is_day and route[0] + cfg.return_margin > turn.day_left),
+                                       bool(turn.is_day and unfinished_walls and hero.inventory["stone"]),
+                                       bool(not turn.is_day and mem.gunner_stalled >= 2 and hero.id == mem.gunner_id),
+                                       route[0], hero.kind != "worker", post != mem.gunner_post, hero.id, post, hero))
+    finally:
+        turn.blocked = original
+    if not candidates:
+        return None
+    _, _, _, _, length, _, _, _, post, hero = min(candidates, key=lambda c: c[:-1])
+    if mem.gunner_id != hero.id:
+        logging.getLogger(__name__).info('round=%s gunner_change=%s->%s post=%s',
+                                        turn.round, mem.gunner_id, hero.id, post)
+    if mem.gunner_id != hero.id:
+        mem.gunner_stalled = 0
+    mem.gunner_observation = (turn.round, hero.id, hero.pos)
+    mem.gunner_id, mem.gunner_post = hero.id, post
+    towers = sorted(turn.weapons, key=lambda w: sites.index(w.pos))
+    return ([(hero, towers[0])] if towers else []), {hero.id: (post, length)}
+
+
+def shared_defend(turn, nav, ledger, mem, pairs, sites):
+    """One action per worker; platform cooldown is authoritative."""
+    if not pairs:
+        return
+    hero = pairs[0][0]
+    if hero.id in ledger.used:
+        return
+    route = nav.search(hero, {mem.gunner_post}, ledger.reserved)
+    for offset in range(len(sites)):
+        index = (mem.next_gun + offset) % len(sites)
+        tower = next((w for w in turn.weapons if w.pos == sites[index]), None)
+        if tower is None or tower.cooldown or distance(hero.pos, tower.pos) != 1:
+            continue
+        targets = select_targets(turn, tower, {}, nav.deadline)
+        if targets and ledger.add(tower.id, {'action': 'attack', 'controllerId': str(hero.id),
+                                           'targetPos': [dump(p) for p in targets]}):
+            mem.next_gun = (index + 1) % len(sites)
+            return
+    if route and route[1] is not None:
+        ledger.add(hero.id, command('move', route[1]))
+
+
+def clear_gunner_route(turn, nav, ledger, mem, pairs):
+    """Reserve the return corridor and move idle allies off it, without swaps."""
+    if not pairs or mem.gunner_post is None:
+        return
+    hero = pairs[0][0]
+    if hero.pos == mem.gunner_post:
+        ledger.reserved.add(mem.gunner_post)
+        return
+    mobile = {h.pos for h in turn.heroes}
+    blocked = (turn.blocked - mobile) | ledger.reserved
+    blocked |= nav.memory.blocked(hero.id) if nav.memory else set()
+    parent = {hero.pos: None}
+    queue = deque([hero.pos])
+    while queue and mem.gunner_post not in parent:
+        check_time(nav.deadline)
+        current = queue.popleft()
+        for point in neighbours(current):
+            if turn.inside(point) and point not in blocked and point not in parent:
+                parent[point] = current
+                queue.append(point)
+    if mem.gunner_post not in parent:
+        return
+    path = set()
+    point = mem.gunner_post
+    while point != hero.pos:
+        path.add(point)
+        point = parent[point]
+    for helper in turn.heroes:
+        if helper.id == hero.id or helper.id in ledger.used or helper.pos not in path:
+            continue
+        goals = set(neighbours(helper.pos)) - path - ledger.tower_cells - ledger.wall_cells
+        escape = nav.search(helper, goals, ledger.reserved)
+        if escape and escape[1] is not None:
+            ledger.add(helper.id, command('move', escape[1]))
+    # The gunner is dispatched before these reservations are installed by brain.
+    return path

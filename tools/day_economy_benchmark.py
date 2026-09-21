@@ -276,12 +276,16 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
             heroes = [r for r in roles if r["roleType"] in ("worker", "pioneer")]
             crew = max((sum(near(point(h), point(w)) for h, w in zip(hs, guns))
                         for hs in permutations(heroes, len(guns))), default=0)
+            # Shared control measures all guns accessible from ONE worker,
+            # separately from the original simultaneous-operator count.
+            shared_guns = max((sum(near(point(h), point(w)) for w in guns)
+                               for h in heroes if h['roleType'] == 'worker'), default=0)
             checkpoints[str(rno)] = {"gold": state["teamOur"]["goldNum"], "income": income,
                 "initial_gold": 75, "task_income": 0,
                 "mine_counts": dict(Counter(k for k, _ in active.values())),
                 "remaining_minerals": sum(n for _, n in active.values()),
                 "inventory": dict(Counter(n for h in heroes for n in h["backpack"])),
-                "spent": spent, "weapon_levels": sorted(r["level"] for r in guns), "operators_ready": crew,
+                "spent": spent, "weapon_levels": sorted(r["level"] for r in guns), "operators_ready": crew, "shared_guns_ready": shared_guns,
                 "walls": sum(r["roleType"] == "wall" for r in roles),
                 "front_walls": sum(r["roleType"] == "wall" and point(r) in front for r in roles),
                 "carried_vouchers": sum("UpgradeVoucher" in n for h in heroes for n in h["backpack"]),
@@ -360,3 +364,4 @@ if __name__ == "__main__":
         args.output.write_text(output, encoding="utf-8")
     else:
         print(output, end="")
+

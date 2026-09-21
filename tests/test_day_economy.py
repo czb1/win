@@ -128,7 +128,7 @@ class OpeningReplayTests(unittest.TestCase):
                 self.assertEqual(r["checkpoints"]["40"]["spent"], 0)
                 dusk = r["checkpoints"]["69"]
                 self.assertEqual(dusk["weapon_levels"], [2, 2, 2])
-                self.assertEqual(dusk["operators_ready"], 3)
+                self.assertEqual(dusk["shared_guns_ready"], 3)
                 self.assertEqual(dusk["carried_vouchers"], 0)
                 self.assertEqual(dusk["front_walls"], 6)
                 self.assertGreaterEqual(r["worker_actions_before_70"]["collect"], 40)
@@ -144,7 +144,7 @@ class OpeningReplayTests(unittest.TestCase):
                 self.assertLess(r["worker_actions_before_70"]["move"], 70)
                 dusk = r["checkpoints"]["69"]
                 self.assertEqual(dusk["weapon_levels"], [2, 2, 2])
-                self.assertEqual(dusk["operators_ready"], 3)
+                self.assertEqual(dusk["shared_guns_ready"], 3)
                 self.assertEqual(dusk["front_walls"], 6)
 
     @replay_test
@@ -153,5 +153,6 @@ class OpeningReplayTests(unittest.TestCase):
         self.assertEqual(r["invalid_actions"], 0)
         self.assertLess(r["first"]["buy_WeaponUpgradeVoucher1"], 40)
         self.assertEqual(r["checkpoints"]["69"]["weapon_levels"], [1, 1, 2])
-        self.assertEqual(r["checkpoints"]["69"]["operators_ready"], 3)
+        self.assertEqual(r["checkpoints"]["69"]["shared_guns_ready"], 3)
         self.assertEqual(r["checkpoints"]["69"]["carried_vouchers"], 0)
+
