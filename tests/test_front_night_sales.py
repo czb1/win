@@ -102,8 +102,8 @@ class NightMiningTests(unittest.TestCase):
 
     def test_far_opponent_wave_does_not_hold_workers(self):
         p = self.night_case()
-        p['mapInfo'].update(width=41, height=32)
-        p['robot']['roles'] = [unit(90, 'smallRobot', 30, 25, attackRange=1, targetTeam='defender')]
+        p['mapInfo'].update(width=41, height=15)
+        p['robot']['roles'] = [unit(90, 'smallRobot', 30, 10, attackRange=1, targetTeam='defender')]
         self.assertEqual(Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']['1']['action'], 'collect')
 
     def test_unarmed_worker_wont_cross_monster_range_to_mine(self):
