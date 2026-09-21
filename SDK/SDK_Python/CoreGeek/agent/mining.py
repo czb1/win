@@ -210,7 +210,9 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
         mem.sale_workers.discard(hero.id)
         mem.sale_targets.pop(hero.id, None)
     if not turn.is_day or (hero.id in mem.sold_workers and hero.id not in mem.sale_workers):
-        return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=turn.is_day)
+        if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=turn.is_day):
+            return True
+        return allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero)
     vendors = [p for p, k in turn.zones.items() if k == "vendor"]
     options = [(r[0] != 0, p != mem.sale_targets.get(hero.id), r[0], p, r) for p in vendors
                if (hero.id not in mem.sold_workers or p == mem.sale_targets.get(hero.id))
@@ -297,4 +299,3 @@ def night_mine(turn, cfg, mem, nav, ledger, hero, dedicated=False):
         return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, dedicated=dedicated)
     finally:
         turn.blocked = original
-
