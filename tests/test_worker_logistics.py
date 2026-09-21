@@ -262,7 +262,18 @@ class LogisticsReplayTests(unittest.TestCase):
                 self.assertEqual(result["invalid_actions"], 0)
                 self.assertEqual(result["destroyed_walls"], 4)
                 nights = [result["checkpoints"][str(r)] for r in (69, 199, 329)]
-                self.assertTrue(all(n["shared_guns_ready"] == 3 and n["front_walls"] == 6 for n in nights))
+                self.assertTrue(all(n["shared_guns_ready"] == 3 for n in nights))
+                self.assertEqual(nights[0]["front_walls"], 6)
+                self.assertEqual(nights[-1]["front_walls"], 6)
+                # The new order explicitly puts level-3 guns before later holes.
+                # A night may retain those two holes only while completing that
+                # higher-priority phase; the following daylight must refill them.
+                for previous, night in zip(nights, nights[1:]):
+                    if night["front_walls"] < 6:
+                        self.assertEqual(night["front_walls"], 4)
+                        self.assertTrue(any(level < 3 for level in previous["weapon_levels"]))
+                        self.assertEqual(night["weapon_levels"], [3, 3, 3])
+                self.assertTrue(all(n["inventory"].get("WallFixer", 0) >= 1 for n in nights))
                 self.assertTrue(all(6 <= n["walls"] <= 12 for n in nights))
                 self.assertGreater(nights[-1]["walls"], 6)
                 self.assertGreaterEqual(nights[2]["walls"], nights[1]["walls"])

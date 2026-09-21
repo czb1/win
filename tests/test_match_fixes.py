@@ -95,7 +95,7 @@ class SuppliesTests(unittest.TestCase):
 
     def case(self, **kw):
         p = payload(roles=[unit(1, "worker", 5, 5, backpack=["Medicine"], **kw),
-                           unit(20, "rocket", 4, 5)])
+                           unit(20, "rocket", 4, 5), unit(29, "wall", 7, 7, level=3, health=2000)])
         p["teamOur"]["goldNum"] = 200
         p["mapInfo"]["zones"] = [{"neutralType": "weaponShop", "pos": {"x": 6, "y": 5}},
                                   {"neutralType": "vendor", "pos": {"x": 5, "y": 6}},
@@ -106,11 +106,11 @@ class SuppliesTests(unittest.TestCase):
         return p
 
     def decide_worker(self, p, mem=None):
-        t, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[], wall_cells=[[7, 7]])
+        t, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[], wall_cells=[[r["pos"]["x"],r["pos"]["y"]] for r in p["teamOur"]["roles"] if r["roleType"] == "wall"])
         worker(t, cfg, mem or Memory(), nav, ledger, t.workers[0], [], [(7, 7)], True)
         return ledger.commands.get("1", {})
 
-    def test_upgrade_is_not_starved_by_unfinished_walls(self):
+    def test_upgrade_proceeds_after_initial_walls_complete(self):
         self.assertEqual(self.decide_worker(self.case()), {"action": "buy", "name": "WeaponUpgradeVoucher1", "num": 1})
 
     def test_full_backpack_sells_before_buying(self):
@@ -149,7 +149,7 @@ class SuppliesTests(unittest.TestCase):
     def test_no_shop_trip_without_time_to_deliver(self):
         p = self.case()
         p["roundNo"] = 69
-        self.assertNotEqual(self.decide_worker(p)["action"], "buy")
+        self.assertNotEqual(self.decide_worker(p).get("action"), "buy")
 
     def test_station_and_damaged_wall_vouchers_have_real_purchase_paths(self):
         for building, name in (("station", "StationUpgradeVoucher1"), ("wall", "WallUpgradeVoucher1")):
@@ -166,7 +166,7 @@ class SuppliesTests(unittest.TestCase):
         p["teamOur"]["roles"].append(unit(30, "wall", 3, 7, health=1000))
         p["weaponShopList"] = [{"name": "WeaponUpgradeVoucher2", "price": 150},
                                {"name": "WallUpgradeVoucher1", "price": 20}]
-        self.assertNotEqual(self.decide_worker(p)["action"], "buy")
+        self.assertNotEqual(self.decide_worker(p).get("action"), "buy")
 
     def test_both_workers_seek_income_before_preparation(self):
         p = payload(roles=[unit(1, "worker", 5, 5), unit(2, "worker", 5, 7)])
@@ -180,7 +180,7 @@ class SuppliesTests(unittest.TestCase):
 
     def test_repair_carrier_walks_back_and_uses_fixer(self):
         p = self.case()
-        p["teamOur"]["roles"][0]["backpack"] = ["Medicine", "WallFixer"]
+        p["teamOur"]["roles"][0]["backpack"] = ["Medicine", "WallFixer", "WallFixer"]
         p["teamOur"]["roles"].append(unit(30, "wall", 2, 7, health=100))
         for _ in range(10):
             cmd = self.decide_worker(p)
@@ -202,7 +202,12 @@ class SuppliesTests(unittest.TestCase):
         self.assertLess(result["first_rounds"]["used_WallUpgradeVoucher1"],
                         result["first_rounds"]["used_WallUpgradeVoucher2"])
         self.assertGreater(result["purchases"]["Medicine"], 0)
-        self.assertLess(result["first_rounds"]["used_WeaponUpgradeVoucher2"], 70)
+        milestones = result["first_rounds"]
+        self.assertLess(milestones["walls_complete"], milestones["used_WeaponUpgradeVoucher1"])
+        self.assertLess(milestones["guns_level3"], milestones["used_WallUpgradeVoucher1"])
+        self.assertLess(milestones["walls_level3"], milestones["used_StationUpgradeVoucher1"])
+        self.assertEqual(len(result["night_stock"]), 5)
+        self.assertTrue(all(n >= 1 for n in result["night_stock"]))
         self.assertGreater(result["gold"], 2660)
         self.assertLess(result["worst_ms"], 1000)
 

@@ -50,7 +50,7 @@ def trade_available(turn, mem, nav, hero):
     return bool(vendors and mines and nav.approach(hero, vendors) and nav.approach(hero, mines))
 
 
-def preparation_start(turn, cfg, mem, nav, heroes, sites):
+def preparation_start(turn, cfg, mem, nav, heroes, sites, wall_sites=()):
     weapons = planned_weapons(turn, cfg, mem, sites)
     home = {p for w in weapons for p in w.cells}
     if not home and turn.station:
@@ -72,6 +72,11 @@ def preparation_start(turn, cfg, mem, nav, heroes, sites):
             shopping = route + (1 if vendors else 0) + (2 + 2 * upgrades if shops else 0)
             construction = (build_route[0] if build_route else 0) + 2 * missing
             work = max(shopping, construction) if len(heroes) > 1 else shopping + 2 * missing
+            if not mem.initial_walls_complete:
+                missing_walls = sum(p not in {w.pos for w in turn.ours if w.kind == "wall"}
+                                    and p not in mem.build_failures for p in wall_sites)
+                # Walls now precede voucher delivery: include their collection/build time.
+                work += (missing_walls * (cfg.wall_stones + 2) + len(heroes)-1) // max(1, len(heroes))
             budgets.append(work + cfg.return_margin)
     # Re-evaluate as mines move, but do not oscillate back into an earlier phase.
     cutoff = min(cfg.economy_rounds, max(0, 70 - max(budgets, default=cfg.return_margin)))

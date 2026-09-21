@@ -35,6 +35,7 @@ def simulate(agent_class, config_class, days=5):
             "vendorShopList": [{"name": "copper", "price": 10}, {"name": "stone", "price": 1}]}
     actions, purchases, upgrades = Counter(), Counter(), Counter()
     first, invalid, worst = {}, 0, 0
+    stock = []
 
     def point(r):
         return r["pos"]["x"], r["pos"]["y"]
@@ -118,9 +119,19 @@ def simulate(agent_class, config_class, days=5):
             if not legal:
                 invalid += 1
             results[uid] = bool(legal)
+        walls = [r for r in roles if r["roleType"] == "wall"]
+        if len(walls) == len(wall_sites):
+            first.setdefault("walls_complete", rno)
+            if all(r["level"] == 3 for r in walls):
+                first.setdefault("walls_level3", rno)
+        if all(r["level"] == 3 for r in roles if r["roleType"] == "rocket"):
+            first.setdefault("guns_level3", rno)
+        if (rno - 69) % 130 == 0:
+            heroes = [r for r in roles if r["roleType"] in ("worker", "pioneer")]
+            stock.append(sum(h["backpack"].count("WallFixer") for h in heroes))
         data["lastRoundRoleActionResults"] = results
     return {"scope": "controlled infinite deposits and fixed prices; no battle or win rate",
-            "days": days, "gold": data["teamOur"]["goldNum"], "invalid_actions": invalid,
+            "night_stock": stock, "days": days, "gold": data["teamOur"]["goldNum"], "invalid_actions": invalid,
             "weapon_levels": [r["level"] for r in roles if r["roleType"] == "rocket"],
             "station_level": next(r["level"] for r in roles if r["roleType"] == "station"),
             "walls": sum(r["roleType"] == "wall" for r in roles), "first_rounds": first,

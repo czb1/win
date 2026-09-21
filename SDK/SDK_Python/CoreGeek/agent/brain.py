@@ -8,7 +8,7 @@ from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
 from .combat import assignments, return_plan, defend, emergency_items, shared_crew, shared_defend, clear_gunner_route
-from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector
+from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, development_stage, choose_repairer, prepare_night_stock, night_repair
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
 
@@ -58,6 +58,8 @@ def battle_diagnostics(turn, mem, pairs, response):
              for wall in turn.ours if wall.kind == "wall"]
     LOG.info("round=%s battle_state=%s", turn.round, json.dumps({
         "baseHealth": turn.station.health, "heroes": len(turn.heroes), "gold": turn.gold,
+        "repairer": mem.repairer_id, "stockCarrier": mem.stock_carrier_id,
+        "wallFixers": {h.id: h.inventory["WallFixer"] for h in turn.heroes},
         "hostileTotal": len(hostile), "hostileWithin6": len(near),
         "hostileNear": [{"id": r.id, "kind": r.kind, "pos": r.pos, "health": r.health}
                         for r in near[:12]], "walls": walls, "towers": towers,
@@ -132,8 +134,11 @@ class Agent:
             hold_task = within_timeout and not danger and not first_watch and not mem.stop_reason
             if not turn.is_day:
                 emergency_items(turn, ledger)
-            shared = shared_crew(turn, self.cfg, mem, nav, towers, walls,
-                                 excluded={h.id} if h and hold_task else ())
+            crew_excluded = {h.id} if h and hold_task else set()
+            if (turn.is_day and turn.day >= 4 and mem.repairer_id is not None
+                    and any(w.id == mem.gunner_id and w.id != mem.repairer_id for w in turn.workers)):
+                crew_excluded.add(mem.repairer_id)
+            shared = shared_crew(turn, self.cfg, mem, nav, towers, walls, excluded=crew_excluded)
             if shared is not None:
                 pairs, posts = shared
                 # Previous multi-operator assignments must not recall the miner.
@@ -214,6 +219,8 @@ class Agent:
                     mem.stop_reason = ("defence_threat" if danger else
                                        "first_wave_deadline" if first_watch else "task_deadline")
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
+            development_stage(turn, self.cfg, mem, ledger)
+            repairer = choose_repairer(turn, mem, pairs)
             if not turn.is_day:
                 if shared is not None:
                     corridor = clear_gunner_route(turn, nav, ledger, mem, pairs)
@@ -223,6 +230,8 @@ class Agent:
                     defend(turn, nav, ledger, pairs)
                 if shared is not None and mem.gunner_post:
                     ledger.reserved.add(mem.gunner_post)
+                if turn.day >= 4 and repairer is not None:
+                    night_repair(turn, self.cfg, mem, nav, ledger, repairer)
                 for hero in turn.heroes:
                     if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
                         continue
@@ -236,6 +245,7 @@ class Agent:
                         elif turn.station:
                             walk(nav, ledger, hero, turn.station.cells)
             else:
+                prepare_night_stock(turn, self.cfg, mem, nav, ledger, repairer)
                 for hero, tower in pairs:
                     if hero.id in returning and hero.id not in ledger.used:
                         finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)

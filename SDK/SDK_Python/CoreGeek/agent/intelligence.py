@@ -285,6 +285,12 @@ class Memory:
     wall_health: dict = field(default_factory=dict)
     wall_hits: dict = field(default_factory=dict)
     station_health: int | None = None
+    initial_walls_complete: bool = False
+    wall_levels: dict = field(default_factory=dict)
+    rebuild_levels: dict = field(default_factory=dict)
+    repairer_id: int | None = None
+    stock_carrier_id: int | None = None
+    stock_warning: tuple | None = None
 
     def observe(self, turn, cfg):
         self.movement.observe(turn, self)

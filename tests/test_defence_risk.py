@@ -52,17 +52,17 @@ class WallRiskTests(unittest.TestCase):
 
     def test_three_sides_upgrade_after_weapon_funding(self):
         p = self.case()
-        turn, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[])
+        turn, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[], wall_cells=[[9,8],[7,4],[7,12]])
         mem = Memory()
         self.assertTrue(exposed_wall(turn, turn.ours[-1], mem))
         self.assertEqual(supplies(turn, cfg, mem, nav, ledger, turn.workers[0], bulk=True)[0],
                          "WeaponUpgradeVoucher2")
         p = self.case(gun_level=1)
-        turn, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[])
+        turn, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[], wall_cells=[[9,8],[7,4],[7,12]])
         self.assertEqual(supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0], bulk=True)[0],
                          "WeaponUpgradeVoucher1")
         p = self.case(gun_level=3)
-        turn, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[])
+        turn, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[], wall_cells=[[9,8],[7,4],[7,12]])
         self.assertEqual(supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0], bulk=True)[0],
                          "WallUpgradeVoucher1")
 
@@ -93,7 +93,7 @@ class DayMaintenanceTests(unittest.TestCase):
 
     def decide(self, case):
         turn, cfg, nav, ledger = case
-        workers(turn, cfg, Memory(), nav, ledger, list(ledger.tower_cells),
+        workers(turn, cfg, Memory(initial_walls_complete=True), nav, ledger, list(ledger.tower_cells),
                 sorted(ledger.wall_cells))
         return ledger.commands.get("1", {})
 
@@ -121,7 +121,7 @@ class DayMaintenanceTests(unittest.TestCase):
         self.assertEqual(c["targetPos"], [{"x":9, "y":8}])
 
     def test_remaining_wall_is_repaired_after_first_wall_heals(self):
-        turn, cfg, nav, ledger = self.case(backpack=["WallFixer"])
+        turn, cfg, nav, ledger = self.case(backpack=["WallFixer", "WallFixer"])
         from dataclasses import replace
         turn.ours = tuple(replace(w, level=3, health=2000 if w.id == 30 else w.health) if w.kind == "wall" else w for w in turn.ours)
         c = self.decide((turn, cfg, nav, ledger))
@@ -129,7 +129,7 @@ class DayMaintenanceTests(unittest.TestCase):
         self.assertEqual(c["targetPos"], [{"x":9, "y":10}])
 
     def test_other_purchases_cannot_spend_repair_reserve(self):
-        turn, cfg, nav, ledger = self.case(gold=40)
+        turn, cfg, nav, ledger = self.case(gold=35)
         from dataclasses import replace
         turn.ours = tuple(replace(w, level=2) if w.id == 20 else w for w in turn.ours)
         turn.shop["WeaponUpgradeVoucher2"] = 30
@@ -154,7 +154,7 @@ class DayMaintenanceTests(unittest.TestCase):
         self.assertFalse(ledger.commands)
 
     def test_late_upgrade_purchase_falls_back_to_carried_repair(self):
-        c = self.decide(self.case(round_no=588, backpack=["WallFixer"]))
+        c = self.decide(self.case(round_no=588, backpack=["WallFixer", "WallFixer"]))
         self.assertEqual((c["action"], c["name"]), ("use", "WallFixer"))
 
     def test_healthy_low_level_front_wall_is_still_upgraded(self):

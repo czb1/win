@@ -28,9 +28,9 @@ class DayEconomyTests(unittest.TestCase):
                                    ("WeaponUpgradeVoucher2", 150), ("StationUpgradeVoucher1", 100))]
         return p
 
-    def test_initial_gold_is_not_spent_before_farming(self):
+    def test_initial_gold_prioritizes_tower_construction(self):
         r = Agent(Config(llm_enabled=False)).decide(self.case())
-        self.assertEqual([c["action"] for c in r["roleCommandMap"].values()], ["collect", "collect"])
+        self.assertEqual([c["action"] for c in r["roleCommandMap"].values()], ["move", "move"])
 
     def test_no_permanent_builder_when_nothing_needs_work(self):
         p = self.case(45)
@@ -39,25 +39,23 @@ class DayEconomyTests(unittest.TestCase):
         r = Agent(Config(layout_mode="explicit", llm_enabled=False)).decide(p)
         self.assertEqual([c["action"] for c in r["roleCommandMap"].values()], ["collect", "collect"])
 
-    def test_shop_batch_reserves_the_cost_of_unbuilt_weapons(self):
+    def test_unbuilt_weapons_block_speculative_upgrade_purchases(self):
         p = self.case(41, 374)
         p["teamOur"]["roles"][0]["pos"] = {"x": 9, "y": 5}
         t, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[[5, 5], [5, 7], [5, 9]])
         mem = Memory()
         planned = planned_weapons(t, cfg, mem, [(5, 5), (5, 7), (5, 9)])
-        plan = supplies(t, cfg, mem, nav, ledger, t.workers[0], 75, planned=planned, bulk=True)
-        self.assertEqual((plan[0], plan[2]), ("WeaponUpgradeVoucher1", 2))
+        self.assertIsNone(supplies(t, cfg, mem, nav, ledger, t.workers[0], 75, planned=planned, bulk=True))
         workers(t, cfg, mem, nav, ledger, [(5, 5), (5, 7), (5, 9)], [])
-        purchases = [c for c in ledger.commands.values() if c["action"] == "buy"]
-        self.assertEqual(purchases, [{"action": "buy", "name": "WeaponUpgradeVoucher1", "num": 2}])
-        self.assertGreaterEqual(ledger.gold, 75-cfg.weapon_cost)
+        self.assertFalse(any(c["action"] == "buy" for c in ledger.commands.values()))
+        self.assertTrue(all(c["action"] in ("move", "build") for c in ledger.commands.values()))
 
     def test_carried_vouchers_prevent_overbuying(self):
         p = self.case(41, 400)
         p["teamOur"]["roles"] += [unit(20+i, "rocket", 5, 7+i) for i in range(3)]
         p["teamOur"]["roles"][1]["backpack"] = ["WeaponUpgradeVoucher1"] * 2
         t, cfg, nav, ledger = setup_case(p)
-        plan = supplies(t, cfg, Memory(), nav, ledger, t.workers[0], bulk=True)
+        plan = supplies(t, cfg, Memory(initial_walls_complete=True), nav, ledger, t.workers[0], bulk=True)
         self.assertEqual((plan[0], plan[2]), ("WeaponUpgradeVoucher1", 1))
 
     def test_next_level_can_share_the_same_shop_trip(self):
@@ -65,7 +63,7 @@ class DayEconomyTests(unittest.TestCase):
         p["teamOur"]["roles"] += [unit(20+i, "rocket", 5, 7+i) for i in range(3)]
         p["teamOur"]["roles"][0]["backpack"] = ["WeaponUpgradeVoucher1"] * 3
         t, cfg, nav, ledger = setup_case(p)
-        plan = supplies(t, cfg, Memory(), nav, ledger, t.workers[0], bulk=True)
+        plan = supplies(t, cfg, Memory(initial_walls_complete=True), nav, ledger, t.workers[0], bulk=True)
         self.assertEqual((plan[0], plan[2]), ("WeaponUpgradeVoucher2", 3))
 
     def test_no_speculative_medicine_when_healthy(self):
@@ -120,19 +118,19 @@ class DayEconomyTests(unittest.TestCase):
 
 class OpeningReplayTests(unittest.TestCase):
     @replay_test
-    def test_first_night_has_three_upgraded_operable_weapons(self):
+    def test_first_night_has_three_operable_weapons_walls_and_repair_stock(self):
         for mirror in (False, True):
             with self.subTest(mirror=mirror):
                 r = simulate(Agent, Config, profile="controlled", mirror=mirror)
                 self.assertEqual(r["invalid_actions"], 0)
-                self.assertEqual(r["checkpoints"]["40"]["spent"], 0)
+                self.assertLess(r["first"]["build_rocket"], r["first"]["build_wall"])
                 dusk = r["checkpoints"]["69"]
-                self.assertEqual(dusk["weapon_levels"], [2, 2, 2])
+                self.assertEqual(dusk["weapon_levels"], [1, 1, 1])
                 self.assertEqual(dusk["shared_guns_ready"], 3)
                 self.assertEqual(dusk["carried_vouchers"], 0)
                 self.assertEqual(dusk["front_walls"], 6)
-                self.assertGreaterEqual(r["worker_actions_before_70"]["collect"], 40)
-                self.assertLess(r["worker_actions_before_70"]["move"], 75)
+                self.assertGreaterEqual(dusk["inventory"].get("WallFixer", 0), 1)
+                self.assertNotIn("buy_WeaponUpgradeVoucher1", r["first"])
 
     @replay_test
     def test_nearby_iron_is_used_and_first_defence_still_finishes(self):
@@ -141,9 +139,9 @@ class OpeningReplayTests(unittest.TestCase):
                 r = simulate(Agent, Config, profile="controlled", case="local_ore", mirror=mirror)
                 self.assertEqual(r["invalid_actions"], 0)
                 self.assertGreater(r["mined_before_70"].get("iron", 0), 0)
-                self.assertLess(r["worker_actions_before_70"]["move"], 70)
+                self.assertGreaterEqual(r["checkpoints"]["69"]["inventory"].get("WallFixer", 0), 1)
                 dusk = r["checkpoints"]["69"]
-                self.assertEqual(dusk["weapon_levels"], [2, 2, 2])
+                self.assertEqual(dusk["weapon_levels"], [1, 1, 1])
                 self.assertEqual(dusk["shared_guns_ready"], 3)
                 self.assertEqual(dusk["front_walls"], 6)
 
@@ -151,8 +149,8 @@ class OpeningReplayTests(unittest.TestCase):
     def test_long_shop_trip_starts_early_and_finishes_before_night(self):
         r = simulate(Agent, Config, profile="controlled", case="far_shop")
         self.assertEqual(r["invalid_actions"], 0)
-        self.assertLess(r["first"]["buy_WeaponUpgradeVoucher1"], 40)
-        self.assertEqual(r["checkpoints"]["69"]["weapon_levels"], [1, 1, 2])
+        self.assertLessEqual(r["first"]["buy_WallFixer"], 40)
+        self.assertEqual(r["checkpoints"]["69"]["weapon_levels"], [1, 1, 1])
         self.assertEqual(r["checkpoints"]["69"]["shared_guns_ready"], 3)
         self.assertEqual(r["checkpoints"]["69"]["carried_vouchers"], 0)
 
