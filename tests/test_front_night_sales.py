@@ -29,11 +29,19 @@ class DailySaleTests(unittest.TestCase):
             self.assertEqual(ledger.commands.get('1', {}).get('action'), expected)
             mem.last_round, mem.last_commands = rno, ledger.commands
 
-    def test_sold_worker_does_not_start_another_daytime_mining_trip(self):
-        p = mining_case(45, zones=[('iron', 9, 5), ('vendor', 4, 5)])
+    def test_sold_worker_returns_home_instead_of_starting_remote_daytime_mining_trip(self):
+        p = mining_case(
+            45,
+            zones=[('iron', 14, 5), ('vendor', 4, 5)],
+            workers=[unit(1, 'worker', 5, 5), unit(13, 'station', 10, 5)],
+        )
         t, cfg, nav, ledger = setup_case(p)
-        self.assertFalse(earn(t, cfg, Memory(day=1, sold_workers={1}), nav, ledger, t.workers[0]))
-        self.assertFalse(ledger.commands)
+        mem = Memory(day=1, sold_workers={1})
+        self.assertTrue(earn(t, cfg, mem, nav, ledger, t.workers[0]))
+        self.assertEqual(ledger.commands['1']['action'], 'move')
+        self.assertIn(1, mem.sold_workers)
+        self.assertNotEqual(mem.mine_targets.get(1), (14, 5))
+
         p['roundNo'] = 80
         t, cfg, nav, ledger = setup_case(p)
         self.assertTrue(earn(t, cfg, Memory(day=1, sold_workers={1}), nav, ledger, t.workers[0]))
