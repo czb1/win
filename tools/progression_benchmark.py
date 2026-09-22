@@ -124,6 +124,7 @@ def simulate(agent_class, config_class, days=5):
             "weapon_levels": [r["level"] for r in roles if r["roleType"] == "rocket"],
             "station_level": next(r["level"] for r in roles if r["roleType"] == "station"),
             "walls": sum(r["roleType"] == "wall" for r in roles), "first_rounds": first,
+            "wall_levels": [r["level"] for r in roles if r["roleType"] == "wall"],
             "purchases": dict(purchases), "upgrades": dict(upgrades), "actions": dict(actions),
             "worst_ms": round(worst, 2)}
 
