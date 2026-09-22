@@ -162,7 +162,7 @@ def critical_station(turn, building, mem=None):
 
 def replacement_work_pending(turn, mem):
     levels = {w.pos: w.level for w in turn.ours if w.kind == "wall"}
-    return bool(turn.day >= RESOURCE_POLICY_DAY and mem and any(levels.get(p, 0) < level
+    return bool(mem and any(levels.get(p, 0) < level
                             for p, level in mem.wall_rebuild_levels.items()))
 
 
