@@ -54,10 +54,11 @@ class Recovery:
                 return None
             action = command("collect", target)
         else:
-            from .economy import voucher_for
+            from .economy import voucher_for, wall_upgrade_allowed
             building = next((b for b in turn.ours if b.pos == target), None)
             name = voucher_for(building) if building else None
-            if not name or not hero.inventory[name] or building.id in ledger.upgrade_claims:
+            if (not name or not hero.inventory[name] or building.id in ledger.upgrade_claims
+                    or not wall_upgrade_allowed(turn, building, mem)):
                 return None
             action = command("use", target, name=name)
         targets = building.cells if kind == "use" else [target]
