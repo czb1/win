@@ -268,6 +268,19 @@ class Agent:
         except DeadlineExceeded:
             LOG.warning("round=%s budget reached; returning %s validated actions", turn.round, len(ledger.commands))
         response = ledger.response(prompt, execute)
+        if mem.news or mem.treasure:
+            hero = turn.pioneer
+            reason = ("no_pioneer" if not hero else "night" if not turn.is_day
+                      else "active_task" if turn.phase_task else "returning" if hero.id in mem.return_targets
+                      else "available")
+            mem.trace_treasure(turn, "treasure_schedule", dedupe=True, reason=reason)
+            if not turn.is_day or turn.phase_task:
+                mem.trace_treasure(turn, "news_gate", dedupe=True,
+                                   reason="night" if not turn.is_day else "active_task")
+            action = response["roleCommandMap"].get(str(hero.id)) if hero else None
+            if mem.treasure and action and action.get("action") in ("buy", "summonTreasure", "acceptTask"):
+                mem.trace_treasure(turn, "treasure_actor_action", actor=hero.id,
+                                   position=hero.pos, action=action)
         if not turn.is_day or turn.tick in (0, 69):
             diagnostic_pairs = ([(hero, w) for hero, _ in pairs for w in turn.weapons]
                                 if shared is not None else pairs)

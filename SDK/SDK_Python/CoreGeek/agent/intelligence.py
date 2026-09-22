@@ -207,6 +207,7 @@ class Memory:
     calls: int = 0
     news: list = field(default_factory=list)
     news_dirty: bool = False
+    treasure_trace_state: dict = field(default_factory=dict)
     gunner_observation: tuple | None = None
     gunner_stalled: int = 0
     gunner_id: int | None = None
@@ -346,6 +347,12 @@ class Memory:
         record = {"day": turn.day, "officialNews": str(news.get("officialNews", ""))[:12000],
                   "folkLegends": str(news.get("folkLegends", ""))[:20000]}
         if any(record[k] for k in ("officialNews", "folkLegends")) and record not in self.news:
+            self.trace_treasure(turn, "news_received", record=record,
+                                original_chars={k: len(str(news.get(k, "")))
+                                                for k in ("officialNews", "folkLegends")},
+                                truncated={k: len(str(news.get(k, ""))) > len(record[k])
+                                           for k in ("officialNews", "folkLegends")},
+                                evicted=self.news[:-9] if len(self.news) >= 10 else [])
             self.news.append(record)
             self.news = self.news[-10:]
             self.news_dirty = True
@@ -404,6 +411,17 @@ class Memory:
                              and p not in self.collect_failures}
         self.mine_kinds = mines
         result = turn.raw.get("lastSummonTreasureResult", 0)
+        summons = {uid: cmd for uid, cmd in self.last_commands.items()
+                   if cmd.get("action") == "summonTreasure"}
+        if result or (summons and self.last_round == turn.round - 1):
+            self.trace_treasure(turn, "treasure_result", result=result,
+                                meaning={0: "not_probed_or_illegal", 1: "success",
+                                         2: "wrong_location_or_not_open", 3: "wrong_items",
+                                         4: "empty"}.get(result, "unknown"),
+                                previous_commands=summons, action_results=results,
+                                correlated=self.last_round == turn.round - 1,
+                                attempted=self.treasure_attempted,
+                                next_state="done" if result in (1, 4) else "unchanged")
         if result in (1, 4):
             self.treasure_done = True
         if turn.phase_task != self.task_text:
@@ -494,6 +512,8 @@ class Memory:
         self.pending = None
         # The protocol promises previous-round results; never attribute a stale result after skipped turns.
         if turn.round != issued + 1:
+            if purpose == "news":
+                self.trace_treasure(turn, "news_discarded", issued_round=issued, reason="skipped_round")
             LOG.info("round=%s task_result_discarded purpose=%s issued_round=%s reason=skipped_round",
                      turn.round, purpose, issued)
             self.running_python = ""
@@ -608,6 +628,10 @@ class Memory:
             self.running_tool = None
             return
         raw_reply = str(turn.raw.get("llmResp") or "")
+        if purpose == "news":
+            self.trace_treasure(turn, "news_response", issued_round=issued,
+                                chars=len(raw_reply), sha=digest_text(raw_reply),
+                                truncated=len(raw_reply) > 16000, content=excerpt(raw_reply, 16000))
         parsed = (parse_task_reply(turn.raw.get("llmResp")) if purpose == "task"
                   else parse_object(turn.raw.get("llmResp")))
         if purpose == "recovery":
@@ -626,6 +650,8 @@ class Memory:
                 self.reject("格式错误：第一行写 ANSWER 或 PYTHON，后面写答案或代码。")
             elif purpose == "news":
                 self.news_dirty = True
+                self.trace_treasure(turn, "treasure_validation", accepted=False,
+                                    reason="invalid_json", old_plan_retained=bool(self.treasure))
             return
         if purpose == "task" and turn.phase_task:
             proposed_recipe = proposed_skill = None
@@ -745,12 +771,44 @@ class Memory:
                     old_sig = (tuple(old["position"]), tuple(sorted(old["items"])), old["startRound"], old["endRound"]) if old else None
                     if old_sig != signature:
                         self.treasure, self.treasure_attempted = t, False
+                    self.trace_treasure(turn, "treasure_validation", accepted=True,
+                                        changed=old_sig != signature, plan=t,
+                                        attempted=self.treasure_attempted)
+                else:
+                    checks = {
+                        "position": isinstance(p, list) and len(p) == 2
+                                    and all(type(x) is int for x in p) and turn.inside(tuple(p)),
+                        "items": isinstance(items, list) and bool(items)
+                                 and all(isinstance(x, str) and x in turn.shop for x in items),
+                        "window": type(begin) is int and type(end) is int
+                                  and cfg.round_origin <= begin <= end <= 1299 + cfg.round_origin,
+                        "confidence": isinstance(confidence, (int, float)) and confidence >= .85,
+                        "evidence": isinstance(evidence, list) and bool(evidence)
+                                    and all(isinstance(x, str) for x in evidence),
+                    }
+                    self.trace_treasure(turn, "treasure_validation", accepted=False,
+                                        reasons=[k for k, ok in checks.items() if not ok],
+                                        old_plan_retained=bool(self.treasure))
+            else:
+                self.trace_treasure(turn, "treasure_validation", accepted=False,
+                                    reason="already_done" if self.treasure_done else "no_candidate",
+                                    old_plan_retained=bool(self.treasure))
             outages = parsed.get("oreOutages", [])
             if isinstance(outages, list):
                 self.outages = [o for o in outages if isinstance(o, dict)
                     and o.get("name") in ("stone", "iron", "copper")
                     and type(o.get("startDay")) is int and type(o.get("endDay")) is int
                     and 1 <= o["startDay"] <= o["endDay"] <= 10][:10]
+
+    def trace_treasure(self, turn, event, dedupe=False, **data):
+        """Diagnostic state only: never used to decide actions or model prompts."""
+        encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
+        signature = digest_text(encoded)
+        if dedupe and self.treasure_trace_state.get(event) == signature:
+            return
+        self.treasure_trace_state[event] = signature
+        LOG.info("[TREASURE_TRACE] round=%s day=%s event=%s data=%s",
+                 turn.round, turn.day, event, encoded)
 
     def fail_skill(self, reason):
         if self.active_skill:
@@ -1014,6 +1072,11 @@ class Intelligence:
 
     def news(self):
         if not self.turn.is_day or self.turn.phase_task or not self.mem.news or not self.can_call():
+            if self.mem.news:
+                reason = ("night" if not self.turn.is_day else "active_task" if self.turn.phase_task
+                          else "disabled" if not self.cfg.llm_enabled else "pending" if self.mem.pending
+                          else "quota")
+                self.mem.trace_treasure(self.turn, "news_gate", dedupe=True, reason=reason)
             return ""
         # New evidence or malformed replies can consume the remaining daily quota.
         if not self.mem.news_dirty:
@@ -1029,5 +1092,11 @@ class Intelligence:
                        "map": [self.turn.width, self.turn.height]}, ensure_ascii=False))
         result = self.request("news", prompt)
         if result:
+            self.mem.trace_treasure(self.turn, "news_gate", dedupe=True, reason="requested")
+            self.mem.trace_treasure(self.turn, "news_request", days=[n["day"] for n in self.mem.news],
+                                    records=len(self.mem.news), prompt_chars=len(prompt),
+                                    prompt_sha=digest_text(prompt), calls=self.mem.calls,
+                                    quota=self.cfg.daily_llm_limit, shop=self.turn.shop,
+                                    map=[self.turn.width, self.turn.height], round_origin=self.cfg.round_origin)
             self.mem.news_dirty = False
         return result

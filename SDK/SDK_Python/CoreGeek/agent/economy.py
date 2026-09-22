@@ -664,17 +664,38 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
 
 def pioneer(turn, cfg, mem, nav, ledger, hero):
     if use_inventory(turn, nav, ledger, hero, mem=mem):
+        if mem.treasure:
+            mem.trace_treasure(turn, "treasure_progress", dedupe=True, reason="use_inventory")
         return
     # The pioneer can carry its own medicine; there is no transfer action.
     if not hero.inventory["Medicine"] and hero.health <= 150:
         plan = supplies(turn, cfg, mem, nav, ledger, hero, urgent_only=True)
         if buy_supply(turn, ledger, hero, plan):
+            if mem.treasure:
+                mem.trace_treasure(turn, "treasure_progress", dedupe=True, reason="medicine_supply")
             return
     t = mem.treasure
     if t and not mem.treasure_done and not mem.treasure_attempted and turn.round <= t["endRound"]:
         required = Counter(t["items"])
         missing = required - hero.inventory
         route = nav.approach(hero, [tuple(t["position"])], ledger.reserved)
+        reason = ("no_route" if not route else "cannot_arrive_in_time"
+                  if turn.round + route[0] > t["endRound"] else "missing_items" if missing
+                  else "too_early" if turn.round + route[0] < t["startRound"] else "approach_or_summon")
+        if missing and reason == "missing_items":
+            name = next(iter(missing))
+            num = missing[name]
+            reason = ("item_unavailable" if name not in turn.shop else "backpack_full" if hero.space < num
+                      else "insufficient_gold" if ledger.gold < turn.shop[name] * num else "shopping")
+        state = (reason, tuple(sorted(missing.items())), tuple(t["position"]), t["startRound"], t["endRound"])
+        # Snapshot changing counters only when the stage changes, not every movement round.
+        if mem.treasure_trace_state.get("progress_snapshot") != state:
+            mem.treasure_trace_state["progress_snapshot"] = state
+            mem.trace_treasure(turn, "treasure_progress", reason=reason, position=hero.pos,
+                               missing=dict(missing), inventory=dict(hero.inventory), gold=ledger.gold,
+                               space=hero.space, route_steps=route[0] if route else None,
+                               window=[t["startRound"], t["endRound"]],
+                               remaining=t["endRound"] - turn.round)
         if route and turn.round + route[0] <= t["endRound"]:
             if missing:
                 name = next(iter(missing))
@@ -688,7 +709,13 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
                 elif turn.round >= t["startRound"]:
                     if ledger.add(hero.id, command("summonTreasure", tuple(t["position"]), item=t["items"])):
                         mem.treasure_attempted = True
+                        mem.trace_treasure(turn, "treasure_summon", actor=hero.id,
+                                           position=hero.pos, target=t["position"], items=t["items"])
                 return
+    elif t:
+        mem.trace_treasure(turn, "treasure_progress", dedupe=True,
+                           reason="done" if mem.treasure_done else "already_attempted"
+                           if mem.treasure_attempted else "expired")
     if not cfg.llm_enabled:
         return
     options = []
