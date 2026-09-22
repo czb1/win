@@ -293,8 +293,13 @@ class Memory:
     wall_repair_worker: int | None = None
     wall_repair_delivering: bool = False
     station_health: int | None = None
+    station_health_peaks: dict = field(default_factory=dict)
 
     def observe(self, turn, cfg):
+        if turn.station:
+            level = turn.station.level
+            self.station_health_peaks[level] = max(self.station_health_peaks.get(level, 0),
+                                                   turn.station.health)
         self.movement.observe(turn, self)
         self.recovery.observe(turn, self)
         current_walls = {wall.pos: (wall.id, wall.health) for wall in turn.ours if wall.kind == "wall"}

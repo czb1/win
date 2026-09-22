@@ -9,9 +9,11 @@ from .economy_plan import planned_weapons, via, trade_available, preparation_sta
 
 DUSK_SPEND_TICK = 60
 DUSK_USE_TICK = 65
+BASE_MAX_HEALTH = 1500
+RESOURCE_POLICY_DAY = 4
 
 
-def dusk_route(turn, nav, ledger, hero, destinations, actions=1):
+def dusk_stop(turn, nav, ledger, hero, destinations, actions=1):
     """A real delivery tile plus the assigned operator post must fit daylight.
 
     Keep one spare turn for travel congestion; an actor already at its post
@@ -37,7 +39,31 @@ def dusk_route(turn, nav, ledger, hero, destinations, actions=1):
         margin = int(bool(route[0] or back and back[0] or actions > 2))
         if back and route[0] + actions + back[0] + margin <= turn.day_left:
             options.append((route[0], back[0], cell, route))
-    return min(options)[3] if options else None
+    return min(options) if options else None
+
+
+def dusk_route(turn, nav, ledger, hero, destinations, actions=1):
+    stop = dusk_stop(turn, nav, ledger, hero, destinations, actions)
+    return stop[3] if stop else None
+
+
+def dusk_batch(turn, nav, ledger, hero, candidates, count, elapsed):
+    """Budget every use and the return trip, following dusk delivery order."""
+    pending, delivered = list(candidates), 0
+    while pending and delivered < count:
+        options = []
+        for index, (priority, _, cells) in enumerate(pending):
+            stop = dusk_stop(turn, nav, ledger, hero, cells, actions=elapsed + 1)
+            if stop:
+                options.append((min(0, priority[0]), stop[0], priority, index, stop))
+        if not options:
+            break
+        _, _, _, index, stop = min(options)
+        elapsed += stop[0] + 1
+        hero = replace(hero, pos=stop[2])
+        pending.pop(index)
+        delivered += 1
+    return delivered, elapsed
 
 
 def walk(nav, ledger, hero, targets):
@@ -123,6 +149,30 @@ def walls_ready_for_station(turn, mem):
             and not mem.wall_rebuild_levels)
 
 
+def critical_station(turn, building, mem=None):
+    """A base upgrade is an emergency only below one quarter health."""
+    # The protocol exposes current health only. Retain the observed peak for
+    # each level; 1500 is the existing fixture fallback, not a verified cap.
+    if turn.day < RESOURCE_POLICY_DAY:
+        return building.kind == "station" and building.level < 3 and building.health < 750
+    maximum = max(BASE_MAX_HEALTH, mem.station_health_peaks.get(building.level, 0) if mem else 0)
+    return (building.kind == "station" and building.level < 3
+            and 0 < 4 * building.health < maximum)
+
+
+def replacement_work_pending(turn, mem):
+    levels = {w.pos: w.level for w in turn.ours if w.kind == "wall"}
+    return bool(turn.day >= RESOURCE_POLICY_DAY and mem and any(levels.get(p, 0) < level
+                            for p, level in mem.wall_rebuild_levels.items()))
+
+
+def station_purchase_allowed(turn, building, mem):
+    if turn.day < RESOURCE_POLICY_DAY:
+        return walls_ready_for_station(turn, mem)
+    return (not replacement_work_pending(turn, mem)
+            and (critical_station(turn, building, mem) or walls_ready_for_station(turn, mem)))
+
+
 def delivery_trip(turn, nav, ledger, hero, shop_cell, targets):
     """Walk through every delivery and back from the final use tile."""
     home, exact = return_destination(turn, nav, ledger, hero)
@@ -140,13 +190,16 @@ def delivery_trip(turn, nav, ledger, hero, shop_cell, targets):
 def upgrade_order(turn, building, mem=None):
     """Upgrade all weapons to level 2, then 3, before a healthy base.
 
-    A damaged base gets the full-heal benefit immediately. Rebuilt walls catch
-    up with their neighbours next; walls reach level 3 before a healthy base.
+    Rebuilt walls catch up first, then critical base healing. Ordinary walls
+    follow level-3 weapons and precede healthy base upgrades.
     """
     if rebuilding_wall(turn, building, mem):
         return (-.75, building.level, building.id)
     if building.kind == "station":
-        return (-1 if building.health < 750 else 2 if building.level == 1 else 3, building.id)
+        # Rebuilt walls must be restored first. Once walls are ready, a
+        # critically damaged base outranks weapon and ordinary wall upgrades.
+        emergency = -1 if turn.day < RESOURCE_POLICY_DAY else -.5
+        return (emergency if critical_station(turn, building, mem) else 2 if building.level == 1 else 3, building.id)
     if building.kind in WEAPONS:
         return (0 if building.level == 1 else 1, building.id)
     xs = [u.pos[0] for u in turn.ours if u.kind == "wall"]
@@ -168,6 +221,8 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
         return ledger.add(hero.id, command("use", name="Medicine"))
     upgrades = []
     for building in turn.ours:
+        if building.kind == "station" and replacement_work_pending(turn, mem):
+            continue
         name = voucher_for(building)
         if (name and hero.inventory[name] and wall_upgrade_allowed(turn, building, mem)
                 and building.id not in ledger.upgrade_claims
@@ -188,7 +243,8 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
         previous = mem.upgrade_targets.get(hero.id) if mem else None
         # Keep emergency base healing and replacement-wall upgrades ahead of
         # the current delivery; hold the target among ordinary deliveries.
-        if turn.is_day and turn.tick >= DUSK_USE_TICK:
+        nearest_tick = DUSK_SPEND_TICK if turn.day >= RESOURCE_POLICY_DAY else DUSK_USE_TICK
+        if turn.is_day and turn.tick >= nearest_tick:
             # Finish nearby paid upgrades instead of crossing the base to
             # preserve a stale target. Emergency healing still goes first.
             key = lambda o: (min(0, o[0][0]), o[1], o[0], o[3].id)
@@ -217,7 +273,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     both their item and the shared gold for this decision.
     """
     dusk = turn.is_day and turn.tick >= DUSK_SPEND_TICK
-    # Late purchases are delivered one at a time, never a speculative batch.
+    # Ordinary dusk items remain single purchases. Walls may share one trip
+    # only after the complete batch's delivery/return budget has been checked.
     bulk = bulk and not dusk
     shops = [p for p, k in turn.zones.items() if k == "weaponShop"]
     routes = [(r[0], p, r) for p in shops
@@ -234,7 +291,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
         first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
         for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
-            if building.kind == "station" and not walls_ready_for_station(turn, mem):
+            if building.kind == "station" and not station_purchase_allowed(turn, building, mem):
                 continue
             name = voucher_for(building)
             if not name:
@@ -278,7 +335,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
             # never spend gold reserved for missing guns.
             continue
         matches = [c[2] for c in candidates if c[1] == name]
-        count = min(len(matches) if bulk else 1, max(1, hero.space),
+        wall_batch = dusk and turn.day >= RESOURCE_POLICY_DAY and name.startswith("WallUpgradeVoucher")
+        count = min(len(matches) if bulk or wall_batch else 1, max(1, hero.space),
                     (ledger.gold - reserve) // price if price else len(matches))
         options = []
         for _, shop, _ in routes:
@@ -292,6 +350,13 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                     original = turn.blocked
                     try:
                         turn.blocked = original - {hero.pos}
+                        if wall_batch:
+                            batch = [c for c in candidates if c[1] == name]
+                            num, cost = dusk_batch(turn, nav, ledger, replace(hero, pos=cell),
+                                                   batch, count, to_shop[0] + 1)
+                            if num:
+                                options.append((-num, cost, to_shop))
+                            continue
                         # dusk_route reads day_left; charge shopping travel and
                         # the buy action through its action budget instead.
                         deliveries = [r for target in matches
