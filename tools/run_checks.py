@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quiet offline validation. Full coverage by default; quick is iteration only."""
+"""Fast offline checks by default; simulations and benchmarks require --full."""
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -17,7 +17,7 @@ def replay_test(method):
     return method
 
 
-def select_tests(suite, quick=False):
+def select_tests(suite, quick=True):
     selected = unittest.TestSuite()
     omitted = 0
     for test in suite:
@@ -44,23 +44,27 @@ def failure_excerpt(path):
         return "".join(deque(log, maxlen=60))[-6000:]
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--quick", action="store_true",
-                        help="Omit marked replays; never a final acceptance check")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--quick", dest="full", action="store_false",
+                       help="Run fast checks only (the default)")
+    modes.add_argument("--full", action="store_true",
+                       help="Opt in to all simulations and the strategy benchmark")
+    parser.set_defaults(full=False)
     parser.add_argument("--log-dir", type=Path, default=ROOT / "artifacts/validation")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args.log_dir.mkdir(parents=True, exist_ok=True)
-    mode = "quick" if args.quick else "full"
+    mode = "full" if args.full else "quick"
     log_path = args.log_dir / (mode + ".log")
     started = monotonic()
     loader = unittest.TestLoader()
-    suite, omitted = select_tests(loader.discover(str(ROOT / "tests")), args.quick)
+    suite, omitted = select_tests(loader.discover(str(ROOT / "tests")), quick=not args.full)
     with log_path.open("w", encoding="utf-8") as log:
         result = run_units(suite, log)
         success = result.wasSuccessful() and result.testsRun > 0
         benchmark = "not run"
-        if success and not args.quick:
+        if success and args.full:
             # Construction and progression are already asserted by the suite.
             # Keep the independent static-combat/economy benchmark from CI.
             log.flush()
@@ -76,8 +80,8 @@ def main():
           f"replays_omitted={omitted}, benchmark={benchmark}, "
           f"seconds={monotonic() - started:.2f}")
     print(f"Log: {log_path}")
-    if args.quick:
-        print("Iteration only: run without --quick before final delivery.")
+    if not args.full:
+        print("Simulations and benchmark disabled; opt in with --full when needed.")
     if not success:
         print(failure_excerpt(log_path))
     return 0 if success else 1
