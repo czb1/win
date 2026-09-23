@@ -31,8 +31,18 @@ def return_destination(turn, nav, ledger, hero):
     return (tower.cells if tower else mining_home(turn, nav, hero, ledger.reserved)), False
 
 
+def reserve_watch_space(turn, mem, hero):
+    if turn.is_day and turn.day >= 4 and hero.id == mem.wall_watch_id:
+        price = turn.shop.get("WallFixer")
+        if price is not None and 0 <= price <= turn.gold:
+            target = min(hero.capacity, mem.wall_watch.stock_target(turn))
+            return replace(hero, capacity=max(0, hero.capacity - max(0, target - hero.inventory["WallFixer"])))
+    return hero
+
+
 def spare_mine(turn, cfg, mem, nav, ledger, hero):
     """Use otherwise idle daylight near ore; carry it to a later day's sale."""
+    hero = reserve_watch_space(turn, mem, hero)
     if not turn.is_day or not hero.space:
         LOG.debug("round=%s worker=%s spare_mining=unavailable day=%s free_space=%s",
                   turn.round, hero.id, turn.is_day, hero.space)
@@ -89,6 +99,7 @@ def sale_inventory(turn, mem, hero):
 
 def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
          deadline=None, stockpile=False, dedicated=False):
+    hero = reserve_watch_space(turn, mem, hero)
     if not hero.space:
         LOG.debug("round=%s worker=%s mining=backpack_full", turn.round, hero.id)
         return False
