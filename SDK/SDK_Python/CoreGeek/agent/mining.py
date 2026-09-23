@@ -35,7 +35,8 @@ def reserve_watch_space(turn, mem, hero):
     if turn.is_day and turn.day >= 4 and hero.id == mem.wall_watch_id:
         price = turn.shop.get("WallFixer")
         if price is not None and 0 <= price <= turn.gold:
-            return replace(hero, capacity=max(0, hero.capacity - max(0, 3 - hero.inventory["WallFixer"])))
+            target = min(hero.capacity, mem.wall_watch.stock_target(turn))
+            return replace(hero, capacity=max(0, hero.capacity - max(0, target - hero.inventory["WallFixer"])))
     return hero
 
 

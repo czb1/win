@@ -3,7 +3,7 @@ from dataclasses import replace
 from .commands import command
 from .model import neighbours, ORES
 from .mining import earn
-from .wall_health import needs_night_repair, WALL_MAX_HEALTH
+from .wall_health import repair_risk
 
 
 def select_watch(turn, mem, pairs):
@@ -50,10 +50,34 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         return False, 0
     held = hero.inventory['WallFixer']
     price = turn.shop.get('WallFixer')
-    need = max(0, min(3, hero.capacity) - held)
-    funds = min(ledger.gold, need * price) if price is not None and price > 0 else 0
+    target = min(mem.wall_watch.stock_target(turn), hero.capacity)
+    need = max(0, target - held)
+    # Guarantee up to three packs first. Additional stock must leave money for
+    # missing weapons and the next available firepower upgrade.
+    upgrades = [turn.shop[name] for w in turn.weapons if w.level < 3
+                if (name := f'WeaponUpgradeVoucher{w.level}') in turn.shop and turn.shop[name] > 0]
+    core_budget = (max(0, len(cfg.loadout) - len(turn.weapons)) * cfg.weapon_cost
+                   + min(upgrades, default=0))
+    previous = mem.wall_watch.history[-1] if mem.wall_watch.history else None
+    safety_stock = max(3, previous.used + 2) if previous and previous.unmet else 3
+    if price is not None and price > 0:
+        minimum = max(0, min(safety_stock, target) - held)
+        quota = min(need, ledger.gold // price,
+                    max(minimum, max(0, ledger.gold - core_budget) // price))
+    else:
+        quota = need if price == 0 else 0
+    funds = quota * price if price is not None and price > 0 else 0
+
+    def report(action, reason, **extra):
+        mem.wall_watch.decision(turn, 'wall_supply', actor=hero.id, action=action, reason=reason,
+                                target=target, held=held, need=need, affordable=quota,
+                                safety_stock=min(safety_stock, target),
+                                reserved_gold=funds, core_budget=core_budget,
+                                gold=ledger.gold, price=price, **extra)
+
     home = watch_route(turn, nav, ledger, mem, hero, sites)
     if home is None:
+        report('wait', 'no_home_route')
         return False, 0
     shops = []
     for point, kind in turn.zones.items():
@@ -71,44 +95,82 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         funds = 0
     budget = (shop[0] if shop else home[0]) + cfg.return_margin + len(ORES)
     if turn.tick < cfg.economy_rounds and turn.day_left > budget:
+        report('reserve', 'daytime_production')
         return False, funds
     if hero.health <= 165 and hero.inventory['Medicine']:
         ledger.add(hero.id, command('use', name='Medicine'))
         return True, funds
-    if need and price is not None and price >= 0 and (price == 0 or ledger.gold >= price) and shop:
+    if quota and shop:
         if shop[0] + cfg.return_margin < turn.day_left:
-            if hero.space < need and any(hero.inventory[k] for k in ORES):
+            if hero.space < quota and any(hero.inventory[k] for k in ORES):
                 # Clear ore through the existing once-daily sale contract.
                 earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False)
+                report('sell', 'clear_pack_slots')
                 return True, funds
-            count = min(need, hero.space, ledger.gold // price if price else need)
+            count = min(quota, hero.space)
             if count:
                 route = shop[1]
-                ledger.add(hero.id, command('move', route[1]) if route[1] else
-                           command('buy', name='WallFixer', num=count))
+                added = ledger.add(hero.id, command('move', route[1]) if route[1] else
+                                   command('buy', name='WallFixer', num=count))
+                report('move' if route[1] else 'buy', 'restock' if added else 'command_rejected', count=count)
                 return True, funds if route[1] else 0
     if held:
         if home[1] is not None:
             ledger.add(hero.id, command('move', home[1]))
+        report('move' if home[1] else 'hold', 'return_with_stock', steps=home[0])
         return True, 0
+    report('release', 'no_funds' if not quota else 'shop_or_deadline_unavailable')
     return False, 0
 
 
 def repair_watch(turn, mem, nav, ledger, hero, sites):
-    if turn.is_day or not hero.inventory['WallFixer']:
+    if turn.is_day:
         return False
     _, front = geometry(turn, sites)
-    options = []
+    options, waiting, critical = [], [], []
+    # Stunned robots may wake next turn: stop spending, but retain late watch.
+    hostile = [r for r in turn.robots if turn.threatens_us(r)]
+    held = hero.inventory['WallFixer']
     for wall in turn.ours:
-        if (wall.kind != 'wall' or wall.pos not in sites or wall.id in ledger.repair_claims
-                or not needs_night_repair(wall)):
+        if wall.kind != 'wall' or wall.pos not in sites or wall.id in ledger.repair_claims:
+            continue
+        risk = repair_risk(turn, wall, mem)
+        if risk.needed:
+            critical.append(wall)
+        if not held:
+            if risk.needed:
+                mem.wall_watch.shortage(turn, wall, 'no_pack')
             continue
         route = watch_route(turn, nav, ledger, mem, hero, sites, wall)
-        if route:
-            maximum = WALL_MAX_HEALTH[wall.level - 1]
-            options.append((wall.pos[0] != front, wall.health / maximum, route[0], wall.id, wall, route))
-    if not options:
-        return False
-    *_, wall, route = min(options, key=lambda o: o[:4])
-    return ledger.add(hero.id, command('move', route[1]) if route[1] else
-                      command('use', wall.pos, name='WallFixer'))
+        if route is None:
+            if risk.needed:
+                mem.wall_watch.shortage(turn, wall, 'no_route')
+            continue
+        rate = max(risk.recent_damage, risk.nearby_damage)
+        slack = wall.health / rate - route[0] - 1 if rate else float('inf')
+        # A threatened flank that cannot survive another turn outranks frontage.
+        rank = (not (risk.emergency or slack <= 0),
+                slack if slack <= 0 else 0, wall.pos[0] != front,
+                wall.health / risk.maximum, route[0], wall.id)
+        item = (rank, wall, route, risk)
+        if risk.needed:
+            options.append(item)
+        elif hostile and (turn.day >= 8 or risk.nearby and (
+                wall.health * 10 <= risk.maximum * 3 or slack <= 2)):
+            waiting.append(item)
+    selected = min(options or waiting, key=lambda o: o[0], default=None)
+    if selected:
+        _, wall, route, risk = selected
+        action = 'move' if route[1] else 'use' if risk.needed else 'hold'
+        accepted = (action == 'hold' or ledger.add(hero.id, command('move', route[1]) if route[1]
+                                                 else command('use', wall.pos, name='WallFixer')))
+        mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, wall=wall.id,
+                                health=wall.health, threshold=risk.threshold, held=held,
+                                recent_damage=risk.recent_damage, nearby=risk.nearby,
+                                steps=route[0], action=action, accepted=accepted,
+                                reason=risk.reason if risk.needed else 'preposition')
+        return accepted
+    reason = ('no_pack' if not held else 'no_route') if critical else 'no_urgent_wall'
+    mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, action='hold' if critical and held else 'release',
+                            reason=reason, held=held, critical=[w.id for w in critical])
+    return bool(critical and held)

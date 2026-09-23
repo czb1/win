@@ -11,6 +11,7 @@ import shlex
 from .commands import command
 from .model import ORES, pos
 from .recovery import Recovery
+from .wall_watch_state import WallWatchState
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
 from .task_runtime import runtime_code, runtime_result
 from .task_sop import answer_contract, answer_error, engineering_code
@@ -210,6 +211,7 @@ class Memory:
     gunner_observation: tuple | None = None
     gunner_stalled: int = 0
     wall_watch_id: int | None = None
+    wall_watch: WallWatchState = field(default_factory=WallWatchState)
     gunner_id: int | None = None
     gunner_post: tuple | None = None
     next_gun: int = 0
@@ -295,6 +297,7 @@ class Memory:
     station_health: int | None = None
 
     def observe(self, turn, cfg):
+        self.wall_watch.observe(turn, self)
         self.movement.observe(turn, self)
         self.recovery.observe(turn, self)
         current_walls = {wall.pos: (wall.id, wall.health) for wall in turn.ours if wall.kind == "wall"}

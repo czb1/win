@@ -80,6 +80,7 @@ class WallWatchTests(unittest.TestCase):
                             p = payload((day - 1) * 130 + 70, [
                                 unit(1, kind, 5, 5, health=220, backpack=['WallFixer']),
                                 unit(30, 'wall', 6, 5, level=level, health=health)])
+                            p['robot']['roles'] = [unit(90, 'smallRobot', 12, 12, targetTeam='challenger')]
                             t, _, nav, ledger = setup_case(p)
                             self.assertEqual(use_inventory(t, nav, ledger, t.heroes[0], local_only=True,
                                                            mem=Memory()), health < threshold)

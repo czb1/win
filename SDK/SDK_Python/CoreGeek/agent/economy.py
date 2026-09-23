@@ -112,7 +112,7 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
             if route and (not local_only or route[0] == 0):
                 upgrades.append((upgrade_order(turn, building, mem), route[0], name, building, route))
         if (building.kind == "wall" and hero.inventory["WallFixer"]
-                and (building.health < 500 if turn.is_day else needs_night_repair(building))
+                and (building.health < 500 if turn.is_day else needs_night_repair(building, turn, mem))
                 and building.id not in ledger.repair_claims
                 and not (mem and turn.day >= 4 and hero.id == mem.wall_watch_id)):
             route = nav.approach(hero, building.cells, ledger.reserved)

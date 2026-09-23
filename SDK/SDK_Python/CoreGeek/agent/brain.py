@@ -282,6 +282,7 @@ class Agent:
         except DeadlineExceeded:
             LOG.warning("round=%s budget reached; returning %s validated actions", turn.round, len(ledger.commands))
         response = ledger.response(prompt, execute)
+        mem.wall_watch.finish(turn, mem, response)
         if not turn.is_day or turn.tick in (0, 69):
             diagnostic_pairs = ([(hero, w) for hero, _ in pairs for w in turn.weapons]
                                 if shared is not None else pairs)
