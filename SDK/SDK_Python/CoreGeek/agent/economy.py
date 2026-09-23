@@ -13,14 +13,14 @@ BASE_MAX_HEALTH = 1500
 RESOURCE_POLICY_DAY = 4
 
 
-def dusk_stop(turn, nav, ledger, hero, destinations, actions=1):
+def dusk_stop(turn, nav, ledger, hero, destinations, actions=1, require_home=True):
     """A real delivery tile plus the assigned operator post must fit daylight.
 
     Keep one spare turn for travel congestion; an actor already at its post
     can spend the final turn on an adjacent upgrade without moving.
     """
     home, exact = return_destination(turn, nav, ledger, hero)
-    if not home:
+    if require_home and not home:
         return None
     options = []
     cells = {p for target in destinations for p in neighbours(target)} - set(destinations)
@@ -32,8 +32,13 @@ def dusk_stop(turn, nav, ledger, hero, destinations, actions=1):
         try:
             turn.blocked = original - {hero.pos}
             proxy = replace(hero, pos=cell)
-            back = (nav.search(proxy, home, ledger.reserved) if exact
-                    else nav.approach(proxy, home, ledger.reserved))
+            if not require_home:
+                back = (0, None)
+            elif home:
+                back = (nav.search(proxy, home, ledger.reserved) if exact
+                        else nav.approach(proxy, home, ledger.reserved))
+            else:
+                back = None
         finally:
             turn.blocked = original
         margin = int(bool(route[0] or back and back[0] or actions > 2))
@@ -42,18 +47,19 @@ def dusk_stop(turn, nav, ledger, hero, destinations, actions=1):
     return min(options) if options else None
 
 
-def dusk_route(turn, nav, ledger, hero, destinations, actions=1):
-    stop = dusk_stop(turn, nav, ledger, hero, destinations, actions)
+def dusk_route(turn, nav, ledger, hero, destinations, actions=1, require_home=True):
+    stop = dusk_stop(turn, nav, ledger, hero, destinations, actions, require_home)
     return stop[3] if stop else None
 
 
-def dusk_batch(turn, nav, ledger, hero, candidates, count, elapsed):
+def dusk_batch(turn, nav, ledger, hero, candidates, count, elapsed, require_home=True):
     """Budget every use and the return trip, following dusk delivery order."""
     pending, delivered = list(candidates), 0
     while pending and delivered < count:
         options = []
         for index, (priority, _, cells) in enumerate(pending):
-            stop = dusk_stop(turn, nav, ledger, hero, cells, actions=elapsed + 1)
+            stop = dusk_stop(turn, nav, ledger, hero, cells, actions=elapsed + 1,
+                             require_home=require_home)
             if stop:
                 options.append((min(0, priority[0]), stop[0], priority, index, stop))
         if not options:
@@ -160,6 +166,13 @@ def critical_station(turn, building, mem=None):
             and 0 < 4 * building.health < maximum)
 
 
+def late_wall_relief(turn):
+    """After day four, maxed weapons may trade operator return time for walls."""
+    return (turn.day >= RESOURCE_POLICY_DAY and turn.is_day
+            and turn.tick >= DUSK_SPEND_TICK
+            and turn.weapons and all(w.level >= 3 for w in turn.weapons))
+
+
 def replacement_work_pending(turn, mem):
     levels = {w.pos: w.level for w in turn.ours if w.kind == "wall"}
     return bool(mem and any(levels.get(p, 0) < level
@@ -227,7 +240,8 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
         if (name and hero.inventory[name] and wall_upgrade_allowed(turn, building, mem)
                 and building.id not in ledger.upgrade_claims
                 and not (mem and mem.movement.avoids(hero.id, building.pos))):
-            route = (dusk_route(turn, nav, ledger, hero, building.cells)
+            route = (dusk_route(turn, nav, ledger, hero, building.cells,
+                                require_home=not late_wall_relief(turn))
                      if turn.is_day and turn.tick >= DUSK_SPEND_TICK
                      else nav.approach(hero, building.cells, ledger.reserved))
             if route and (not local_only or route[0] == 0):
@@ -352,8 +366,9 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                         turn.blocked = original - {hero.pos}
                         if wall_batch:
                             batch = [c for c in candidates if c[1] == name]
-                            num, cost = dusk_batch(turn, nav, ledger, replace(hero, pos=cell),
-                                                   batch, count, to_shop[0] + 1)
+                            num, cost = dusk_batch(
+                                turn, nav, ledger, replace(hero, pos=cell), batch, count,
+                                to_shop[0] + 1, require_home=not late_wall_relief(turn))
                             if num:
                                 options.append((-num, cost, to_shop))
                             continue
@@ -749,7 +764,17 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
     if need_walls and hero.inventory["stone"] >= cfg.wall_stones:
         if build(turn, cfg, mem, nav, ledger, hero, wall_sites, lambda _: "wall"):
             return
-    earn(turn, cfg, mem, nav, ledger, hero, deadline)
+    if earn(turn, cfg, mem, nav, ledger, hero, deadline):
+        return
+    # A preparation deadline can make the normal income planner reject every
+    # mine because there is no time to sell and return before the cutoff. Do
+    # not leave the worker beside a wall with no command: stockpile a nearby
+    # load for the next sale, or at least move back toward the base.
+    if deadline is not None and turn.tick < deadline:
+        if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True):
+            return
+    if turn.station:
+        walk(nav, ledger, hero, turn.station.cells)
 
 
 

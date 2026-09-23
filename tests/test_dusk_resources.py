@@ -135,6 +135,16 @@ class DuskResourceTests(unittest.TestCase):
         l.operator_posts[1] = (14, 14)
         self.assertIsNone(supplies(t, c, Memory(), n, l, t.workers[0], bulk=True))
 
+    def test_day_four_maxed_weapons_can_spend_wall_cash_without_post_return(self):
+        p = self.case(450, gold=120)
+        p["teamOur"]["roles"][2]["level"] = 3
+        p["teamOur"]["roles"][3]["level"] = 2
+        t, c, n, l = self.setup(p)
+        l.operator_posts[1] = (14, 14)
+        plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan[0], "WallUpgradeVoucher2")
+
     def test_final_turn_can_use_adjacent_voucher_without_leaving_post(self):
         p = self.case(69)
         p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher1"]
