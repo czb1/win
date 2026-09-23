@@ -9,6 +9,7 @@ from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
 from .combat import assignments, return_plan, defend, emergency_items, shared_crew, shared_defend, clear_gunner_route
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector
+from .economy import reserve_treasure_gold
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
 
@@ -246,7 +247,13 @@ class Agent:
                 if not turn.phase_task:
                     mem.recovery.resume(turn, self.cfg, mem, nav, ledger, returning)
                     mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning, loops_only=True)
-                workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
+                treasure_reserve = (reserve_treasure_gold(turn, self.cfg, mem, nav, ledger, h)
+                                    if h and h.id not in ledger.used and h.id not in returning and not danger else 0)
+                ledger.gold -= treasure_reserve
+                try:
+                    workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
+                finally:
+                    ledger.gold += treasure_reserve
                 mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning)
                 if shared is not None and mem.gunner_post:
                     for idle in turn.workers:

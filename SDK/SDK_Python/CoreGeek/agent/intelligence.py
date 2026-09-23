@@ -211,6 +211,7 @@ class Memory:
     treasure_trace_state: dict = field(default_factory=dict)
     treasure_clues: list = field(default_factory=list)
     treasure_prep_spent: int = 0
+    treasure_prep_items: list = field(default_factory=list)
     gunner_observation: tuple | None = None
     gunner_stalled: int = 0
     gunner_id: int | None = None

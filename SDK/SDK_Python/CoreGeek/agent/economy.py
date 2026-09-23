@@ -663,33 +663,65 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
             vacate_site(turn, nav, ledger, hero, sites)
 
 
-def prepare_treasure(turn, cfg, mem, nav, ledger, hero):
-    """Idle, nearby shopping only; keep normal tasks and a cash reserve first."""
-    if (not turn.is_day or turn.phase_task or mem.treasure is not None
+def treasure_preparation_plan(turn, cfg, mem, nav, ledger, hero):
+    """Persistent one-set shopping, with travel and emergency gates in code."""
+    if (not cfg.llm_enabled or not hero or not turn.is_day or turn.phase_task or mem.treasure is not None
             or mem.treasure_done or mem.treasure_attempted):
-        return False
-    items = preparation_items(mem.news, turn.shop)
+        return None
+    if not mem.treasure_prep_items:
+        mem.treasure_prep_items = preparation_items(mem.news, turn.shop)
+    items = mem.treasure_prep_items
     if not items:
-        return False
+        return None
     missing = [name for name in items if not hero.inventory[name]]
-    cost = sum(turn.shop[name] for name in missing)
+    cost = sum(turn.shop.get(name, 0) for name in missing)
+    emergency = (any(h.health <= (150 if h.kind == "pioneer" else 110) for h in turn.heroes)
+                 or any(w.kind == "wall" and w.health < 500 for w in turn.ours)
+                 or bool(turn.station and turn.station.health < 500)
+                 or any(turn.threatens_us(r) and (turn.base_distance(r.pos) <= max(6, r.attack_range)
+                        or distance(hero.pos, r.pos) <= max(6, r.attack_range + 2)) for r in turn.robots))
     reason = ("ready" if not missing else "backpack_full" if hero.space < len(missing)
+              else "item_unavailable" if any(name not in turn.shop for name in missing)
               else "budget_limit" if mem.treasure_prep_spent + cost > 45
-              else "cash_reserve" if ledger.gold - cost < 100 else "nearby_shop_required")
-    route = None
-    if reason == "nearby_shop_required":
+              else "emergency" if emergency else "no_route")
+    route, target, return_steps = None, None, None
+    if reason == "no_route":
         shops = [p for p, kind in turn.zones.items() if kind == "weaponShop"]
-        route = nav.approach(hero, shops, ledger.reserved) if shops else None
+        routes = [(r[0], p, r) for p in shops
+                  if (r := nav.approach(hero, [p], ledger.reserved)) is not None]
         home = [w.pos for w in turn.weapons] or (list(turn.station.cells) if turn.station else [])
-        # Bound the detour and leave time to return from any reachable shop.
-        return_steps = max((min(distance(p, q) for q in home) for p in shops), default=0) if home else 0
-        if route and route[0] <= 3 and turn.day_left > route[0] + len(missing) + return_steps + cfg.return_margin:
-            reason = "shopping"
+        if routes:
+            _, target, route = min(routes, key=lambda row: row[:2])
+            return_steps = min((distance(target, q) for q in home), default=0)
+            reason = ("insufficient_daylight" if turn.day_left <= route[0] + len(missing) + return_steps + cfg.return_margin
+                      else "shopping" if ledger.gold >= cost else "saving_gold")
     mem.trace_treasure(turn, "treasure_prepare", dedupe=True, reason=reason,
                        items=items, missing=missing, spent=mem.treasure_prep_spent,
-                       budget=45, cash_reserve=100)
-    if reason != "shopping":
+                       budget=45, gold=ledger.gold, missing_cost=cost,
+                       position=hero.pos, shop=target, route_steps=route[0] if route else None,
+                       return_steps=return_steps, day_left=turn.day_left)
+    return (missing, route, cost) if reason in ("shopping", "saving_gold") else None
+
+
+def reserve_treasure_gold(turn, cfg, mem, nav, ledger, hero):
+    plan = treasure_preparation_plan(turn, cfg, mem, nav, ledger, hero)
+    if not plan:
+        return 0
+    task_first = bool(pioneer_task_options(turn, cfg, mem, nav, ledger, hero))
+    # Temporarily hide only this set's missing cost from discretionary workers.
+    # Emergency gates above release the whole reserve; no fixed cash threshold.
+    amount = 0 if task_first else min(plan[2], max(0, ledger.gold))
+    mem.trace_treasure(turn, "treasure_reserve", dedupe=True,
+                       reason="task_priority" if task_first else "reserved",
+                       gold=ledger.gold, missing_cost=plan[2], reserved=amount)
+    return amount
+
+
+def prepare_treasure(turn, cfg, mem, nav, ledger, hero):
+    plan = treasure_preparation_plan(turn, cfg, mem, nav, ledger, hero)
+    if not plan or ledger.gold < plan[2]:
         return False
+    missing, route, _ = plan
     name = missing[0]
     if route[1] is not None:
         return buy_supply(turn, ledger, hero, (name, route, 1))
@@ -698,6 +730,30 @@ def prepare_treasure(turn, cfg, mem, nav, ledger, hero):
         mem.treasure_prep_spent += turn.shop[name]
         return True
     return False
+
+
+def pioneer_task_options(turn, cfg, mem, nav, ledger, hero):
+    options = []
+    for task in turn.tasks:
+        if not task.get("isValid") or int(task.get("coldDownRounds", 0)) > 0:
+            continue
+        cells = turn.task_cells(task)
+        route = nav.approach(hero, cells, ledger.reserved)
+        # Include a conservative return-distance estimate when accepting distant tasks.
+        home = [w.pos for w in turn.weapons] or (list(turn.station.cells) if turn.station else [])
+        return_estimate = min((distance(p, q) for p in cells for q in home), default=0)
+        if route and turn.day_left > route[0] + cfg.task_min_rounds + return_estimate + cfg.return_margin:
+            duration = min(int(task.get("timeoutRounds", cfg.task_max_rounds)), cfg.task_max_rounds)
+            observed = [s["rounds"] for s in mem.skills if s.get("point") == pos(task["taskPosition"])
+                        and s.get("workflow") == "check_token" and not s.get("disabled")
+                        and type(s.get("rounds")) is int]
+            if observed:
+                # A learned fast SOP should not be priced at its official worst
+                # case timeout. This estimate only ranks tasks, never deadlines.
+                duration = min(duration, max(observed[-3:]) + 2)
+            value = (int(task.get("scoreReward", 0)) + .5*int(task.get("goldReward", 0))) / max(1, route[0]+duration)
+            options.append((-value, route[0], pos(task["taskPosition"]), task, route))
+    return options
 
 
 def pioneer(turn, cfg, mem, nav, ledger, hero):
@@ -756,26 +812,7 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
                            if mem.treasure_attempted else "expired")
     if not cfg.llm_enabled:
         return
-    options = []
-    for task in turn.tasks:
-        if not task.get("isValid") or int(task.get("coldDownRounds", 0)) > 0:
-            continue
-        cells = turn.task_cells(task)
-        route = nav.approach(hero, cells, ledger.reserved)
-        # Include a conservative return-distance estimate when accepting distant tasks.
-        home = [w.pos for w in turn.weapons] or (list(turn.station.cells) if turn.station else [])
-        return_estimate = min((distance(p, q) for p in cells for q in home), default=0)
-        if route and turn.day_left > route[0] + cfg.task_min_rounds + return_estimate + cfg.return_margin:
-            duration = min(int(task.get("timeoutRounds", cfg.task_max_rounds)), cfg.task_max_rounds)
-            observed = [s["rounds"] for s in mem.skills if s.get("point") == pos(task["taskPosition"])
-                        and s.get("workflow") == "check_token" and not s.get("disabled")
-                        and type(s.get("rounds")) is int]
-            if observed:
-                # A learned fast SOP should not be priced at its official worst
-                # case timeout. This estimate only ranks tasks, never deadlines.
-                duration = min(duration, max(observed[-3:]) + 2)
-            value = (int(task.get("scoreReward", 0)) + .5*int(task.get("goldReward", 0))) / max(1, route[0]+duration)
-            options.append((-value, route[0], pos(task["taskPosition"]), task, route))
+    options = pioneer_task_options(turn, cfg, mem, nav, ledger, hero)
     if options:
         _, _, point, task, route = min(options, key=lambda x: x[:3])
         if route[1] is not None:

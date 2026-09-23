@@ -1,8 +1,11 @@
 """Budgeted preparation without a complete plan; no simulated LLM reasoning."""
 import unittest
+from unittest.mock import patch
 
 from test_agent import payload, setup_case, unit
-from agent.economy import pioneer
+from agent.economy import pioneer, reserve_treasure_gold
+from agent.brain import Agent
+from agent.config import Config
 from agent.intelligence import Memory
 from agent.treasure_clues import preparation_items
 
@@ -39,7 +42,7 @@ class TreasurePreparationTests(unittest.TestCase):
         self.assertFalse(mem.treasure_attempted)
 
     def test_reserve_capacity_distance_night_and_active_task(self):
-        cases = [case(gold=144), case(x=0), case(round_no=460), case(round_no=459)]
+        cases = [case(gold=44), case(round_no=460), case(round_no=459)]
         full = case()
         full['teamOur']['roles'][0]['backPackCapability'] = 2
         cases.append(full)
@@ -64,6 +67,8 @@ class TreasurePreparationTests(unittest.TestCase):
         data['teamOur']['playerTasks'] = [dict(isValid=True, coldDownRounds=0,
             taskPosition={'x': 5, 'y': 6}, timeoutRounds=10, scoreReward=100, goldReward=100)]
         mem = Memory(news=NEWS)
+        turn, cfg, nav, ledger = setup_case(data)
+        self.assertEqual(reserve_treasure_gold(turn, cfg, mem, nav, ledger, turn.pioneer), 0)
         ledger = self.decide(data, mem)
         self.assertEqual(ledger.commands['11']['action'], 'acceptTask')
         self.assertEqual(mem.treasure_prep_spent, 0)
@@ -83,3 +88,61 @@ class TreasurePreparationTests(unittest.TestCase):
             mem = Memory(news=NEWS, **flags)
             self.assertFalse(self.decide(case(), mem).commands)
             self.assertEqual(mem.treasure_prep_spent, 0)
+
+    def test_distant_shop_with_competing_spending_completes_before_day_five(self):
+        # Exercise Agent's real reservation order; competing workers try to
+        # consume every unreserved coin. Replay actual movement and purchases.
+        agent = Agent(Config(layout_mode='explicit'))
+        data = case(gold=95, x=0, round_no=261)
+        data['mapInfo']['width'] = 41
+        data['mapInfo']['zones'][0]['pos'] = {'x': 20, 'y': 5}
+        data['worldNews'] = {'folkLegends': ''.join(n['folkLegends'] for n in NEWS)}
+        purchased = []
+        worker_calls = []
+
+        def spend(turn, cfg, mem, nav, ledger, *args):
+            worker_calls.append(ledger.gold)
+            data['teamOur']['goldNum'] -= ledger.gold
+            ledger.gold = 0
+
+        with patch('agent.brain.workers', side_effect=spend):
+            for r in range(261, 300):
+                data['roundNo'] = r
+                result = agent.decide(data)
+                action = result['roleCommandMap'].get('11', {})
+                hero = data['teamOur']['roles'][0]
+                if action.get('action') == 'move':
+                    hero['pos'] = action['targetPos'][0]
+                elif action.get('action') == 'buy':
+                    self.assertGreaterEqual(data['teamOur']['goldNum'], 15)
+                    purchased.append(action['name'])
+                    hero['backpack'].append(action['name'])
+                    data['teamOur']['goldNum'] -= 15
+                self.assertNotEqual(action.get('action'), 'summonTreasure')
+                if len(purchased) == 3:
+                    break
+        self.assertEqual(purchased, ITEMS)
+        self.assertEqual(worker_calls[0], 50)
+        self.assertEqual(data['teamOur']['goldNum'], 0)
+        self.assertLess(r, 330)
+
+    def test_reserve_grows_with_income_and_releases_for_emergencies(self):
+        mem = Memory(news=NEWS)
+        for gold in (10, 30, 45, 95):
+            turn, cfg, nav, ledger = setup_case(case(gold=gold, x=0))
+            self.assertEqual(reserve_treasure_gold(turn, cfg, mem, nav, ledger, turn.pioneer), min(45, gold))
+        for kind in ('pioneer', 'wall'):
+            data = case()
+            if kind == 'pioneer':
+                data['teamOur']['roles'][0]['health'] = 100
+            else:
+                data['teamOur']['roles'].append(unit(33, 'wall', 1, 1, health=400))
+            turn, cfg, nav, ledger = setup_case(data)
+            self.assertEqual(reserve_treasure_gold(turn, cfg, mem, nav, ledger, turn.pioneer), 0)
+
+    def test_saved_list_survives_news_eviction_and_resumes_next_day(self):
+        mem = Memory(news=NEWS)
+        self.assertEqual(self.decide(case(x=0), mem).commands['11']['action'], 'move')
+        mem.news = []
+        self.assertFalse(self.decide(case(round_no=460), mem).commands)
+        self.assertEqual(self.decide(case(round_no=521), mem).commands['11']['action'], 'buy')
