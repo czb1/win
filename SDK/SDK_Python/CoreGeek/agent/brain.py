@@ -11,6 +11,7 @@ from .combat import assignments, return_plan, defend, emergency_items, shared_cr
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
+from .wall_watch import select_watch, prepare_watch, repair_watch
 
 LOG = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ def battle_diagnostics(turn, mem, pairs, response):
         "hostileNear": [{"id": r.id, "kind": r.kind, "pos": r.pos, "health": r.health}
                         for r in near[:12]], "walls": walls, "towers": towers,
         "previousShots": previous_shots,
+        "wallWatch": mem.wall_watch_id,
         "gunner": {"id": mem.gunner_id, "post": mem.gunner_post, "stalled": mem.gunner_stalled},
         "crew": [{"id": h.id, "pos": h.pos, "action": commands.get(str(h.id))}
                  for h in turn.heroes]}, ensure_ascii=False, separators=(",", ":")))
@@ -162,6 +164,7 @@ class Agent:
                     pairs = [(hero, tower) for hero, tower in pairs if needs_defence(hero, tower)]
                 mem.return_targets.clear()
                 mem.return_posts.clear()
+            watcher = select_watch(turn, mem, pairs)
             ledger.return_pairs = pairs
             ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
             returning = set()
@@ -224,6 +227,12 @@ class Agent:
                 if shared is not None and mem.gunner_post:
                     ledger.reserved.add(mem.gunner_post)
                 for hero in turn.heroes:
+                    if watcher and hero.id == watcher.id and hero.id not in ledger.used:
+                        if hero.health <= 165 and hero.inventory["Medicine"]:
+                            use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem)
+                        elif not repair_watch(turn, mem, nav, ledger, hero, walls):
+                            night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=shared is not None)
+                        continue
                     if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
                         continue
                     if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs}:
@@ -243,6 +252,11 @@ class Agent:
                             if shared is not None and returning else None)
                 defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning], ledger.operator_posts)
                 ledger.reserved.update(corridor or ())
+                watch_locked, watch_gold = prepare_watch(turn, self.cfg, mem, nav, ledger, watcher, walls)
+                if watch_locked:
+                    returning.add(watcher.id)
+                watch_gold = min(watch_gold, ledger.gold)
+                ledger.gold -= watch_gold
                 if not turn.phase_task:
                     mem.recovery.resume(turn, self.cfg, mem, nav, ledger, returning)
                     mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning, loops_only=True)

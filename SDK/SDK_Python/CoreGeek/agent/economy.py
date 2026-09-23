@@ -5,6 +5,7 @@ from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, sale_inventory
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites
+from .wall_health import needs_night_repair
 
 
 def walk(nav, ledger, hero, targets):
@@ -110,8 +111,10 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
             route = nav.approach(hero, building.cells, ledger.reserved)
             if route and (not local_only or route[0] == 0):
                 upgrades.append((upgrade_order(turn, building, mem), route[0], name, building, route))
-        if (building.kind == "wall" and hero.inventory["WallFixer"] and building.health < 500
-                and building.id not in ledger.repair_claims):
+        if (building.kind == "wall" and hero.inventory["WallFixer"]
+                and (building.health < 500 if turn.is_day else needs_night_repair(building))
+                and building.id not in ledger.repair_claims
+                and not (mem and turn.day >= 4 and hero.id == mem.wall_watch_id)):
             route = nav.approach(hero, building.cells, ledger.reserved)
             if route and (not local_only or route[0] == 0):
                 upgrades.append(((1.5, building.health, building.id), route[0], "WallFixer", building, route))
@@ -176,7 +179,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                 continue
             candidates.append((upgrade_order(turn, building, mem), name, building.cells))
         damaged = [w for w in turn.ours if w.kind == "wall" and w.health < 500]
-        if damaged and not any(h.inventory["WallFixer"] for h in turn.heroes):
+        if (damaged and mem.wall_watch_id is None
+                and not any(h.inventory["WallFixer"] for h in turn.heroes)):
             candidates.append(((1.5,), "WallFixer", damaged[0].cells))
     seen = set()
     for _, name, destinations in sorted(candidates, key=lambda c: c[0]):
