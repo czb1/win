@@ -112,6 +112,22 @@ class EconomyRegressionTests(unittest.TestCase):
         worker(t, c, Memory(), n, l, t.workers[0], [], list(map(tuple, sites)), True)
         self.assertEqual(l.commands["1"]["action"], "move")
 
+    def test_builder_without_a_deadline_fit_does_not_idle_at_wall(self):
+        p = payload(38, roles=[unit(1, "worker", 5, 8),
+                               unit(13, "station", 3, 11),
+                               unit(20, "rocket", 5, 9, level=1)])
+        p["mapInfo"]["zones"] = [
+            {"neutralType": "iron", "pos": {"x": 11, "y": 7}},
+            {"neutralType": "vendor", "pos": {"x": 9, "y": 7}},
+        ]
+        p["vendorShopList"] = [{"name": "iron", "price": 10}]
+        t, c, n, l = setup_case(p, layout_mode="explicit", weapon_cells=[[5, 9]],
+                                 wall_cells=[[6, y] for y in range(8, 14)])
+        worker(t, c, Memory(), n, l, t.workers[0], [(5, 9)],
+               [(6, y) for y in range(8, 14)], True, develop=True,
+               shopping=False, deadline=40)
+        self.assertIn(l.commands["1"]["action"], {"move", "collect"})
+
 
 if __name__ == "__main__":
     unittest.main()

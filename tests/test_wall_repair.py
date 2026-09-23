@@ -206,11 +206,11 @@ class WallRepairTests(unittest.TestCase):
         m.observe(Turn(p, c), c)
         self.assertNotIn((5, 8), m.wall_rebuild_levels)
 
-    def test_level_one_neighbours_do_not_trigger_extra_upgrades(self):
+    def test_replacement_reaches_at_least_two_even_with_level_one_neighbours(self):
         p, c, m = self.repair_case(neighbour_level=1)
         p["teamOur"]["roles"].append(unit(99, "wall", 5, 8, health=1000))
         m.observe(Turn(p, c), c)
-        self.assertFalse(m.wall_rebuild_levels)
+        self.assertEqual(m.wall_rebuild_levels[(5, 8)], 2)
 
     def test_unobserved_destruction_across_round_gap_is_remembered(self):
         p, c, m = self.repair_case()

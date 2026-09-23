@@ -287,13 +287,19 @@ class Memory:
     last_response: dict | None = None
     last_digest: str = ""
     wall_health: dict = field(default_factory=dict)
+    wall_levels: dict = field(default_factory=dict)
     wall_hits: dict = field(default_factory=dict)
     wall_rebuild_levels: dict = field(default_factory=dict)
     wall_repair_worker: int | None = None
     wall_repair_delivering: bool = False
     station_health: int | None = None
+    station_health_peaks: dict = field(default_factory=dict)
 
     def observe(self, turn, cfg):
+        if turn.station:
+            level = turn.station.level
+            self.station_health_peaks[level] = max(self.station_health_peaks.get(level, 0),
+                                                   turn.station.health)
         self.movement.observe(turn, self)
         self.recovery.observe(turn, self)
         current_walls = {wall.pos: (wall.id, wall.health) for wall in turn.ours if wall.kind == "wall"}
@@ -305,10 +311,14 @@ class Memory:
         # Keep repair intent across day boundaries and replacement unit IDs.
         sites = layout(turn, cfg)[1]
         lost = set(self.wall_health) - set(current_walls)
-        gaps = wall_gaps(turn, sites, self.wall_hits) | (lost & set(sites))
+        replaced = {p for p, (uid, _) in current_walls.items()
+                    if p in self.wall_health and self.wall_health[p][0] != uid}
+        gaps = wall_gaps(turn, sites, self.wall_hits) | ((lost | replaced) & set(sites))
         levels = {w.pos: w.level for w in turn.ours if w.kind == "wall"}
         for p in gaps:
-            self.wall_rebuild_levels.setdefault(p, 1)
+            self.wall_rebuild_levels[p] = max(2 if p in lost or p in replaced else 1,
+                                              self.wall_levels.get(p, 1),
+                                              self.wall_rebuild_levels.get(p, 1))
         # Propagate intact boundary levels through multi-cell breaches.
         for _ in range(len(gaps) + 1):
             for p in self.wall_rebuild_levels:
@@ -321,6 +331,7 @@ class Memory:
             if levels.get(p, 0) >= level:
                 del self.wall_rebuild_levels[p]
         self.wall_health = current_walls
+        self.wall_levels = levels
         if self.day != turn.day:
             self.day, self.calls = turn.day, 0
             self.wall_repair_worker = None

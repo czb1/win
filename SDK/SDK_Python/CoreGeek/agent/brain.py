@@ -8,7 +8,7 @@ from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
 from .combat import assignments, return_plan, defend, emergency_items, shared_crew, shared_defend, clear_gunner_route
-from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector
+from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
 
@@ -236,6 +236,7 @@ class Agent:
                         elif turn.station:
                             walk(nav, ledger, hero, turn.station.cells)
             else:
+                dusk_resources(turn, self.cfg, mem, nav, ledger, towers)
                 for hero, tower in pairs:
                     if hero.id in returning and hero.id not in ledger.used:
                         finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)

@@ -35,6 +35,7 @@ def simulate(agent_class, config_class, days=5):
             "vendorShopList": [{"name": "copper", "price": 10}, {"name": "stone", "price": 1}]}
     actions, purchases, upgrades = Counter(), Counter(), Counter()
     first, invalid, worst = {}, 0, 0
+    dusk_vouchers, early_station_purchases = [], 0
 
     def point(r):
         return r["pos"]["x"], r["pos"]["y"]
@@ -86,6 +87,9 @@ def simulate(agent_class, config_class, days=5):
                     legal &= (name in shop and shop[name] * num <= data["teamOur"]["goldNum"]
                               and len(actor["backpack"]) + num <= actor["backPackCapability"])
                     if legal:
+                        if name.startswith("StationUpgradeVoucher") and any(
+                                r["roleType"] == "wall" and r["level"] < 3 for r in roles):
+                            early_station_purchases += 1
                         data["teamOur"]["goldNum"] -= shop[name] * num
                         actor["backpack"] += [name] * num
                         purchases[name] += num
@@ -119,11 +123,16 @@ def simulate(agent_class, config_class, days=5):
                 invalid += 1
             results[uid] = bool(legal)
         data["lastRoundRoleActionResults"] = results
+        if rno % 130 == 69:
+            dusk_vouchers.append(sum("UpgradeVoucher" in item
+                                     for r in roles for item in r["backpack"]))
     return {"scope": "controlled infinite deposits and fixed prices; no battle or win rate",
             "days": days, "gold": data["teamOur"]["goldNum"], "invalid_actions": invalid,
             "weapon_levels": [r["level"] for r in roles if r["roleType"] == "rocket"],
             "station_level": next(r["level"] for r in roles if r["roleType"] == "station"),
             "walls": sum(r["roleType"] == "wall" for r in roles), "first_rounds": first,
+            "wall_levels": [r["level"] for r in roles if r["roleType"] == "wall"],
+            "dusk_vouchers": dusk_vouchers, "early_station_purchases": early_station_purchases,
             "purchases": dict(purchases), "upgrades": dict(upgrades), "actions": dict(actions),
             "worst_ms": round(worst, 2)}
 

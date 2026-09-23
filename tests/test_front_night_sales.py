@@ -1,4 +1,4 @@
-"""Deterministic frontline, night release and once-per-day sale policies."""
+"""Deterministic frontline, night release and daily sale/liquidation policies."""
 import unittest
 
 from test_agent import payload, unit, setup_case
@@ -9,16 +9,16 @@ from agent.intelligence import Memory
 from agent.mining import earn
 from agent.model import Turn
 from agent.navigation import layout
-from agent.economy import build, wall_keeps_access
+from agent.economy import build, dusk_resources, wall_keeps_access
 
 
 class DailySaleTests(unittest.TestCase):
-    def test_mixed_batch_then_new_ore_waits_for_next_day(self):
+    def test_mixed_batch_stops_stockpiling_at_tick_40_without_forced_sale(self):
         mem = Memory(day=1)
         for rno, inventory, expected in (
                 (38, ['copper', 'iron'], 'sell'),
                 (39, ['iron'], 'sell'),
-                (40, [], 'collect'),
+                (40, [], None),
                 (41, ['iron'] * 100, None),
                 (130, ['iron'] * 100, 'sell')):
             p = mining_case(rno, inventory, zones=[('iron', 6, 5), ('vendor', 4, 5)])
@@ -59,14 +59,29 @@ class DailySaleTests(unittest.TestCase):
         earn(t, cfg, mem, nav, ledger, t.workers[0], deadline=40)
         self.assertEqual(ledger.commands['1']['action'], 'sell')
 
-    def test_interrupted_visit_cannot_restart_after_other_work(self):
+    def test_liquidation_reopens_interrupted_visit_after_other_work(self):
         mem = Memory(day=1, sold_workers={1}, sale_workers={1}, last_round=45,
                      last_commands={'1': {'action': 'collect', 'targetPos': [{'x': 6, 'y': 5}]}})
         p = mining_case(46, ['iron'] * 100, zones=[('iron', 6, 5), ('vendor', 4, 5)])
         t, cfg, nav, ledger = setup_case(p)
         mem.observe(t, cfg)
         earn(t, cfg, mem, nav, ledger, t.workers[0], force_sale=True)
-        self.assertFalse(ledger.commands)
+        self.assertEqual(ledger.commands['1'], {'action': 'sell', 'name': 'iron', 'num': 100})
+
+    def test_dusk_pass_reopens_completed_sale_from_tick_40_each_day(self):
+        for day in (1, 4):
+            for tick in (39, 40):
+                with self.subTest(day=day, tick=tick):
+                    p = mining_case((day - 1) * 130 + tick, ['iron'] * 3,
+                                    zones=[('iron', 6, 5), ('vendor', 4, 5)])
+                    t, cfg, nav, ledger = setup_case(p)
+                    mem = Memory(day=day, sold_workers={1})
+                    dusk_resources(t, cfg, mem, nav, ledger, [])
+                    if tick == 39:
+                        self.assertFalse(ledger.commands)
+                    else:
+                        self.assertEqual(ledger.commands['1'],
+                                         {'action': 'sell', 'name': 'iron', 'num': 3})
 
 
 class NightMiningTests(unittest.TestCase):
