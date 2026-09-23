@@ -67,7 +67,7 @@ class DuskResourceTests(unittest.TestCase):
 
     def test_sixty_spends_affordable_wall_money_when_weapon_is_too_expensive(self):
         p = self.case(gold=30)
-        t, c, n, l = self.setup(p, economy_rounds=69)
+        t, c, n, l = self.setup(p)
         dusk_resources(t, c, Memory(), n, l, [(3, 3)])
         self.assertEqual(l.commands["1"], command("buy", name="WallUpgradeVoucher1", num=1))
 

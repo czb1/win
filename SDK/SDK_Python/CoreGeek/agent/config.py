@@ -18,6 +18,7 @@ class Config:
     stone_batch: int = 10
     sell_batch: int = 40
     sell_batch_max: int = 80
+    # Inclusive last daylight tick reserved exclusively for worker mining.
     economy_rounds: int = 40
     return_margin: int = 5
     task_min_rounds: int = 12

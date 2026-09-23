@@ -148,11 +148,14 @@ class SpareMiningTests(unittest.TestCase):
         self.assertEqual(hero["backpack"], ["iron"] * 2)
         self.assertNotIn("sell", actions)
         self.assertEqual(distance((hero["pos"]["x"], hero["pos"]["y"]), (4, 8)), 1)
-        # Continuing the following day with a nearby vendor liquidates the
-        # saved load normally; no permanent stockpiling state is introduced.
+        # The next day's mining phase preserves the saved load even beside
+        # a vendor; liquidation resumes after the inclusive mining cutoff.
         p["roundNo"] = 130
         p["mapInfo"]["zones"] = [{"neutralType": "vendor", "pos": {"x": 4, "y": 8}}]
         p["teamOur"]["roles"] = [hero]
+        result = agent.decide(p)
+        self.assertNotIn("1", result["roleCommandMap"])
+        p["roundNo"] = 171
         result = agent.decide(p)
         self.assertEqual(result["roleCommandMap"]["1"],
                          command("sell", name="iron", num=len(hero["backpack"])))

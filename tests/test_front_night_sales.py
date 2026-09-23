@@ -68,16 +68,16 @@ class DailySaleTests(unittest.TestCase):
         earn(t, cfg, mem, nav, ledger, t.workers[0], force_sale=True)
         self.assertEqual(ledger.commands['1'], {'action': 'sell', 'name': 'iron', 'num': 100})
 
-    def test_dusk_pass_reopens_completed_sale_from_tick_40_each_day(self):
+    def test_dusk_pass_reopens_completed_sale_from_tick_41_each_day(self):
         for day in (1, 4):
-            for tick in (39, 40):
+            for tick in (39, 40, 41):
                 with self.subTest(day=day, tick=tick):
                     p = mining_case((day - 1) * 130 + tick, ['iron'] * 3,
                                     zones=[('iron', 6, 5), ('vendor', 4, 5)])
                     t, cfg, nav, ledger = setup_case(p)
                     mem = Memory(day=day, sold_workers={1})
                     dusk_resources(t, cfg, mem, nav, ledger, [])
-                    if tick == 39:
+                    if tick <= 40:
                         self.assertFalse(ledger.commands)
                     else:
                         self.assertEqual(ledger.commands['1'],

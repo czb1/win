@@ -151,7 +151,7 @@ class ConstructionRegressionTests(unittest.TestCase):
         self.assertNotIn(tuple(cmd["targetPos"][0].values()), sites)
 
     def test_both_workers_build_after_old_day_one_cap(self):
-        p = payload(roles=[unit(1, "worker", 3, 3, backpack=["stone"]),
+        p = payload(41, roles=[unit(1, "worker", 3, 3, backpack=["stone"]),
                            unit(2, "worker", 7, 3, backpack=["stone"])]
                           + [unit(20+i, "wall", i, 10) for i in range(6)])
         cfg = Config(layout_mode="explicit", weapon_cells=[], wall_cells=[[3, 4], [7, 4]],

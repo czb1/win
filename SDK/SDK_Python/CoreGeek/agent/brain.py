@@ -11,6 +11,7 @@ from .combat import assignments, return_plan, defend, emergency_items, shared_cr
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
+from .economy_plan import mining_only
 
 LOG = logging.getLogger(__name__)
 
@@ -236,6 +237,16 @@ class Agent:
                         elif turn.station:
                             walk(nav, ledger, hero, turn.station.cells)
             else:
+                if mining_only(turn, self.cfg):
+                    workers(turn, self.cfg, mem, nav, ledger, towers, walls)
+                    # Even a full/blocked miner must not fall through to
+                    # returning, recovery, upgrades or blueprint clearing.
+                    miner_ids = {worker.id for worker in turn.workers}
+                    ledger.used.update(miner_ids)
+                    returning.difference_update(miner_ids)
+                    for uid in miner_ids:
+                        mem.return_targets.pop(uid, None)
+                        mem.return_posts.pop(uid, None)
                 dusk_resources(turn, self.cfg, mem, nav, ledger, towers)
                 for hero, tower in pairs:
                     if hero.id in returning and hero.id not in ledger.used:

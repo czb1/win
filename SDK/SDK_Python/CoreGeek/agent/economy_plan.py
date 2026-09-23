@@ -3,6 +3,11 @@ from dataclasses import replace
 from .model import Unit, ORES, neighbours
 
 
+def mining_only(turn, cfg):
+    """The configured last mining tick is inclusive, on every game day."""
+    return turn.is_day and turn.tick <= cfg.economy_rounds
+
+
 def planned_weapons(turn, cfg, mem, sites):
     weapons = list(turn.weapons)
     occupied = {p for u in (*turn.ours, *turn.enemies) if u.kind not in ("worker", "pioneer")

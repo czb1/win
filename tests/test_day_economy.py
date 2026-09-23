@@ -74,8 +74,8 @@ class DayEconomyTests(unittest.TestCase):
         t, cfg, nav, ledger = setup_case(p)
         self.assertIsNone(supplies(t, cfg, Memory(), nav, ledger, t.workers[0], bulk=True))
 
-    def test_urgent_healing_is_not_delayed_to_round_40(self):
-        p = self.case(5, 20)
+    def test_urgent_healing_resumes_after_mining_phase(self):
+        p = self.case(41, 20)
         p["teamOur"]["roles"][0].update(health=50, pos={"x": 9, "y": 5})
         result = Agent(Config(llm_enabled=False)).decide(p)
         self.assertEqual(result["roleCommandMap"]["1"], command("buy", name="Medicine", num=1))
