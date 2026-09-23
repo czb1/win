@@ -196,10 +196,17 @@ class SuppliesTests(unittest.TestCase):
         self.assertEqual(result["invalid_actions"], 0)
         self.assertEqual(result["weapon_levels"], [3, 3, 3])
         self.assertEqual(result["station_level"], 3)
-        self.assertEqual(result["purchases"].get("WallUpgradeVoucher2", 0), 0)
+        self.assertGreater(result["purchases"].get("WallUpgradeVoucher2", 0), 0)
+        self.assertEqual(result["wall_levels"], [3] * result["walls"])
+        self.assertEqual(result["early_station_purchases"], 0)
+        self.assertEqual(result["dusk_vouchers"], [0] * 5)
         self.assertGreater(result["purchases"]["Medicine"], 0)
         self.assertLess(result["first_rounds"]["used_WeaponUpgradeVoucher2"], 70)
-        self.assertGreater(result["gold"], 2660)
+        # Count gold converted into wall health alongside cash: the previous
+        # floor accidentally rewarded never buying level-3 wall upgrades.
+        wall_spend = sum(result["purchases"].get(f"WallUpgradeVoucher{level}", 0) * price
+                         for level, price in ((1, 20), (2, 30)))
+        self.assertGreater(result["gold"] + wall_spend, 2660)
         self.assertLess(result["worst_ms"], 1000)
 
 
