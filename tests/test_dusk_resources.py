@@ -40,7 +40,7 @@ class DuskResourceTests(unittest.TestCase):
 
     def test_critical_base_does_not_bypass_wall_purchase_gate(self):
         p = self.case()
-        p["teamOur"]["roles"][1]["health"] = 700
+        p["teamOur"]["roles"][1]["health"] = 300
         t, c, n, l = self.setup(p)
         self.assertEqual(supplies(t, c, Memory(), n, l, t.workers[0])[0], "WeaponUpgradeVoucher2")
         # Already-owned healing is still usable without buying another item.
@@ -49,11 +49,38 @@ class DuskResourceTests(unittest.TestCase):
         self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=Memory()))
         self.assertEqual(l.commands["1"]["name"], "StationUpgradeVoucher1")
 
+    def test_critical_base_waits_for_wall_repair_and_upgrade(self):
+        p = self.case(gold=100)
+        p["teamOur"]["roles"][1]["health"] = 300
+        p["teamOur"]["roles"][3]["level"] = 2
+        t, c, n, l = self.setup(p)
+        plan = supplies(t, c, Memory(), n, l, t.workers[0])
+        self.assertEqual(plan[0], "WallUpgradeVoucher2")
+
+        # After the wall reaches level three, the same emergency budget can
+        # be converted into the base upgrade and restore it to full health.
+        p["teamOur"]["roles"][3]["level"] = 3
+        p["teamOur"]["goldNum"] = 100
+        t, c, n, l = self.setup(p)
+        self.assertEqual(supplies(t, c, Memory(), n, l, t.workers[0])[0],
+                         "StationUpgradeVoucher1")
+
     def test_sixty_spends_affordable_wall_money_when_weapon_is_too_expensive(self):
         p = self.case(gold=30)
         t, c, n, l = self.setup(p, economy_rounds=69)
         dusk_resources(t, c, Memory(), n, l, [(3, 3)])
         self.assertEqual(l.commands["1"], command("buy", name="WallUpgradeVoucher1", num=1))
+
+    def test_wall_batch_policy_starts_on_day_four(self):
+        # The new late-cash sweep must not change the first three days. On
+        # day 3 a wall purchase remains the established single-voucher path;
+        # day 4 may batch only when the complete route fits before night.
+        for round_no, expected_max in ((320, 1), (450, 2)):
+            p = self.case(round_no, gold=600)
+            p["teamOur"]["roles"].append(unit(31, "wall", 4, 2, health=1000))
+            t, c, n, l = self.setup(p)
+            plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
+            self.assertLessEqual(plan[2], expected_max)
 
     def test_sweep_is_day_local_and_leaves_earlier_turns_alone(self):
         for round_no, origin, active in ((59, 0, False), (60, 0, True), (70, 0, False),
