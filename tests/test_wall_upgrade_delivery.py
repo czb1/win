@@ -6,7 +6,8 @@ from test_agent import payload, setup_case, unit
 from agent.brain import Agent
 from agent.config import Config
 from agent.commands import command
-from agent.economy import supplies, use_inventory, workers, wall_upgrade_allowed
+from agent.economy import (supplies, use_inventory, workers, wall_upgrade_allowed,
+                           upgrade_order, dusk_batch)
 from agent.economy_plan import preparation_start
 from agent.intelligence import Memory
 from agent.model import Turn
@@ -94,6 +95,74 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher1"]
         t, c, n, l = self.setup(p)
         self.assertIsNone(supplies(t, c, Memory(), n, l, t.workers[0], bulk=True))
+
+    def front_case(self, tick=40, rows=range(2, 9), mirror=False):
+        p = self.case(tick)
+        p["teamOur"]["roles"][0].update(pos={"x": 6, "y": 2}, backpack=["WallUpgradeVoucher2"])
+        p["teamOur"]["roles"] = p["teamOur"]["roles"][:3] + [
+            unit(30 + y, "wall", 7, y, level=2, health=1000) for y in rows
+        ] + [unit(50, "wall", 5, 2, level=2, health=1000)]
+        if mirror:
+            for r in p["teamOur"]["roles"]:
+                r["pos"]["x"] = 14 - r["pos"]["x"] - (1 if r["roleType"] == "station" else 0)
+            p["mapInfo"]["zones"][0]["pos"]["x"] = 8
+        return p
+
+    def test_front_three_expands_in_symmetric_layers_before_flanks(self):
+        for rows in (range(2, 9), range(2, 8)):
+            for mirror in (False, True):
+                with self.subTest(rows=list(rows), mirror=mirror):
+                    p = self.front_case(rows=rows, mirror=mirror)
+                    midpoint = (min(rows) + max(rows)) / 2
+                    for radius in sorted({abs(y - midpoint) for y in rows}):
+                        t, _, _, _ = self.setup(p)
+                        allowed = {w.pos[1] for w in t.ours if w.kind == "wall" and w.level == 2
+                                   and wall_upgrade_allowed(t, w, Memory())}
+                        self.assertEqual(allowed, {y for y in rows if abs(y - midpoint) == radius})
+                        for w in p["teamOur"]["roles"][3:-1]:
+                            if w["pos"]["y"] in allowed:
+                                w["level"] = 3
+                    t, _, _, _ = self.setup(p)
+                    self.assertTrue(wall_upgrade_allowed(t, t.ours[-1], Memory()))
+
+    def test_front_center_beats_nearer_edge_old_target_and_recovery(self):
+        for mirror in (False, True):
+            for tick in (40, 65, 450, 455):
+                with self.subTest(mirror=mirror, tick=tick):
+                    p = self.front_case(tick, mirror=mirror)
+                    t, c, n, l = self.setup(p)
+                    center = next(w for w in t.ours if w.id == 35)
+                    edge = next(w for w in t.ours if w.id == 32)
+                    mem = Memory(upgrade_targets={1: edge.pos})
+                    self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=mem))
+                    self.assertEqual(mem.upgrade_targets[1], center.pos)
+                    self.assertIn(center.id, l.upgrade_claims)
+                    self.assertIsNone(Recovery().action((1, "use", edge.pos), t, c, mem, n, l))
+                    # A claimed inner wall is still level 2 until the next observation.
+                    self.assertFalse(wall_upgrade_allowed(t, edge, mem))
+
+    def test_rebuilt_front_edge_keeps_emergency_priority(self):
+        t, _, n, l = self.setup(self.front_case())
+        edge = next(w for w in t.ours if w.id == 32)
+        mem = Memory(wall_rebuild_levels={edge.pos: 3})
+        self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=mem))
+        self.assertEqual(l.commands["1"], command("use", edge.pos, name="WallUpgradeVoucher2"))
+
+    def test_late_purchase_keeps_prefetch_but_budgets_center_first(self):
+        p = self.front_case(450)
+        p["teamOur"]["roles"][0]["backpack"] = []
+        t, c, n, l = self.setup(p)
+        plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan[0], "WallUpgradeVoucher2")
+        self.assertGreater(plan[2], 1)
+        # One remaining turn could use the adjacent edge, but not the center.
+        p["roundNo"] = 459
+        t, _, n, l = self.setup(p)
+        batch = [(upgrade_order(t, w, Memory()), "WallUpgradeVoucher2", w.cells)
+                 for w in t.ours if w.kind == "wall"]
+        count, _ = dusk_batch(t, n, l, t.workers[0], batch, 8, 0, require_home=False)
+        self.assertEqual(count, 0)
 
     def test_recovery_cannot_skip_front_wall_stage(self):
         p = self.case()

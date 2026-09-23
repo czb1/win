@@ -57,7 +57,14 @@ def dusk_batch(turn, nav, ledger, hero, candidates, count, elapsed, require_home
     pending, delivered = list(candidates), 0
     while pending and delivered < count:
         options = []
-        for index, (priority, _, cells) in enumerate(pending):
+        # Budget ordinary level-3 walls in the same center-out stages as use.
+        # A nearby edge cannot stand in for an inner delivery that won't fit.
+        stages = [priority[1:4] for priority, name, _ in pending
+                  if name == "WallUpgradeVoucher2" and priority[0] >= 0]
+        for index, (priority, name, cells) in enumerate(pending):
+            if (name == "WallUpgradeVoucher2" and priority[0] >= 0
+                    and priority[1:4] != min(stages)):
+                continue
             stop = dusk_stop(turn, nav, ledger, hero, cells, actions=elapsed + 1,
                              require_home=require_home)
             if stop:
@@ -139,14 +146,23 @@ def rebuilding_wall(turn, building, mem):
 
 
 def wall_upgrade_allowed(turn, building, mem=None):
-    """Replacements first; then all level 2, front level 3, flank level 3."""
+    """Replacements first; all level 2, front center outward, then flanks."""
     if building.kind != "wall" or building.level == 1 or rebuilding_wall(turn, building, mem):
         return True
     walls = [w for w in turn.ours if w.kind == "wall"]
     if any(w.level == 1 for w in walls):
         return False
-    return (wall_sector(turn, building) == "front"
-            or not any(w.level < 3 and wall_sector(turn, w) == "front" for w in walls))
+    stage = wall_three_stage(turn, building)
+    return not any(w.level < 3 and wall_three_stage(turn, w) < stage for w in walls)
+
+
+def wall_three_stage(turn, building):
+    """Equal distances from the full front's midpoint share a level-3 stage."""
+    if wall_sector(turn, building) != "front":
+        return (1, 0)
+    # Include completed walls so the midpoint cannot drift during upgrades.
+    ys = [w.pos[1] for w in turn.ours if w.kind == "wall" and w.pos[0] == building.pos[0]]
+    return (0, abs(2 * building.pos[1] - min(ys) - max(ys)))
 
 
 def walls_ready_for_station(turn, mem):
@@ -242,7 +258,8 @@ def upgrade_order(turn, building, mem=None):
     if mem is not None and exposed_wall(turn, building, mem):
         return (1.25, -mem.wall_hits.get(building.pos, 0), building.health,
                 turn.base_distance(building.pos), building.id)
-    return (1.75, building.level, int(building.pos[0] != front), building.health, building.id)
+    stage = wall_three_stage(turn, building) if building.level == 2 else (int(building.pos[0] != front), 0)
+    return (1.75, building.level, *stage, building.health, building.id)
 
 
 def voucher_for(building):
