@@ -38,11 +38,16 @@ class DuskResourceTests(unittest.TestCase):
                 plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
                 self.assertEqual(plan[0], f"WallUpgradeVoucher{level}")
 
-    def test_critical_base_heal_remains_first(self):
+    def test_critical_base_does_not_bypass_wall_purchase_gate(self):
         p = self.case()
         p["teamOur"]["roles"][1]["health"] = 700
         t, c, n, l = self.setup(p)
-        self.assertEqual(supplies(t, c, Memory(), n, l, t.workers[0])[0], "StationUpgradeVoucher1")
+        self.assertEqual(supplies(t, c, Memory(), n, l, t.workers[0])[0], "WeaponUpgradeVoucher2")
+        # Already-owned healing is still usable without buying another item.
+        p["teamOur"]["roles"][0]["backpack"] = ["StationUpgradeVoucher1", "WeaponUpgradeVoucher2"]
+        t, c, n, l = self.setup(p)
+        self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=Memory()))
+        self.assertEqual(l.commands["1"]["name"], "StationUpgradeVoucher1")
 
     def test_sixty_spends_affordable_wall_money_when_weapon_is_too_expensive(self):
         p = self.case(gold=30)
