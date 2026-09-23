@@ -89,12 +89,41 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                 self.assertIn(front.id, l.upgrade_claims)
                 self.assertFalse(wall_upgrade_allowed(t, flank, mem))
 
-    def test_no_virtual_next_wall_level_from_unspent_prerequisite(self):
+    def test_prefetch_next_wall_level_from_paid_prerequisite(self):
         p = self.case()
         p["teamOur"]["roles"][3]["level"] = 1
         p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher1"]
         t, c, n, l = self.setup(p)
-        self.assertIsNone(supplies(t, c, Memory(), n, l, t.workers[0], bulk=True))
+        plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
+        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 2))
+
+    def test_shop_buys_both_wall_tiers_before_delivery(self):
+        for rebuilding in (False, True):
+            p = self.case()
+            for w in p["teamOur"]["roles"][3:]:
+                w["level"] = 1
+            p["teamOur"]["roles"].append(unit(32, "wall", 7, 4, level=2, health=1000))
+            mem = Memory(wall_rebuild_levels={(7, 5): 3, (5, 4): 3} if rebuilding else {})
+            for name, count in (("WallUpgradeVoucher1", 2), ("WallUpgradeVoucher2", 3)):
+                t, c, n, l = self.setup(p)
+                workers(t, c, mem, n, l, [(4, 6)], [(7, 5), (5, 4), (7, 4)])
+                self.assertEqual(l.commands["1"], command("buy", name=name, num=count))
+                p["teamOur"]["goldNum"] -= t.shop[name] * count
+                p["teamOur"]["roles"][0]["backpack"] += [name] * count
+            t, c, n, l = self.setup(p)
+            workers(t, c, mem, n, l, [(4, 6)], [(7, 5), (5, 4), (7, 4)])
+            self.assertIn(l.commands["1"]["action"], ("use", "move"))
+
+    def test_prefetch_respects_money_space_and_delivery_deadline(self):
+        for gold, capacity, tick in ((0, 100, 40), (600, 1, 40), (600, 100, 69)):
+            p = self.case(tick)
+            p["teamOur"]["goldNum"] = gold
+            p["teamOur"]["roles"][3]["level"] = 1
+            p["teamOur"]["roles"][0].update(backpack=["WallUpgradeVoucher1"],
+                                           backPackCapability=capacity)
+            t, c, n, l = self.setup(p)
+            workers(t, c, Memory(), n, l, [(4, 6)], [(7, 5), (5, 4)])
+            self.assertNotEqual(l.commands.get("1", {}).get("action"), "buy")
 
     def front_case(self, tick=40, rows=range(2, 9), mirror=False):
         p = self.case(tick)

@@ -213,10 +213,10 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
         if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True):
             return True
         return allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero)
-    if hero.id in mem.sold_workers and hero.id not in mem.sale_workers:
-        if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=True):
+    if hero.id in mem.sold_workers and hero.id not in mem.sale_workers and not force_sale:
+        if turn.tick < 40 and mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=True):
             return True
-        if allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero):
+        if turn.tick < 40 and allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero):
             return True
         # A completed daily sale forbids another vendor visit, not useful
         # repositioning. Leave the vendor and return to a base/operator area.
@@ -229,7 +229,7 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
         return False
     vendors = [p for p, k in turn.zones.items() if k == "vendor"]
     options = [(r[0] != 0, p != mem.sale_targets.get(hero.id), r[0], p, r) for p in vendors
-               if (hero.id not in mem.sold_workers or p == mem.sale_targets.get(hero.id))
+               if (force_sale or hero.id not in mem.sold_workers or p == mem.sale_targets.get(hero.id))
                and not mem.movement.avoids(hero.id, p)
                and (r := nav.approach(hero, [p], ledger.reserved)) is not None]
     choice = min(options, default=None)
@@ -262,13 +262,17 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
     if total and (not hero.space or due or force_sale or hero.id in mem.sale_workers):
         if sell():
             return True
+    # A liquidation request must not silently turn into another mining trip.
+    if force_sale:
+        return False
     if mine(turn, cfg, mem, nav, ledger, hero, deadline=deadline):
         return True
     if sell():
         return True
     # A pause before a scheduled build/shop phase is not spare time: even one
     # extra trip can change who reaches a narrow construction entrance first.
-    spare_allowed = allow_spare and (deadline is None or deadline >= 70 or turn.tick >= deadline)
+    spare_allowed = (allow_spare and turn.tick < 40
+                     and (deadline is None or deadline >= 70 or turn.tick >= deadline))
     if spare_allowed and spare_mine(turn, cfg, mem, nav, ledger, hero):
         return True
     # When today's sale is impossible, keep the load and head home. This also
