@@ -173,6 +173,28 @@ def late_wall_relief(turn):
             and turn.weapons and all(w.level >= 3 for w in turn.weapons))
 
 
+def late_wall_phase(turn):
+    return (turn.day >= RESOURCE_POLICY_DAY and turn.is_day and turn.tick >= 40
+            and turn.weapons and all(w.level >= 3 for w in turn.weapons))
+
+
+def staged_wall_purchase_allowed(turn, building, mem=None):
+    """Allow late-day wall vouchers to be staged before the front is done.
+
+    The front-first rule still controls *use*.  Once the weapons are already
+    level three on day four or later, buying the next wall batches early is
+    safe: it lets the second worker shop while the first courier is delivering
+    the current batch, instead of leaving the cash stranded after the front
+    wall becomes eligible.
+    """
+    return bool(building and building.kind == "wall" and building.level < 3
+                and late_wall_phase(turn))
+
+
+def wall_purchase_allowed(turn, building, mem=None):
+    return wall_upgrade_allowed(turn, building, mem) or staged_wall_purchase_allowed(turn, building, mem)
+
+
 def replacement_work_pending(turn, mem):
     levels = {w.pos: w.level for w in turn.ours if w.kind == "wall"}
     return bool(mem and any(levels.get(p, 0) < level
@@ -310,7 +332,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
             name = voucher_for(building)
             if not name:
                 continue
-            if not wall_upgrade_allowed(turn, building, mem):
+            if not wall_purchase_allowed(turn, building, mem):
                 continue
             # Account for every voucher already carried, including vouchers
             # for the next level in a single shop trip. Never buy a duplicate.
@@ -320,7 +342,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                 # A wall's next level must exist before buying its next
                 # voucher, even if another carrier holds the prerequisite.
                 name = voucher_for(building) if bulk and building.kind != "wall" else None
-            if not name or not wall_upgrade_allowed(turn, building, mem):
+            if not name or not wall_purchase_allowed(turn, building, mem):
                 continue
             urgent_wall = (rebuilding_wall(turn, building, mem)
                            or not first_level_gun and exposed_wall(turn, building, mem))
@@ -802,9 +824,16 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
                            or w.kind == "wall" and voucher_for(w) in turn.shop for w in turn.ours)
                     or any(p not in built_walls and p not in mem.build_failures for p in wall_sites))
     cutoff = (preparation_start(turn, cfg, mem, nav, free, tower_sites) if work_remains else 70) if trading else 0
+    # Keep the selected supply worker in the preparation phase after a
+    # voucher batch is delivered.  The old condition only kept a carrier
+    # active while it still had a voucher in its backpack; after the last
+    # use, the worker fell back to mining before dusk and could never buy the
+    # next batch, leaving the shared gold untouched for the rest of the day.
     developing = {h.id for h in free if h.id not in trading or turn.tick >= cutoff
                   or h.id in mem.preparation_workers
                   or h.id in mem.sold_workers
+                  or h.id == mem.supply_worker
+                  or late_wall_phase(turn)
                   or any("UpgradeVoucher" in k or k == "WallFixer" for k in h.backpack)}
     repair_sites = repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites)
     free = [h for h in free if h.id not in ledger.used]
@@ -870,8 +899,17 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     carrying = next((h for h in free if h.id == mem.supply_worker
                      and any("UpgradeVoucher" in k for k in h.backpack)), None)
     eligible = {uid for _, uid in buyers}
-    buyer = (mem.supply_worker if mem.supply_worker in eligible or carrying
-             else min(buyers)[1] if buyers else None)
+    if mem.supply_worker in eligible and not carrying:
+        buyer = mem.supply_worker
+    elif eligible:
+        # While the current carrier is walking a delivery, let another
+        # worker purchase the next late-wall batch.  This is what prevents a
+        # two-voucher backpack from becoming a hard throughput limit.
+        buyer = min(buyers)[1]
+    elif carrying:
+        buyer = mem.supply_worker
+    else:
+        buyer = None
     mem.supply_worker = buyer
     # Complete the configured wall blueprint; the default contains the front and short connected flanks.
     selected_walls = wall_sites
