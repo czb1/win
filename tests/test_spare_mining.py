@@ -55,15 +55,28 @@ class UnreachableDefenceTests(unittest.TestCase):
 
 
 class SpareMiningTests(unittest.TestCase):
-    def test_late_adjacent_ore_is_collected_without_a_sale_trip(self):
-        t, cfg, nav, ledger = setup_case(late_case())
-        self.assertTrue(earn(t, cfg, Memory(), nav, ledger, t.workers[0]))
-        self.assertEqual(ledger.commands["1"], command("collect", (6, 5)))
+    def test_spare_collection_stops_at_tick_40(self):
+        for tick in (39, 40, 60):
+            with self.subTest(tick=tick):
+                t, cfg, nav, ledger = setup_case(late_case(rno=tick))
+                self.assertEqual(earn(t, cfg, Memory(), nav, ledger, t.workers[0]), tick < 40)
+                if tick < 40:
+                    self.assertEqual(ledger.commands["1"], command("collect", (6, 5)))
+                else:
+                    self.assertFalse(ledger.commands)
 
     def test_carried_ore_does_not_force_an_impossible_sale(self):
         t, cfg, nav, ledger = setup_case(late_case(inventory=["iron"] * 40))
         self.assertTrue(earn(t, cfg, Memory(sale_workers={1}), nav, ledger, t.workers[0]))
-        self.assertEqual(ledger.commands["1"], command("collect", (6, 5)))
+        self.assertEqual(ledger.commands["1"], command("move", (4, 6)))
+
+    def test_failed_liquidation_never_falls_back_to_collecting(self):
+        for tick in (39, 40, 60):
+            with self.subTest(tick=tick):
+                t, cfg, nav, ledger = setup_case(late_case(rno=tick, inventory=["iron"]))
+                self.assertFalse(earn(t, cfg, Memory(), nav, ledger, t.workers[0],
+                                      force_sale=True, allow_spare=False))
+                self.assertFalse(ledger.commands)
 
     def test_wait_before_preparation_does_not_start_an_extra_mining_trip(self):
         t, cfg, nav, ledger = setup_case(late_case(rno=39))
@@ -116,7 +129,7 @@ class SpareMiningTests(unittest.TestCase):
         self.assertFalse(spare_mine(t, cfg, mem, nav, ledger, t.workers[0]))
 
     def test_carry_ore_home_before_night_and_sell_next_day(self):
-        p = late_case()
+        p = late_case(inventory=["iron"] * 2)
         cfg = Config(layout_mode="explicit", llm_enabled=False)
         agent = Agent(cfg)
         actions = []
@@ -131,7 +144,8 @@ class SpareMiningTests(unittest.TestCase):
             elif cmd.get("action") == "move":
                 hero["pos"] = cmd["targetPos"][0].copy()
             p["lastRoundRoleActionResults"] = {"1": bool(cmd)}
-        self.assertGreaterEqual(actions.count("collect"), 2)
+        self.assertNotIn("collect", actions)
+        self.assertEqual(hero["backpack"], ["iron"] * 2)
         self.assertNotIn("sell", actions)
         self.assertEqual(distance((hero["pos"]["x"], hero["pos"]["y"]), (4, 8)), 1)
         # Continuing the following day with a nearby vendor liquidates the
