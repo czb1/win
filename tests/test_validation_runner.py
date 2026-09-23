@@ -1,12 +1,14 @@
-"""Validation selection must never silently weaken full acceptance."""
+"""Fast defaults exclude simulations; explicit full checks preserve coverage."""
 import io
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from run_checks import failure_excerpt, replay_test, run_units, select_tests
+from run_checks import failure_excerpt, main, replay_test, run_units, select_tests
 
 
 class ValidationRunnerTests(unittest.TestCase):
@@ -23,7 +25,7 @@ class ValidationRunnerTests(unittest.TestCase):
 
     def test_full_and_standard_discovery_keep_simulations(self):
         self.assertEqual(self.fixture().countTestCases(), 2)
-        suite, omitted = select_tests(self.fixture())
+        suite, omitted = select_tests(self.fixture(), quick=False)
         self.assertEqual(suite.countTestCases(), 2)
         self.assertEqual(omitted, 0)
         self.assertTrue(run_units(suite, io.StringIO()).wasSuccessful())
@@ -33,6 +35,31 @@ class ValidationRunnerTests(unittest.TestCase):
         self.assertEqual(suite.countTestCases(), 1)
         self.assertEqual(omitted, 1)
         self.assertTrue(run_units(suite, io.StringIO()).wasSuccessful())
+
+    def test_default_selection_omits_simulations(self):
+        suite, omitted = select_tests(self.fixture())
+        self.assertEqual(suite.countTestCases(), 1)
+        self.assertEqual(omitted, 1)
+
+    def test_cli_modes_gate_simulations_and_benchmark(self):
+        for flags, count, benchmark_calls, filename in (
+            ([], 1, 0, "quick.log"),
+            (["--quick"], 1, 0, "quick.log"),
+            (["--full"], 2, 1, "full.log"),
+        ):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory() as directory:
+                with patch("run_checks.unittest.TestLoader.discover", return_value=self.fixture()), \
+                     patch("run_checks.subprocess.run", return_value=SimpleNamespace(returncode=0)) as benchmark, \
+                     patch("sys.stdout", new_callable=io.StringIO) as output:
+                    self.assertEqual(main(flags + ["--log-dir", directory]), 0)
+                self.assertEqual(benchmark.call_count, benchmark_calls)
+                self.assertIn(f"tests={count},", output.getvalue())
+                self.assertTrue((Path(directory) / filename).is_file())
+
+    def test_cli_rejects_conflicting_modes(self):
+        with patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit) as error:
+            main(["--quick", "--full"])
+        self.assertEqual(error.exception.code, 2)
 
     def test_failure_and_output_are_preserved_in_log(self):
         class Broken(unittest.TestCase):

@@ -56,6 +56,7 @@ class EconomyCalibrationTests(unittest.TestCase):
         output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report["distribution"], ensure_ascii=False))
 
+    @replay_test
     def test_last_mineral_is_shared_and_respawn_only_visible_next_round(self):
         class Collectors:
             def __init__(self, cfg):
@@ -87,6 +88,7 @@ class EconomyCalibrationTests(unittest.TestCase):
         self.assertEqual(result["trace"], again["trace"])
         self.assertEqual(result["respawns"], again["respawns"])
 
+    @replay_test
     def test_seed_and_resource_density_are_explicit(self):
         class Idle:
             def __init__(self, cfg):
