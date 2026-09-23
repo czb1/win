@@ -1,4 +1,4 @@
-"""Bounded, source-checked hints; these are never executable treasure plans."""
+"""Source-checked hints and conservative preparation, never summon plans."""
 
 # Official task book, task supplies table. Keep the protocol spelling AcientTablet.
 ITEM_DESCRIPTIONS = {
@@ -10,6 +10,30 @@ ITEM_DESCRIPTIONS = {
     "IronWhistle": "回音铁哨：生铁哨子，锈迹，内部金属片碰撞脆响",
 }
 KINDS = ("items", "location", "time")
+
+
+def preparation_items(news, shop):
+    """Conservative appearance matching for one speculative set, never a summon.
+
+    Match independent visual features in the same source record. Model prose
+    cannot authorize purchases. These rules deliberately prefer missed matches
+    to guessing from a generic word such as 'light'.
+    """
+    texts = [n.get("folkLegends", "") for n in news]
+    if not any("三钥" in t or "三道封印" in t for t in texts):
+        return []
+    features = {
+        "AcientTablet": (("灰白",), ("石板",), ("刻", "铭文")),
+        "StarSand": (("银白",), ("粉末", "细沙"), ("发光", "冷光")),
+        "FlameBreath": (("水晶瓶", "晶石瓶"), ("橙红",), ("雾",)),
+        "FrostPotion": (("深蓝",), ("液体",), ("薄霜", "寒意")),
+        "ThornAmulet": (("藤蔓",), ("护符",), ("尖刺",)),
+        "IronWhistle": (("铁哨",), ("锈",), ("金属片",)),
+    }
+    found = [name for name, groups in features.items()
+             if any(all(any(word in t for word in group) for group in groups) for t in texts)]
+    # Ambiguous sets and absent shop entries must not become partial purchases.
+    return found if len(found) == 3 and all(name in shop for name in found) else []
 
 
 def merge_clues(previous, proposed, news):
