@@ -166,6 +166,34 @@ class WallWatchTests(unittest.TestCase):
         self.assertTrue(locked)
         self.assertEqual(ledger.commands['2'], {'action': 'buy', 'name': 'WallFixer', 'num': 3})
 
+    def test_agent_watch_preparation_waits_until_after_mining_phase(self):
+        for mirror in (False, True):
+            for tick in (5, 40, 41):
+                with self.subTest(mirror=mirror, tick=tick):
+                    p = self.case(tick=tick, mirror=mirror, packs=0, damaged=False)
+                    agent = Agent(Config(llm_enabled=False))
+                    commands = agent.decide(p)['roleCommandMap']
+                    mem = next(iter(agent.sessions.values()))
+                    self.assertEqual(mem.wall_watch_id, 2)
+                    if tick <= 40:
+                        self.assertEqual(set(commands), {'1', '2'})
+                        self.assertTrue(all(c['action'] == 'move' for c in commands.values()))
+                        self.assertEqual(set(mem.mine_targets), {1, 2})
+                    else:
+                        self.assertEqual(commands['2'],
+                                         {'action': 'buy', 'name': 'WallFixer', 'num': 3})
+
+    def test_reserved_watch_slots_do_not_trigger_early_shopping(self):
+        p = self.case(tick=40, packs=0, damaged=False)
+        p['teamOur']['roles'][2]['backPackCapability'] = 3
+        agent = Agent(Config(llm_enabled=False))
+        commands = agent.decide(p)['roleCommandMap']
+        self.assertEqual(next(iter(agent.sessions.values())).wall_watch_id, 2)
+        self.assertNotIn('2', commands)
+        p['roundNo'] += 1
+        self.assertEqual(agent.decide(p)['roleCommandMap']['2'],
+                         {'action': 'buy', 'name': 'WallFixer', 'num': 3})
+
     def test_early_day_reserves_gold_without_locking_worker(self):
         p = self.case(tick=5, packs=0)
         t, cfg, nav, ledger = setup_case(p)

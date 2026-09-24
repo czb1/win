@@ -4,7 +4,7 @@ from .commands import command
 from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, sale_inventory, return_destination
-from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites
+from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, mining_only
 from .wall_health import needs_night_repair
 
 
@@ -344,6 +344,9 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         candidates.append(((-2 if hero.health <= 110 else -.5,), "Medicine", hero.cells))
     if not urgent_only:
         carried = Counter(item for h in turn.heroes for item in h.backpack)
+        # Team stock prevents duplicate purchases; only this courier's paid
+        # walls belong in its delivery route. Other carriers deliver theirs.
+        carried_here = hero.inventory
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
         first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
         for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
@@ -358,8 +361,10 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
             # for the next level in a single shop trip. Never buy a duplicate.
             while name and carried[name]:
                 carried[name] -= 1
-                if building.kind == "wall":
+                if building.kind == "wall" and carried_here[name]:
                     paid_walls.append((upgrade_order(turn, building, mem), name, building.cells))
+                if carried_here[name]:
+                    carried_here[name] -= 1
                 building = replace(building, level=building.level + 1, health=max(1000, building.health))
                 # A paid prerequisite can fund the next tier in the same trip.
                 # Actual use still waits for the observed wall level.
@@ -516,6 +521,8 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
     reserve = sum(w.id < 0 for w in planned) * cfg.weapon_cost
     for hero in turn.heroes:
         if hero.id in ledger.used or hero.kind == "pioneer" and turn.phase_task:
+            continue
+        if hero.kind == "worker" and mining_only(turn, cfg):
             continue
         if hero.health <= 165 and hero.inventory["Medicine"]:
             if ledger.add(hero.id, command("use", name="Medicine")):
@@ -870,6 +877,13 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
 def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     """Allocate only today's outstanding jobs; all other worker time earns gold."""
     free = [h for h in turn.workers if h.id not in ledger.used and h.id not in excluded]
+    if mining_only(turn, cfg):
+        # This phase is a hard dispatch boundary, including repair couriers,
+        # paid vouchers, full backpacks and the inclusive final mining tick.
+        # No sale/return deadline may turn early mining into a different job.
+        for hero in free:
+            mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, dedicated=True)
+        return
     for h in free:
         if h.health <= 110:
             if h.inventory["Medicine"]:

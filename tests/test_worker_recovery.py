@@ -26,7 +26,7 @@ class WorkerRecoveryTests(unittest.TestCase):
         return p
 
     def test_paid_station_voucher_precedes_sale_trip(self):
-        p = self.case(backpack=['StationUpgradeVoucher1', 'copper'])
+        p = self.case(41, backpack=['StationUpgradeVoucher1', 'copper'])
         # Not next to the shop, and the station is within use range.
         p['mapInfo']['zones'][1]['pos'] = {'x': 10, 'y': 10}
         t, cfg, nav, ledger = setup_case(p)
@@ -167,7 +167,7 @@ class WorkerRecoveryTests(unittest.TestCase):
         self.assertFalse(mem.recovery.active)
 
     def test_agent_emits_recovery_prompt_on_observed_loop(self):
-        p = self.case(15)
+        p = self.case(45)
         p['mapInfo']['zones'].append({'neutralType': 'copper', 'pos': {'x': 7, 'y': 7}})
         agent = Agent()
         agent.decide(p)
@@ -175,10 +175,10 @@ class WorkerRecoveryTests(unittest.TestCase):
         mem.last_commands = {'1': command('move', (5, 5))}
         mem.movement.trails[1] = deque([(5, 5), (6, 5), (5, 5), (6, 5),
                                        (5, 5), (6, 5), (5, 5)], maxlen=8)
-        p['roundNo'] = 16
+        p['roundNo'] = 46
         response = agent.decide(p)
         self.assertTrue(response['prompt'])
-        self.assertEqual(mem.pending, ('recovery', 16))
+        self.assertEqual(mem.pending, ('recovery', 46))
         self.assertIn('1', response['roleCommandMap'])
         self.assertEqual(agent.decide(p), response)
         self.assertEqual(mem.calls, 1)

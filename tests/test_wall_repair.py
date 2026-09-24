@@ -11,7 +11,7 @@ from agent.navigation import wall_gaps
 
 class WallRepairTests(unittest.TestCase):
     def batch_case(self):
-        p = payload(130, [unit(1, "worker", 12, 4), unit(2, "worker", 12, 8),
+        p = payload(171, [unit(1, "worker", 12, 4), unit(2, "worker", 12, 8),
                           unit(13, "station", 1, 6, health=1500, level=3),
                           unit(20, "rocket", 2, 5, level=3),
                           unit(30, "wall", 4, 3, health=1000),
@@ -25,24 +25,35 @@ class WallRepairTests(unittest.TestCase):
 
     def test_one_material_trip_closes_three_gaps_and_releases_worker(self):
         p, settings = self.batch_case()
+        # Repair now starts after mining. Keep a nearby sale corridor so
+        # the released worker still has a feasible income job before dusk.
+        p["mapInfo"]["zones"] += [{"neutralType": k, "pos": {"x": x, "y": y}}
+                                  for k, x, y in (("copper", 5, 5), ("vendor", 3, 7))]
         mem = Memory()
         stone_actions, wall_actions, after_repair = [], [], []
         first_build_load = None
-        for round_no in range(130, 160):
+        for round_no in range(171, 200):
             p["roundNo"] = round_no
             t, c, n, l = setup_case(p, **settings)
             mem.observe(t, c)
             complete = all(any(w.kind == "wall" and w.pos == (4, y) for w in t.ours)
                            for y in range(4, 7))
             workers(t, c, mem, n, l, [(2, 5)], [(4, y) for y in range(3, 8)])
-            # The second actor has a reachable, profitable mine throughout.
-            self.assertIn("2", l.commands, (round_no, l.commands))
-            self.assertNotIn(2, mem.preparation_workers)
-            self.assertNotEqual(l.commands["2"]["action"], "build")
+            # Both workers have income jobs until the final return margin.
+            if t.day_left > c.return_margin:
+                self.assertIn("2", l.commands, (round_no, l.commands))
+            else:
+                self.assertTrue(complete)
+            self.assertNotEqual(mem.wall_repair_worker, 2)
+            self.assertNotEqual(l.commands.get("2", {}).get("action"), "build")
             if complete:
                 self.assertIsNone(mem.wall_repair_worker)
-                self.assertIn("1", l.commands)
-                after_repair.append(l.commands["1"]["action"])
+                # Once its final return deadline arrives, waiting at the
+                # base is legal; verify productive work before that below.
+                if t.day_left > c.return_margin:
+                    self.assertIn("1", l.commands, (round_no, l.commands))
+                if "1" in l.commands:
+                    after_repair.append(l.commands["1"]["action"])
             else:
                 self.assertEqual(mem.wall_repair_worker, 1)
             for uid, cmd in l.commands.items():
@@ -118,7 +129,7 @@ class WallRepairTests(unittest.TestCase):
         workers(t, c, mem, n, l, [(2, 5)], sorted(l.wall_cells))
         self.assertIsNone(mem.wall_repair_worker)
         self.assertEqual(set(l.commands), {"1", "2"})
-        self.assertFalse(mem.preparation_workers)
+        self.assertFalse(mem.wall_repair_delivering)
 
     def test_dead_or_returning_worker_can_be_replaced(self):
         p, settings = self.batch_case()
@@ -179,6 +190,7 @@ class WallRepairTests(unittest.TestCase):
 
     def test_gap_is_closed_before_carried_weapon_upgrade(self):
         p, c, m = self.repair_case()
+        p["roundNo"] = 171
         p["teamOur"]["roles"][0]["backpack"] = ["stone", "WeaponUpgradeVoucher1"]
         t, c, n, l = setup_case(p, layout_mode="explicit", loadout=["rocket"],
                               weapon_cells=[[5, 10]], wall_cells=[[4, 8], [5, 8], [6, 8]])
