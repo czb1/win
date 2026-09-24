@@ -155,8 +155,10 @@ def repair_watch(turn, mem, nav, ledger, hero, sites):
         item = (rank, wall, route, risk)
         if risk.needed:
             options.append(item)
-        elif hostile and (turn.day >= 8 or risk.nearby and (
-                wall.health * 10 <= risk.maximum * 3 or slack <= 2)):
+        elif ((turn.day >= 4 and wall.health * 10 <= risk.maximum * 3)
+              or hostile and (turn.day >= 8 or risk.nearby and slack <= 2)):
+            # A damaged wall can draw fire later in the wave. Stay beside it
+            # even before enemies arrive instead of mining outside the ring.
             waiting.append(item)
     selected = min(options or waiting, key=lambda o: o[0], default=None)
     if selected:
@@ -173,4 +175,6 @@ def repair_watch(turn, mem, nav, ledger, hero, sites):
     reason = ('no_pack' if not held else 'no_route') if critical else 'no_urgent_wall'
     mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, action='hold' if critical and held else 'release',
                             reason=reason, held=held, critical=[w.id for w in critical])
-    return bool(critical and held)
+    return bool(held and (critical or any(w.kind == 'wall' and w.pos in sites
+                                      and w.health * 10 <= 3 * repair_risk(turn, w, mem).maximum
+                                      for w in turn.ours)))

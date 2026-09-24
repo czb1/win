@@ -158,6 +158,17 @@ class WallWatchTests(unittest.TestCase):
             result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
             self.assertEqual(result['2']['action'], 'collect')
 
+    def test_damaged_wall_prepositions_before_wave_reaches_base(self):
+        p = self.case(day=5, damaged=False)
+        p['robot']['roles'] = []
+        for role in p['teamOur']['roles']:
+            if role['roleType'] == 'wall' and role['pos'] == {'x': 8, 'y': 8}:
+                role['health'] = 300
+        t, cfg, nav, ledger = setup_case(p)
+        self.assertTrue(repair_watch(t, Memory(), nav, ledger, t.workers[1], layout(t, cfg)[1]))
+        self.assertEqual(ledger.commands['2']['action'], 'move')
+        self.assertNotEqual(ledger.commands['2'].get('name'), 'WallFixer')
+
     def test_daytime_buys_batch_even_with_healthy_walls(self):
         p = self.case(tick=40, packs=0, damaged=False)
         t, cfg, nav, ledger = setup_case(p)
@@ -223,11 +234,13 @@ class WallWatchTests(unittest.TestCase):
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory()
         select_watch(t, mem, [])
-        for health, expected in ((1799, False), (201, False), (200, False), (199, True)):
+        for health, expected, should_use in ((1799, False, False), (201, True, False),
+                                             (200, True, False), (199, True, True)):
             wall['health'] = health
             t, cfg, nav, ledger = setup_case(p)
             select_watch(t, mem, [])
             self.assertEqual(repair_watch(t, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]), expected)
+            self.assertEqual(ledger.commands.get('2', {}).get('name') == 'WallFixer', should_use)
 
     def test_mining_worker_returns_when_front_takes_damage(self):
         p = self.case(damaged=False)
