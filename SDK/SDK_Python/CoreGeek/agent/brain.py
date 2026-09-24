@@ -8,7 +8,7 @@ from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
 from .combat import assignments, return_plan, defend, emergency_items, shared_crew, shared_defend, clear_gunner_route
-from .combat import block_enemy_controls
+from .combat import block_enemy_controls, block_enemy_workers
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .economy import reserve_treasure_gold
 from .intelligence import Memory, Intelligence
@@ -136,8 +136,20 @@ class Agent:
             hold_task = within_timeout and not danger and not first_watch and not mem.stop_reason
             if not turn.is_day:
                 emergency_items(turn, ledger)
-            shared = shared_crew(turn, self.cfg, mem, nav, towers, walls,
-                                 excluded={h.id} if h and hold_task else ())
+            early_gunner = bool(h and turn.day <= 2 and turn.weapons
+                                and (not turn.is_day or not hold_task))
+            night_raid = bool(h and turn.day >= 3 and not turn.is_day)
+            if not turn.is_day and (early_gunner or night_raid):
+                hold_task = False
+                if turn.phase_task and not mem.stop_reason:
+                    mem.stop_reason = "defence_threat" if danger else "night_role"
+                    LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
+            excluded = ({h.id} if h and (hold_task or turn.day >= 3) else set())
+            if early_gunner:
+                excluded.update(worker.id for worker in turn.workers)
+            mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items() if uid not in excluded}
+            mem.return_posts = {uid: post for uid, post in mem.return_posts.items() if uid not in excluded}
+            shared = shared_crew(turn, self.cfg, mem, nav, towers, walls, excluded=excluded)
             if shared is not None:
                 pairs, posts = shared
                 # Previous multi-operator assignments must not recall the miner.
@@ -146,7 +158,7 @@ class Agent:
                 mem.return_posts = {uid: p for uid, p in mem.return_posts.items()
                                     if uid == mem.gunner_id}
             else:
-                pairs = assignments(turn, nav, ledger, excluded={h.id} if hold_task else (),
+                pairs = assignments(turn, nav, ledger, excluded=excluded,
                                     fixed=mem.return_targets if turn.is_day else None)
                 pairs, posts = (return_plan(turn, nav, pairs, walls, mem.return_targets, mem.return_posts)
                                 if turn.is_day else (pairs, {}))
@@ -204,7 +216,7 @@ class Agent:
                             returning.add(helper.id)
                             mem.return_targets[helper.id] = weapon.id
                             mem.return_posts[helper.id] = posts[helper.id][0]
-            if h and turn.phase_task:
+            if h and turn.phase_task and not (not turn.is_day and (early_gunner or night_raid)):
                 # Submit a ready answer before a return movement can cancel it.
                 # LLM/sandbox work holds the pioneer at the task point and gets
                 # its own chance before expensive worker connectivity searches.
@@ -244,9 +256,11 @@ class Agent:
                         if hero.id in ledger.used:
                             continue
                         if hero.kind == "worker":
-                            night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=shared is not None)
+                            night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=early_gunner or shared is not None)
                         elif block_enemy_controls(turn, self.cfg, nav, ledger, hero):
                             continue
+                        elif night_raid:
+                            block_enemy_workers(turn, nav, ledger, hero)
                         elif turn.station:
                             walk(nav, ledger, hero, turn.station.cells)
             else:
