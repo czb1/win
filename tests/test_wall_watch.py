@@ -244,6 +244,35 @@ class WallWatchTests(unittest.TestCase):
         mem = Memory(gunner_post=(4, 11))
         self.assertEqual(prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]), (False, 40))
 
+    def test_late_watch_keeps_one_wall_upgrade_affordable(self):
+        from agent.economy import wall_purchase_allowed
+        p = self.case(day=8, tick=5, packs=0, damaged=False)
+        p['teamOur']['goldNum'] = 50
+        p['weaponShopList'].append({'name': 'WallUpgradeVoucher1', 'price': 20})
+        for role in p['teamOur']['roles']:
+            if role['roleType'] == 'rocket':
+                role['level'] = 3
+        t, cfg, nav, ledger = setup_case(p)
+        mem = Memory(wall_watch_id=2)
+        locked, reserved = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
+        self.assertFalse(locked)
+        self.assertEqual(reserved, 30)
+        ledger.gold -= reserved
+        self.assertEqual(ledger.gold, t.shop['WallUpgradeVoucher1'])
+        self.assertTrue(any(wall_purchase_allowed(t, w, mem)
+                            for w in t.ours if w.kind == 'wall'))
+
+    def test_late_watch_can_use_surplus_when_walls_are_maxed(self):
+        p = self.case(day=8, tick=5, packs=0, damaged=False)
+        p['teamOur']['goldNum'] = 50
+        p['weaponShopList'].append({'name': 'WallUpgradeVoucher1', 'price': 20})
+        for role in p['teamOur']['roles']:
+            if role['roleType'] == 'wall':
+                role['level'] = 3 if role['pos']['x'] == 8 else 2
+        t, cfg, nav, ledger = setup_case(p)
+        self.assertEqual(prepare_watch(t, cfg, Memory(wall_watch_id=2), nav, ledger,
+                                       t.workers[1], layout(t, cfg)[1]), (False, 50))
+
     def test_no_money_no_pack_still_recalls_watch_worker(self):
         p = self.case(tick=50, packs=0)
         p['teamOur']['goldNum'] = 0
