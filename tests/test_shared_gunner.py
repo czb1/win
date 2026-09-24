@@ -172,7 +172,7 @@ class SharedGunnerTests(unittest.TestCase):
         self.assertTrue(any(c.get('controllerId') == '2' for c in commands.values()))
         self.assertEqual(next(iter(agent.sessions.values())).gunner_id, 2)
 
-    def test_idle_pioneer_yields_post_before_first_night(self):
+    def test_pioneer_keeps_post_before_first_night(self):
         p = self.case(67)
         p['teamOur']['roles'][1]['pos'] = {'x': 2, 'y': 11}
         p['teamOur']['roles'].append(unit(3, 'pioneer', 4, 11))
@@ -183,7 +183,7 @@ class SharedGunnerTests(unittest.TestCase):
             for uid, c in commands.items():
                 if c['action'] == 'move':
                     next(h for h in p['teamOur']['roles'] if h['id'] == int(uid))['pos'] = c['targetPos'][0]
-        self.assertTrue(any(c.get('controllerId') == '1' for c in commands.values()))
+        self.assertTrue(any(c.get('controllerId') == '3' for c in commands.values()))
 
     def test_recall_does_not_take_stone_carrier_from_unfinished_walls(self):
         p = self.case(60)
@@ -227,16 +227,12 @@ class SharedGunnerTests(unittest.TestCase):
                 next(h for h in p['teamOur']['roles'] if h['id'] == int(uid))['pos'] = c['targetPos'][0]
         p['roundNo'] += 1
 
-    def test_match_choke_pioneer_takes_over_and_fires(self):
+    def test_late_night_choke_does_not_recall_pioneer(self):
         p = self.blocked_match()
         agent = Agent(Config(llm_enabled=False))
-        for _ in range(8):
-            commands = agent.decide(p)['roleCommandMap']
-            if any(c.get('controllerId') == '20011' for c in commands.values()):
-                break
-            self.advance_moves(p, commands)
-        else:
-            self.fail('living blocked gunner left all three ready rockets idle')
+        commands = agent.decide(p)['roleCommandMap']
+        self.assertFalse(any(c.get('controllerId') == '20011' for c in commands.values()))
+        self.assertNotEqual(next(iter(agent.sessions.values())).gunner_id, 20011)
 
     def test_idle_ally_clears_return_corridor_without_collision(self):
         from agent.combat import clear_gunner_route

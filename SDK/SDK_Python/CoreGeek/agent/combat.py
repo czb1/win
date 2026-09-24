@@ -14,7 +14,7 @@ def block_enemy_controls(turn, cfg, nav, ledger, hero, dusk_only=False):
     open neighbouring cells still let the opponent operate individual towers.
     Remembered weapons remain targets only while movement memory retains them.
     """
-    if hero.kind != "pioneer" or hero.id in ledger.used or turn.phase_task:
+    if hero.kind != "pioneer" or hero.id in ledger.used or (turn.phase_task and (turn.is_day or turn.day <= 2)):
         return False
     towers = dict(nav.memory.buildings) if nav.memory else {}
     towers.update({w.pos: w for w in turn.enemies if w.kind in WEAPONS})
@@ -46,6 +46,42 @@ def block_enemy_controls(turn, cfg, nav, ledger, hero, dusk_only=False):
     # There is no wait command. Lock the actor so idle fallback keeps the post.
     ledger.used.add(hero.id)
     ledger.reserved.add(post)
+    return True
+
+
+def block_enemy_workers(turn, nav, ledger, hero):
+    """Hold a reachable cell between an enemy wall and base, never recall home."""
+    bases = [u for u in turn.enemies if u.kind == "station"]
+    walls = [u for u in turn.enemies if u.kind == "wall"]
+    workers = [u for u in turn.enemies if u.kind == "worker"]
+    excluded = (ledger.tower_cells | ledger.wall_cells | ledger.reserved
+                | set(ledger.operator_posts.values()))
+    candidates = set()
+    for base in bases:
+        for wall in walls:
+            # Strictly inside the wall/base gap; exclude both occupied endpoints.
+            gap = min(distance(wall.pos, cell) for cell in base.cells)
+            for x in range(max(0, min(wall.pos[0], base.pos[0]) - 1),
+                           min(turn.width, max(wall.pos[0], base.pos[0]) + 2)):
+                for y in range(max(0, min(wall.pos[1], base.pos[1]) - 1),
+                               min(turn.height, max(wall.pos[1], base.pos[1]) + 2)):
+                    point = (x, y)
+                    if (0 < distance(point, wall.pos) < gap
+                            and 0 < min(distance(point, c) for c in base.cells) < gap):
+                        candidates.add(point)
+    options = []
+    for post in sorted(candidates - excluded):
+        route = nav.search(hero, {post}, ledger.reserved)
+        if route is not None:
+            proximity = min((distance(post, worker.pos) for worker in workers), default=0)
+            options.append((proximity, route[0], post, route))
+    if options:
+        _, _, post, route = min(options)
+        if route[1] is not None:
+            return ledger.add(hero.id, command("move", route[1]))
+    # If vision or paths provide no legal target, wait and retry next turn.
+    ledger.used.add(hero.id)
+    ledger.reserved.add(hero.pos)
     return True
 
 
@@ -426,7 +462,7 @@ def emergency_items(turn, ledger):
 
 
 def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
-    """Return one persistent worker/post, or None for non-clustered layouts."""
+    """Return one persistent operator/post, or None for non-clustered layouts."""
     if len(sites) != 3 or any(w.pos not in sites or w.kind != "rocket" for w in turn.weapons):
         return None
     common = set(neighbours(sites[0]))
@@ -453,7 +489,7 @@ def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
     if gunner and (mem.gunner_stalled >= 2 or not any(actual.get((gunner.id, p)) for p in common)):
         gunner = None
     crew = [h for h in turn.heroes if h.id not in excluded
-            and (h.kind == 'worker' or not turn.is_day)]
+            and (h.kind == 'worker' or not turn.is_day or turn.day <= 2)]
     original = turn.blocked
     # Keep the stone carrier available for existing daytime construction;
     # among equally free workers use the shortest return route.

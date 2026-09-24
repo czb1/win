@@ -176,7 +176,7 @@ class EnemyControlBlockingTests(unittest.TestCase):
         self.assertFalse(ledger.commands)
 
     def test_worker_mining_and_shared_gunner_commands_are_unchanged(self):
-        data = payload(70, [unit(13, 'station', 5, 11, health=1500),
+        data = payload(330, [unit(13, 'station', 5, 11, health=1500),
             unit(1, 'worker', 4, 11, health=220), unit(2, 'worker', 11, 2, health=220),
             unit(11, 'pioneer', 8, 5), unit(20, 'rocket', 4, 12),
             unit(21, 'rocket', 5, 12), unit(22, 'rocket', 4, 10)])
