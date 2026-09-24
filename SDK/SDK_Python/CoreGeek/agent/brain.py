@@ -9,6 +9,7 @@ from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
 from .combat import assignments, return_plan, defend, emergency_items, shared_crew, shared_defend, clear_gunner_route
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
+from .economy import reserve_treasure_gold
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
 from .wall_watch import select_watch, prepare_watch, repair_watch
@@ -262,7 +263,13 @@ class Agent:
                 if not turn.phase_task:
                     mem.recovery.resume(turn, self.cfg, mem, nav, ledger, returning)
                     mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning, loops_only=True)
-                workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
+                treasure_reserve = (reserve_treasure_gold(turn, self.cfg, mem, nav, ledger, h)
+                                    if h and h.id not in ledger.used and h.id not in returning and not danger else 0)
+                ledger.gold -= treasure_reserve
+                try:
+                    workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
+                finally:
+                    ledger.gold += treasure_reserve
                 mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning)
                 if shared is not None and mem.gunner_post:
                     for idle in turn.workers:
@@ -284,6 +291,19 @@ class Agent:
         except DeadlineExceeded:
             LOG.warning("round=%s budget reached; returning %s validated actions", turn.round, len(ledger.commands))
         response = ledger.response(prompt, execute)
+        if mem.news or mem.treasure:
+            hero = turn.pioneer
+            reason = ("no_pioneer" if not hero else "night" if not turn.is_day
+                      else "active_task" if turn.phase_task else "returning" if hero.id in mem.return_targets
+                      else "available")
+            mem.trace_treasure(turn, "treasure_schedule", dedupe=True, reason=reason)
+            if not turn.is_day or turn.phase_task:
+                mem.trace_treasure(turn, "news_gate", dedupe=True,
+                                   reason="night" if not turn.is_day else "active_task")
+            action = response["roleCommandMap"].get(str(hero.id)) if hero else None
+            if mem.treasure and action and action.get("action") in ("buy", "summonTreasure", "acceptTask"):
+                mem.trace_treasure(turn, "treasure_actor_action", actor=hero.id,
+                                   position=hero.pos, action=action)
         mem.wall_watch.finish(turn, mem, response)
         if not turn.is_day or turn.tick in (0, 69):
             diagnostic_pairs = ([(hero, w) for hero, _ in pairs for w in turn.weapons]
