@@ -39,6 +39,7 @@ class Unit:
     capacity: int = 0
     backpack: tuple = ()
     target_team: str = ""
+    abnormal_state: str = ""
 
     @classmethod
     def load(cls, r):
@@ -46,7 +47,8 @@ class Unit:
                    max(1, min(3, int(r.get("level") or 1))),
                    int(r.get("attackRange") or 0), int(r.get("attackPower") or 0),
                    int(r.get("cooldown") or 0), int(r.get("backPackCapability") or 0),
-                   tuple(r.get("backpack") or ()), r.get("targetTeam", ""))
+                   tuple(r.get("backpack") or ()), r.get("targetTeam", ""),
+                   r.get("abnormalState", ""))
 
     @property
     def cells(self):
