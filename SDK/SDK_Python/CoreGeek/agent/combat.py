@@ -7,19 +7,12 @@ from .commands import command
 from .navigation import check_time
 
 
-def block_enemy_controls(turn, cfg, nav, ledger, hero, dusk_only=False):
-    """Park a free pioneer on a reachable enemy control cell, without attacking.
-
-    A single actor can deny a sole control cell or occupy a shared post; other
-    open neighbouring cells still let the opponent operate individual towers.
-    Remembered weapons remain targets only while movement memory retains them.
-    """
-    if hero.kind != "pioneer" or hero.id in ledger.used or (turn.phase_task and (turn.is_day or turn.day <= 2)):
-        return False
+def enemy_control_post(turn, nav, ledger, hero):
+    """Select a reachable control cell, favoring sole and shared posts."""
     towers = dict(nav.memory.buildings) if nav.memory else {}
     towers.update({w.pos: w for w in turn.enemies if w.kind in WEAPONS})
     if not towers:
-        return False
+        return None
     mobile = {u.pos for u in (*turn.ours, *turn.enemies) if u.kind in HEROES}
     mobile.update(r.pos for r in turn.robots)
     static = (turn.blocked - mobile) | set(towers)
@@ -37,8 +30,25 @@ def block_enemy_controls(turn, cfg, nav, ledger, hero, dusk_only=False):
             shared = sum(post in cells for cells in controls)
             options.append((-denied, -shared, route[0], post, route))
     if not options:
+        return None
+    _, _, _, post, route = min(options)
+    return post, route
+
+
+def block_enemy_controls(turn, cfg, nav, ledger, hero, dusk_only=False):
+    """Park a free pioneer on an enemy post, without attacking.
+
+    A single actor can deny a sole control cell or occupy a shared post; other
+    open neighbouring cells still let the opponent operate individual towers.
+    Remembered weapons remain targets only while movement memory retains them.
+    """
+    if hero.kind != "pioneer" or hero.id in ledger.used or (turn.phase_task and (turn.is_day or turn.day <= 2)):
         return False
-    _, _, length, post, route = min(options)
+    choice = enemy_control_post(turn, nav, ledger, hero)
+    if choice is None:
+        return False
+    post, route = choice
+    length = route[0]
     if dusk_only and turn.is_day and turn.day_left > length + cfg.return_margin:
         return False
     if route[1] is not None:

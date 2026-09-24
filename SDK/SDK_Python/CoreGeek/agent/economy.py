@@ -1,7 +1,7 @@
 from collections import Counter
 from dataclasses import replace
 from .commands import command
-from .combat import block_enemy_controls
+from .combat import block_enemy_controls, enemy_control_post
 from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, sale_inventory, return_destination
@@ -1099,6 +1099,10 @@ def prepare_treasure(turn, cfg, mem, nav, ledger, hero):
 
 def pioneer_task_options(turn, cfg, mem, nav, ledger, hero):
     options = []
+    # From the third night onward the workers defend our guns. A new task is
+    # only useful if it can finish before the pioneer must reach an enemy post.
+    enemy_post = (enemy_control_post(turn, nav, ledger, hero)
+                  if turn.is_day and turn.day >= 3 else None)
     for task in turn.tasks:
         if not task.get("isValid") or int(task.get("coldDownRounds", 0)) > 0:
             continue
@@ -1107,15 +1111,20 @@ def pioneer_task_options(turn, cfg, mem, nav, ledger, hero):
         # Include a conservative return-distance estimate when accepting distant tasks.
         home = [w.pos for w in turn.weapons] or (list(turn.station.cells) if turn.station else [])
         return_estimate = min((distance(p, q) for p in cells for q in home), default=0)
-        if route and turn.day_left > route[0] + cfg.task_min_rounds + return_estimate + cfg.return_margin:
-            duration = min(int(task.get("timeoutRounds", cfg.task_max_rounds)), cfg.task_max_rounds)
-            observed = [s["rounds"] for s in mem.skills if s.get("point") == pos(task["taskPosition"])
-                        and s.get("workflow") == "check_token" and not s.get("disabled")
-                        and type(s.get("rounds")) is int]
-            if observed:
-                # A learned fast SOP should not be priced at its official worst
-                # case timeout. This estimate only ranks tasks, never deadlines.
-                duration = min(duration, max(observed[-3:]) + 2)
+        duration = min(int(task.get("timeoutRounds", cfg.task_max_rounds)), cfg.task_max_rounds)
+        observed = [s["rounds"] for s in mem.skills if s.get("point") == pos(task["taskPosition"])
+                    and s.get("workflow") == "check_token" and not s.get("disabled")
+                    and type(s.get("rounds")) is int]
+        if observed:
+            duration = min(duration, max(observed[-3:]) + 2)
+        if enemy_post:
+            # The task point can cover two cells. Chebyshev distance is a lower
+            # bound; starting a task later than this cannot make the night post.
+            return_estimate = min(distance(p, enemy_post[0]) for p in cells)
+            work = max(cfg.task_min_rounds, duration)
+        else:
+            work = cfg.task_min_rounds
+        if route and turn.day_left > route[0] + work + return_estimate + cfg.return_margin:
             value = (int(task.get("scoreReward", 0)) + .5*int(task.get("goldReward", 0))) / max(1, route[0]+duration)
             options.append((-value, route[0], pos(task["taskPosition"]), task, route))
     return options

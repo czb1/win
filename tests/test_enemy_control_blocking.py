@@ -80,6 +80,17 @@ class EnemyControlBlockingTests(unittest.TestCase):
             if expected == 'move':
                 self.assertEqual(pos(result['roleCommandMap']['11']['targetPos'][0])[0], 8)
 
+    def test_third_day_skips_task_that_would_delay_enemy_post(self):
+        for round_no, expected in ((280, 6), (310, 8)):
+            data = sole_post(round_no)
+            data['teamOur']['roles'][0]['pos'] = {'x': 7, 'y': 5}
+            data['teamOur']['playerTasks'] = [dict(isValid=True, coldDownRounds=0,
+                taskPosition={'x': 5, 'y': 5}, timeoutRounds=15,
+                scoreReward=10, goldReward=10)]
+            command = Agent(Config(layout_mode='explicit', task_min_rounds=1)).decide(data)['roleCommandMap']['11']
+            self.assertEqual(command['action'], 'move')
+            self.assertEqual(pos(command['targetPos'][0])[0], expected)
+
     def test_active_task_is_not_interrupted_at_dusk_or_night(self):
         for round_no in (69, 70):
             data = sole_post(round_no)
@@ -201,4 +212,3 @@ class EnemyControlBlockingTests(unittest.TestCase):
             data['teamEnemy']['roles'] = []
             baseline = Agent(cfg).decide(data)
             self.assertEqual(changed['roleCommandMap'], baseline['roleCommandMap'])
-
