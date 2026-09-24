@@ -115,6 +115,11 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
                 report('move' if route[1] else 'buy', 'restock' if added else 'command_rejected', count=count)
                 return True, funds if route[1] else 0
     if held:
+        # Stock is for tonight; carrying it must not retire a daytime courier.
+        # Keep working until the actual trip home reaches its return deadline.
+        if turn.day_left > home[0] + cfg.return_margin:
+            report('release', 'stocked_daytime_work', steps=home[0])
+            return False, 0
         if home[1] is not None:
             ledger.add(hero.id, command('move', home[1]))
         report('move' if home[1] else 'hold', 'return_with_stock', steps=home[0])
