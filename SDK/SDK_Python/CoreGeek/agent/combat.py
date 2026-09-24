@@ -352,7 +352,8 @@ def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
                 if route is not None:
                     candidates.append((bool(not turn.is_day and actual.get((hero.id, post)) is None),
                                        bool(turn.is_day and route[0] + cfg.return_margin > turn.day_left),
-                                       bool(turn.is_day and unfinished_walls and hero.inventory["stone"]),
+                                       bool(turn.is_day and (hero.id == mem.wall_watch_id
+                                                            or unfinished_walls and hero.inventory["stone"])),
                                        bool(not turn.is_day and mem.gunner_stalled >= 2 and hero.id == mem.gunner_id),
                                        route[0], hero.kind != "worker", post != mem.gunner_post, hero.id, post, hero))
     finally:
