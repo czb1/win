@@ -167,6 +167,21 @@ class WallWatchTests(unittest.TestCase):
         self.assertTrue(locked)
         self.assertEqual(ledger.commands['2'], {'action': 'buy', 'name': 'WallFixer', 'num': 4})
 
+    def test_watch_worker_repairs_low_wall_on_last_daylight_turn(self):
+        for mirror in (False, True):
+            for health in (350, 500):
+                with self.subTest(mirror=mirror, health=health):
+                    p = self.case(day=5, tick=69, mirror=mirror, packs=6, damaged=False)
+                    wall = next(r for r in p['teamOur']['roles']
+                                if r['roleType'] == 'wall' and r['pos']['x'] == (6 if mirror else 8))
+                    wall.update(level=2, health=health)
+                    t, cfg, nav, ledger = setup_case(p)
+                    mem = Memory(wall_watch_id=2)
+                    prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
+                    action = ledger.commands.get('2', {})
+                    self.assertEqual(action.get('action') == 'use' and action.get('name') == 'WallFixer',
+                                     health < 500)
+
     def test_lower_right_can_buy_when_weakest_wall_approach_is_blocked(self):
         p = self.case(day=7, tick=40, packs=0, damaged=False)
         for role in p['teamOur']['roles'] + p['robot']['roles']:
@@ -201,6 +216,18 @@ class WallWatchTests(unittest.TestCase):
         t, cfg, nav, ledger = setup_case(p)
         prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertEqual(ledger.commands['2']['name'], 'WallFixer')
+
+    def test_long_sale_shop_return_starts_before_fixed_cutoff(self):
+        p = self.case(day=7, tick=39, packs=0, damaged=False)
+        p['teamOur']['roles'][2].update(pos={'x': 0, 'y': 0}, backpack=['copper'] * 3)
+        p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 13, 'y': 3}})
+        p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
+        t, cfg, nav, ledger = setup_case(p)
+        mem = Memory(wall_watch_id=2)
+        locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
+        self.assertTrue(locked)
+        self.assertEqual(ledger.commands['2']['action'], 'move')
+        self.assertIn(2, mem.sale_workers)
 
     def test_watcher_does_not_mine_at_night_without_damage_or_stock(self):
         for packs in (0, 4):

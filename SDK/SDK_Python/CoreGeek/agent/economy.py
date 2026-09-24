@@ -293,10 +293,18 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
         if (building.kind == "wall" and hero.inventory["WallFixer"]
                 and (building.health < 500 if turn.is_day else needs_night_repair(building, turn, mem))
                 and building.id not in ledger.repair_claims
-                and not (mem and turn.day >= 4 and hero.id == mem.wall_watch_id)):
-            route = (dusk_route(turn, nav, ledger, hero, building.cells)
-                     if turn.is_day and turn.tick >= DUSK_SPEND_TICK
-                     else nav.approach(hero, building.cells, ledger.reserved))
+                and not (mem and not turn.is_day and turn.day >= 4
+                         and hero.id == mem.wall_watch_id)):
+            if mem and turn.is_day and turn.day >= 4 and hero.id == mem.wall_watch_id:
+                # This worker spends the night inside the wall, not at a gun.
+                # The ordinary dusk route to an operator post rejects even an
+                # adjacent repair on the final daylight turn.
+                from .wall_watch import watch_route
+                route = watch_route(turn, nav, ledger, mem, hero, ledger.wall_cells, building)
+            else:
+                route = (dusk_route(turn, nav, ledger, hero, building.cells)
+                         if turn.is_day and turn.tick >= DUSK_SPEND_TICK
+                         else nav.approach(hero, building.cells, ledger.reserved))
             if route and (not local_only or route[0] == 0):
                 upgrades.append(((1.5, building.health, building.id), route[0], "WallFixer", building, route))
     if upgrades:
@@ -535,8 +543,9 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
                 and hero.id != mem.wall_repair_worker and sale_inventory(turn, mem, hero)
                 and earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False)):
             continue
-        if turn.tick < DUSK_SPEND_TICK:
-            continue
+        # The sale window opens at tick 40. Use any remaining daylight for a
+        # deliverable purchase even when the vendor route is unavailable; the
+        # earlier sale attempt has already taken priority when it was viable.
         if use_inventory(turn, nav, ledger, hero, mem=mem):
             continue
         if (hero.kind == "worker" and hero.id != mem.wall_repair_worker

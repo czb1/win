@@ -110,7 +110,22 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     shop = min(shops, key=lambda o: o[0], default=None)
     if shop is None:
         funds = 0
+    from .economy import refresh_stone_reserves
+    refresh_stone_reserves(turn, cfg, mem, ledger)
+    ores = sale_inventory(turn, mem, hero)
+    trips = []
+    if ores and stage:
+        vendors = [[p] for p, kind in turn.zones.items() if kind == 'vendor']
+        shops_for_sale = [[p] for p, kind in turn.zones.items() if kind == 'weaponShop'] if quota else []
+        inside, _ = geometry(turn, sites)
+        landing = {p for wall in sites for p in neighbours(wall)} & inside
+        trips = [via(nav, hero, [vendor, *([stop] if stop else []), landing],
+                     ledger.reserved, final_exact=True)
+                 for vendor in vendors for stop in (shops_for_sale or [None])]
     budget = (shop[0] if shop else home[0]) + cfg.return_margin + len(ORES)
+    sale_trip = min((trip for trip in trips if trip is not None), default=None)
+    if sale_trip is not None:
+        budget = max(budget, sale_trip + len(ores) + int(bool(quota)) + cfg.return_margin + 1)
     if turn.tick < cfg.economy_rounds and turn.day_left > budget:
         report('reserve', 'daytime_production')
         return False, funds
@@ -124,17 +139,7 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
             return True, 0
     # Sell the watcher's own ore before shopping, including while carrying
     # packs. Keep enough daylight for the vendor, shop and inside return.
-    from .economy import refresh_stone_reserves
-    refresh_stone_reserves(turn, cfg, mem, ledger)
-    ores = sale_inventory(turn, mem, hero)
     if ores and stage:
-        vendors = [[p] for p, kind in turn.zones.items() if kind == 'vendor']
-        shops_for_sale = [[p] for p, kind in turn.zones.items() if kind == 'weaponShop'] if quota else []
-        inside, _ = geometry(turn, sites)
-        landing = {p for wall in sites for p in neighbours(wall)} & inside
-        trips = [via(nav, hero, [vendor, *([shop] if shop else []), landing],
-                     ledger.reserved, final_exact=True)
-                 for vendor in vendors for shop in (shops_for_sale or [None])]
         if any(trip is not None and trip + len(ores) + int(bool(quota))
                + cfg.return_margin < turn.day_left for trip in trips):
             if earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False):
@@ -144,9 +149,9 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         if shop[0] + cfg.return_margin < turn.day_left:
             if hero.space < quota and any(hero.inventory[k] for k in ORES):
                 # Clear ore through the existing once-daily sale contract.
-                earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False)
-                report('sell', 'clear_pack_slots')
-                return True, funds
+                if earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False):
+                    report('sell', 'clear_pack_slots')
+                    return True, funds
             count = min(quota, hero.space)
             if count:
                 route = shop[1]

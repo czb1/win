@@ -82,14 +82,41 @@ class DuskResourceTests(unittest.TestCase):
             plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
             self.assertLessEqual(plan[2], expected_max)
 
-    def test_sweep_is_day_local_and_leaves_earlier_turns_alone(self):
-        for round_no, origin, active in ((59, 0, False), (60, 0, True), (70, 0, False),
-                                         (189, 0, False), (190, 0, True),
-                                         (60, 1, False), (61, 1, True)):
+    def test_sweep_starts_after_farming_and_resets_each_day(self):
+        for round_no, origin, active in ((39, 0, False), (40, 0, True), (59, 0, True),
+                                         (70, 0, False), (169, 0, False),
+                                         (170, 0, True), (189, 0, True),
+                                         (40, 1, False), (41, 1, True)):
             with self.subTest(round_no=round_no, origin=origin):
                 t, c, n, l = self.setup(self.case(round_no), round_origin=origin)
                 dusk_resources(t, c, Memory(), n, l, [(3, 3)])
                 self.assertEqual(bool(l.commands), active)
+
+    def test_sale_then_purchase_uses_daylight_before_sixty(self):
+        p = self.case(40, gold=150)
+        p['teamOur']['roles'][0]['backpack'] = ['copper']
+        p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 1, 'y': 2}})
+        p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
+        t, c, n, l = self.setup(p)
+        mem = Memory()
+        dusk_resources(t, c, mem, n, l, [(3, 3)])
+        self.assertEqual(l.commands['1']['action'], 'sell')
+        p['roundNo'] = 41
+        p['teamOur']['roles'][0]['backpack'] = []
+        p['teamOur']['goldNum'] = 160
+        t, c, n, l = self.setup(p)
+        dusk_resources(t, c, mem, n, l, [(3, 3)])
+        self.assertEqual(l.commands['1'], command('buy', name='WeaponUpgradeVoucher2', num=1))
+
+    def test_unreachable_vendor_does_not_block_affordable_upgrade(self):
+        p = self.case(40, gold=150)
+        p['teamOur']['roles'][0]['backpack'] = ['copper']
+        p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 14, 'y': 14}})
+        p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
+        p['teamOur']['roles'].extend(unit(50 + y, 'wall', 10, y) for y in range(15))
+        t, c, n, l = self.setup(p)
+        dusk_resources(t, c, Memory(), n, l, [(3, 3)])
+        self.assertEqual(l.commands['1'], command('buy', name='WeaponUpgradeVoucher2', num=1))
 
     def test_sixty_five_uses_nearby_voucher_before_stale_delivery_target(self):
         p = self.case(65)
