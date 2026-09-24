@@ -56,7 +56,7 @@ class WallWatchState:
             return self.target
         # Escalate before the seventh wave; one dedicated worker still caps
         # physical stock at backpack capacity in prepare_watch.
-        baseline = ({4: 4, 5: 6, 6: 9, 7: 12}.get(turn.day, 18 + max(0, turn.day - 8) * 2)
+        baseline = ({4: 4, 5: 6, 6: 9, 7: 18}.get(turn.day, 30 + max(0, turn.day - 8) * 2)
                     if turn.day >= 4 else 3)
         target, reasons = baseline, ["day_baseline"]
         last = self.history[-1] if self.history else None

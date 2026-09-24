@@ -4,11 +4,11 @@ from test_agent import payload, unit, setup_case
 from agent.brain import Agent
 from agent.config import Config
 from agent.intelligence import Memory
-from agent.wall_watch import select_watch, prepare_watch, repair_watch, geometry
+from agent.wall_watch import select_watch, prepare_watch, repair_watch, geometry, staging_wall
 from agent.navigation import layout
 from agent.economy import use_inventory
 from agent.wall_health import needs_night_repair
-from agent.model import Unit
+from agent.model import Unit, neighbours
 
 
 class WallWatchTests(unittest.TestCase):
@@ -166,6 +166,24 @@ class WallWatchTests(unittest.TestCase):
         locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertTrue(locked)
         self.assertEqual(ledger.commands['2'], {'action': 'buy', 'name': 'WallFixer', 'num': 4})
+
+    def test_lower_right_can_buy_when_weakest_wall_approach_is_blocked(self):
+        p = self.case(day=7, tick=40, packs=0, damaged=False)
+        for role in p['teamOur']['roles'] + p['robot']['roles']:
+            role['pos']['x'] = 14 - role['pos']['x'] - (role['roleType'] == 'station')
+            role['pos']['y'] = 14 - role['pos']['y'] - (role['roleType'] == 'station')
+        for zone in p['mapInfo']['zones']:
+            zone['pos']['x'] = 14 - zone['pos']['x']
+            zone['pos']['y'] = 14 - zone['pos']['y']
+        p['teamOur']['goldNum'] = 300
+        t, cfg, nav, ledger = setup_case(p)
+        sites = layout(t, cfg)[1]
+        stage = staging_wall(t, sites)
+        inside, _ = geometry(t, sites)
+        ledger.reserved.update(set(neighbours(stage.pos)) & inside - {t.workers[1].pos})
+        locked, _ = prepare_watch(t, cfg, Memory(wall_watch_id=2), nav, ledger, t.workers[1], sites)
+        self.assertTrue(locked)
+        self.assertIn(ledger.commands['2']['action'], ('move', 'buy'))
 
     def test_watch_worker_sells_ore_before_buying_packs(self):
         p = self.case(day=6, tick=40, packs=2, damaged=False)

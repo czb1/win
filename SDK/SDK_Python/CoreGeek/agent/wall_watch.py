@@ -90,6 +90,8 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     stage = staging_wall(turn, sites)
     home = watch_route(turn, nav, ledger, mem, hero, sites, stage)
     if home is None:
+        home = watch_route(turn, nav, ledger, mem, hero, sites)
+    if home is None:
         report('wait', 'no_home_route')
         return False, 0
     shops = []
@@ -101,6 +103,8 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
             if route is None:
                 continue
             back = watch_route(turn, nav, ledger, mem, replace(hero, pos=cell), sites, stage)
+            if back is None:
+                back = watch_route(turn, nav, ledger, mem, replace(hero, pos=cell), sites)
             if back:
                 shops.append((route[0] + back[0] + 1, route))
     shop = min(shops, key=lambda o: o[0], default=None)
@@ -126,7 +130,10 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     if ores and stage:
         vendors = [[p] for p, kind in turn.zones.items() if kind == 'vendor']
         shops_for_sale = [[p] for p, kind in turn.zones.items() if kind == 'weaponShop'] if quota else []
-        trips = [via(nav, hero, [vendor, *([shop] if shop else []), [stage.pos]], ledger.reserved)
+        inside, _ = geometry(turn, sites)
+        landing = {p for wall in sites for p in neighbours(wall)} & inside
+        trips = [via(nav, hero, [vendor, *([shop] if shop else []), landing],
+                     ledger.reserved, final_exact=True)
                  for vendor in vendors for shop in (shops_for_sale or [None])]
         if any(trip is not None and trip + len(ores) + int(bool(quota))
                + cfg.return_margin < turn.day_left for trip in trips):
