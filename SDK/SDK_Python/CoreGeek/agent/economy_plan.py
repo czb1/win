@@ -59,7 +59,7 @@ def preparation_start(turn, cfg, mem, nav, heroes, sites):
     shops = [p for p, k in turn.zones.items() if k == "weaponShop"]
     missing = sum(w.id < 0 for w in weapons)
     upgrades = sum(w.level < 3 for w in weapons)
-    walls = [w for w in turn.ours if w.kind == "wall" and w.level < 3] if not upgrades else []
+    walls = [w for w in turn.ours if w.kind == "wall" and w.level < wall_level_limit(turn, w.pos)] if not upgrades else []
     front = set(front_sites(turn, [w.pos for w in turn.ours if w.kind == "wall"]))
     walls.sort(key=lambda w: (w.level, w.pos not in front, w.health, w.id))
     # Base vouchers also need a shop visit and delivery, even after all guns
@@ -93,3 +93,12 @@ def front_sites(turn, sites):
         return list(sites)
     x = max(p[0] for p in sites) if turn.station.pos[0] < turn.width / 2 else min(p[0] for p in sites)
     return [p for p in sites if p[0] == x]
+
+
+def wall_level_limit(turn, position, sites=None):
+    """Use the existing mirrored front convention; flanks stop at level two."""
+    if sites is None:
+        # Keep a destroyed front from making a surviving flank the new front.
+        sites = [*getattr(turn, "planned_wall_sites", ()),
+                 *(w.pos for w in turn.ours if w.kind == "wall")]
+    return 3 if position in front_sites(turn, sites) else 2

@@ -60,6 +60,51 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         self.assertEqual(supplies(t, c, Memory(), n, l, t.workers[0])[0], "StationUpgradeVoucher1")
         self.assertIsNone(supplies(t, c, Memory(wall_rebuild_levels={(7, 4): 3}), n, l, t.workers[0]))
 
+    def test_flank_cap_blocks_purchase_use_and_recovery_after_front_done(self):
+        for tick in (40, 65, 440):
+            p = self.case(tick)
+            p["teamOur"]["roles"][3]["level"] = 3
+            p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher2"]
+            t, c, n, l = self.setup(p)
+            mem = Memory(wall_rebuild_levels={(5, 4): 3})
+            self.assertFalse(use_inventory(t, n, l, t.workers[0], mem=mem))
+            self.assertIsNone(Recovery().action((1, "use", (5, 4)), t, c, mem, n, l))
+            plan = supplies(t, c, mem, n, l, t.workers[0], bulk=True)
+            self.assertTrue(plan is None or not plan[0].startswith("WallUpgrade"))
+            # Once the observed rebuild is complete, a healthy base can upgrade.
+            mem.observe(t, c)
+            self.assertFalse(mem.wall_rebuild_levels)
+            plan = supplies(t, c, mem, n, l, t.workers[0])
+            self.assertEqual(plan[0], "StationUpgradeVoucher1")
+
+    def test_destroyed_front_does_not_promote_surviving_flank(self):
+        p = self.case()
+        p["teamOur"]["roles"].pop(3)
+        t, c, _, _ = self.setup(p)
+        mem = Memory()
+        mem.observe(t, c)
+        self.assertFalse(wall_upgrade_allowed(t, t.ours[-1], mem))
+
+    def test_flank_rebuild_cannot_inherit_level_three_from_front(self):
+        for mirror in (False, True):
+            p = self.case(129)
+            p["teamOur"]["roles"][3].update(level=3, pos={"x": 7, "y": 4})
+            p["teamOur"]["roles"][4].update(level=3, pos={"x": 6, "y": 4})
+            if mirror:
+                for r in p["teamOur"]["roles"]:
+                    r["pos"]["x"] = 14 - r["pos"]["x"] - (1 if r["roleType"] == "station" else 0)
+            sites = [[r["pos"]["x"], r["pos"]["y"]] for r in p["teamOur"]["roles"][3:]]
+            c = Config(layout_mode="explicit", wall_cells=sites)
+            mem = Memory()
+            mem.observe(Turn(p, c), c)
+            p["roundNo"] = 130
+            p["teamOur"]["roles"][4].update(id=99, level=1)
+            mem.observe(Turn(p, c), c)
+            self.assertEqual(mem.wall_rebuild_levels[tuple(sites[1])], 2)
+            p["teamOur"]["roles"][4]["level"] = 2
+            mem.observe(Turn(p, c), c)
+            self.assertFalse(mem.wall_rebuild_levels)
+
     def test_every_wall_reaches_two_before_normal_level_three(self):
         for tick in (40, 65):
             p = self.case(tick)
@@ -95,7 +140,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher1"]
         t, c, n, l = self.setup(p)
         plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
-        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 2))
+        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 1))
 
     def test_shop_buys_both_wall_tiers_before_delivery(self):
         for rebuilding in (False, True):
@@ -104,7 +149,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                 w["level"] = 1
             p["teamOur"]["roles"].append(unit(32, "wall", 7, 4, level=2, health=1000))
             mem = Memory(wall_rebuild_levels={(7, 5): 3, (5, 4): 3} if rebuilding else {})
-            for name, count in (("WallUpgradeVoucher1", 2), ("WallUpgradeVoucher2", 3)):
+            for name, count in (("WallUpgradeVoucher1", 2), ("WallUpgradeVoucher2", 2)):
                 t, c, n, l = self.setup(p)
                 workers(t, c, mem, n, l, [(4, 6)], [(7, 5), (5, 4), (7, 4)])
                 self.assertEqual(l.commands["1"], command("buy", name=name, num=count))
@@ -137,7 +182,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
             p["mapInfo"]["zones"][0]["pos"]["x"] = 8
         return p
 
-    def test_front_three_expands_in_symmetric_layers_before_flanks(self):
+    def test_front_three_expands_in_symmetric_layers_and_flanks_stop_at_two(self):
         for rows in (range(2, 9), range(2, 8)):
             for mirror in (False, True):
                 with self.subTest(rows=list(rows), mirror=mirror):
@@ -152,7 +197,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                             if w["pos"]["y"] in allowed:
                                 w["level"] = 3
                     t, _, _, _ = self.setup(p)
-                    self.assertTrue(wall_upgrade_allowed(t, t.ours[-1], Memory()))
+                    self.assertFalse(wall_upgrade_allowed(t, t.ours[-1], Memory()))
 
     def test_front_center_beats_nearer_edge_old_target_and_recovery(self):
         for mirror in (False, True):

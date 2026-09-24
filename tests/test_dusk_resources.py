@@ -145,18 +145,14 @@ class DuskResourceTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertEqual(plan[0], "WallUpgradeVoucher2")
 
-    def test_late_wall_phase_stages_next_front_and_flank_batch(self):
-        # Once the weapons are already level three, a courier must be able to
-        # buy the next flank voucher while the current front voucher is still
-        # being delivered.  The front-first rule remains enforced by
-        # use_inventory; this test only covers the purchase-side staging.
+    def test_late_wall_phase_only_buys_level_three_for_front(self):
         p = self.case(440, gold=120)
         p["teamOur"]["roles"][2]["level"] = 3
         p["teamOur"]["roles"][3]["level"] = 2
         p["teamOur"]["roles"].append(unit(31, "wall", 2, 3, level=2, health=1000))
         t, c, n, l = self.setup(p)
         plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
-        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 2))
+        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 1))
 
     def test_final_turn_can_use_adjacent_voucher_without_leaving_post(self):
         p = self.case(69)
