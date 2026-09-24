@@ -221,7 +221,8 @@ class Agent:
             if not turn.is_day:
                 if shared is not None:
                     corridor = clear_gunner_route(turn, nav, ledger, mem, pairs)
-                    shared_defend(turn, nav, ledger, mem, pairs, towers)
+                    shared_defend(turn, nav, ledger, mem, pairs, towers,
+                                  siege_radius=self.cfg.task_danger_radius)
                     ledger.reserved.update(corridor or ())
                 else:
                     defend(turn, nav, ledger, pairs)
