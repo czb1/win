@@ -202,6 +202,18 @@ class WallWatchTests(unittest.TestCase):
         prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertEqual(ledger.commands['2']['name'], 'WallFixer')
 
+    def test_long_sale_shop_return_starts_before_fixed_cutoff(self):
+        p = self.case(day=7, tick=39, packs=0, damaged=False)
+        p['teamOur']['roles'][2].update(pos={'x': 0, 'y': 0}, backpack=['copper'] * 3)
+        p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 13, 'y': 3}})
+        p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
+        t, cfg, nav, ledger = setup_case(p)
+        mem = Memory(wall_watch_id=2)
+        locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
+        self.assertTrue(locked)
+        self.assertEqual(ledger.commands['2']['action'], 'move')
+        self.assertIn(2, mem.sale_workers)
+
     def test_watcher_does_not_mine_at_night_without_damage_or_stock(self):
         for packs in (0, 4):
             p = self.case(day=7, packs=packs, damaged=False)

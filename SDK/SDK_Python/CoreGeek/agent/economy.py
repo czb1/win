@@ -534,8 +534,9 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
                 and hero.id != mem.wall_repair_worker and sale_inventory(turn, mem, hero)
                 and earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False)):
             continue
-        if turn.tick < DUSK_SPEND_TICK:
-            continue
+        # The sale window opens at tick 40. Use any remaining daylight for a
+        # deliverable purchase even when the vendor route is unavailable; the
+        # earlier sale attempt has already taken priority when it was viable.
         if use_inventory(turn, nav, ledger, hero, mem=mem):
             continue
         if (hero.kind == "worker" and hero.id != mem.wall_repair_worker
