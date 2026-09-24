@@ -93,7 +93,10 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         home = watch_route(turn, nav, ledger, mem, hero, sites)
     if home is None:
         report('wait', 'no_home_route')
-        return False, 0
+        # Keep ownership of the watch assignment while another actor briefly
+        # blocks the corridor. Releasing it to the ordinary worker planner
+        # alternates between a mining/home move and another attempted recall.
+        return True, 0
     shops = []
     for point, kind in turn.zones.items():
         if kind != 'weaponShop' or (hero.id, 'WallFixer') in mem.buy_failures:

@@ -350,6 +350,26 @@ class WallWatchTests(unittest.TestCase):
         t, _, _, _ = setup_case(p)
         self.assertEqual(reserve_watch_space(t, mem, t.workers[1]).space, 3)
 
+    def test_watch_reserves_only_affordable_pack_slots(self):
+        from agent.mining import reserve_watch_space
+        p = self.case(day=8, tick=24, packs=0)
+        p['teamOur']['goldNum'] = 14
+        p['teamOur']['roles'][2].update(backPackCapability=30, backpack=[])
+        t, _, _, _ = setup_case(p)
+        mem = Memory(wall_watch_id=2)
+        self.assertEqual(reserve_watch_space(t, mem, t.workers[1]).space, 29)
+        self.assertEqual(t.workers[1].space, 30)
+
+    def test_temporarily_blocked_watch_route_keeps_assignment(self):
+        from unittest.mock import patch
+        p = self.case(day=8, tick=45, packs=0)
+        t, cfg, nav, ledger = setup_case(p)
+        with patch('agent.wall_watch.watch_route', return_value=None):
+            locked, reserved = prepare_watch(t, cfg, Memory(), nav, ledger,
+                                             t.workers[1], layout(t, cfg)[1])
+        self.assertEqual((locked, reserved), (True, 0))
+        self.assertNotIn('2', ledger.commands)
+
     def test_repair_worker_yields_to_gunner_before_any_repair(self):
         from agent.combat import clear_gunner_route
         p = self.case()
