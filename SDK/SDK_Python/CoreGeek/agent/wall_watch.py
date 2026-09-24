@@ -62,20 +62,23 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     price = turn.shop.get('WallFixer')
     target = min(mem.wall_watch.stock_target(turn), hero.capacity)
     need = max(0, target - held)
-    # Guarantee up to three packs first. Additional stock must leave money for
-    # missing weapons and the next available firepower upgrade.
+    # Guarantee up to three packs first. Optional stock must leave money for
+    # missing weapons, the next firepower upgrade and a needed wall voucher.
     upgrades = [turn.shop[name] for w in turn.weapons if w.level < 3
                 if (name := f'WeaponUpgradeVoucher{w.level}') in turn.shop and turn.shop[name] > 0]
     core_budget = (max(0, len(cfg.loadout) - len(turn.weapons)) * cfg.weapon_cost
                    + min(upgrades, default=0))
+    from .economy import wall_purchase_allowed, voucher_for, refresh_stone_reserves
+    wall_prices = [turn.shop[name] for wall in walls
+                   if wall_purchase_allowed(turn, wall, mem)
+                   and (name := voucher_for(wall)) in turn.shop and turn.shop[name] > 0]
+    wall_budget = min(wall_prices, default=0)
     previous = mem.wall_watch.history[-1] if mem.wall_watch.history else None
     safety_stock = max(3, previous.used + 2) if previous and previous.unmet else 3
-    if turn.day >= 6:
-        safety_stock = max(safety_stock, target)
     if price is not None and price > 0:
         minimum = max(0, min(safety_stock, target) - held)
         quota = min(need, ledger.gold // price,
-                    max(minimum, max(0, ledger.gold - core_budget) // price))
+                    max(minimum, max(0, ledger.gold - core_budget - wall_budget) // price))
     else:
         quota = need if price == 0 else 0
     funds = quota * price if price is not None and price > 0 else 0
@@ -85,6 +88,7 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
                                 target=target, held=held, need=need, affordable=quota,
                                 safety_stock=min(safety_stock, target),
                                 reserved_gold=funds, core_budget=core_budget,
+                                wall_budget=wall_budget,
                                 gold=ledger.gold, price=price, **extra)
 
     stage = staging_wall(turn, sites)
@@ -113,7 +117,6 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     shop = min(shops, key=lambda o: o[0], default=None)
     if shop is None:
         funds = 0
-    from .economy import refresh_stone_reserves
     refresh_stone_reserves(turn, cfg, mem, ledger)
     ores = sale_inventory(turn, mem, hero)
     trips = []
