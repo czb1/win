@@ -18,6 +18,7 @@ from .task_sop import answer_contract, answer_error, engineering_code
 from .task_query import reference_paths, query_config, query_code
 from .movement import MovementMemory
 from .navigation import layout, wall_gaps
+from .economy_plan import wall_level_limit
 from .task_skills import (bind_recipe, recipe_proposal, compatible, learned_method,
                           output_supports, promote)
 
@@ -314,6 +315,7 @@ class Memory:
                     self.wall_hits[location] = min(10, self.wall_hits.get(location, 0) + 1)
         # Keep repair intent across day boundaries and replacement unit IDs.
         sites = layout(turn, cfg)[1]
+        turn.planned_wall_sites = sites
         lost = set(self.wall_health) - set(current_walls)
         replaced = {p for p, (uid, _) in current_walls.items()
                     if p in self.wall_health and self.wall_health[p][0] != uid}
@@ -328,9 +330,9 @@ class Memory:
             for p in self.wall_rebuild_levels:
                 adjacent = [q for q in (*levels, *self.wall_rebuild_levels)
                             if abs(p[0]-q[0]) + abs(p[1]-q[1]) == 1]
-                self.wall_rebuild_levels[p] = max(
+                self.wall_rebuild_levels[p] = min(wall_level_limit(turn, p, sites), max(
                     [self.wall_rebuild_levels[p]]
-                    + [max(levels.get(q, 1), self.wall_rebuild_levels.get(q, 1)) for q in adjacent])
+                    + [max(levels.get(q, 1), self.wall_rebuild_levels.get(q, 1)) for q in adjacent]))
         for p, level in list(self.wall_rebuild_levels.items()):
             if levels.get(p, 0) >= level:
                 del self.wall_rebuild_levels[p]

@@ -4,7 +4,7 @@ from .commands import command
 from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, sale_inventory, return_destination
-from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites
+from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit
 from .wall_health import needs_night_repair
 
 
@@ -147,7 +147,9 @@ def rebuilding_wall(turn, building, mem):
 
 
 def wall_upgrade_allowed(turn, building, mem=None):
-    """Replacements first; all level 2, front center outward, then flanks."""
+    """Replacements first; all level 2, then front center outward to level 3."""
+    if building.kind == "wall" and building.level >= wall_level_limit(turn, building.pos):
+        return False
     if building.kind != "wall" or building.level == 1 or rebuilding_wall(turn, building, mem):
         return True
     walls = [w for w in turn.ours if w.kind == "wall"]
@@ -168,7 +170,7 @@ def wall_three_stage(turn, building):
 
 def walls_ready_for_station(turn, mem):
     # Carried vouchers and same-turn upgrade claims are not completed walls.
-    return (all(w.level == 3 for w in turn.ours if w.kind == "wall")
+    return (all(w.level >= wall_level_limit(turn, w.pos) for w in turn.ours if w.kind == "wall")
             and not mem.wall_rebuild_levels)
 
 
@@ -201,7 +203,8 @@ def staged_wall_purchase_allowed(turn, building, mem=None):
     Actual use still follows the observed levels and center-out wall stages;
     supplies budgets paid prerequisites before any additional deliveries.
     """
-    return bool(building and building.kind == "wall" and building.level < 3
+    return bool(building and building.kind == "wall"
+                and building.level < wall_level_limit(turn, building.pos)
                 and turn.is_day
                 and (rebuilding_wall(turn, building, mem)
                      or turn.weapons and all(w.level >= 3 for w in turn.weapons)))
@@ -356,7 +359,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                 continue
             # Account for every voucher already carried, including vouchers
             # for the next level in a single shop trip. Never buy a duplicate.
-            while name and carried[name]:
+            while name and carried[name] and wall_purchase_allowed(turn, building, mem):
                 carried[name] -= 1
                 if building.kind == "wall":
                     paid_walls.append((upgrade_order(turn, building, mem), name, building.cells))
@@ -541,7 +544,8 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
         if hero.kind != "worker" or hero.id == mem.wall_repair_worker:
             continue
         # Do not add a second delivery while a paid, applicable voucher waits.
-        if any(hero.inventory[voucher_for(b)] for b in turn.ours if voucher_for(b)):
+        if any(hero.inventory[voucher_for(b)] for b in turn.ours if voucher_for(b)
+               and (b.kind != "wall" or b.level < wall_level_limit(turn, b.pos))):
             continue
         plan = supplies(turn, cfg, mem, nav, ledger, hero, reserve, planned=planned)
         buy_supply(turn, ledger, hero, plan)
@@ -891,7 +895,8 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     work_remains = (any(w.id < 0 or w.level < 3 for w in planned)
                     or turn.station and turn.station.level < 3 and bool(turn.shop)
                     or any(rebuilding_wall(turn, w, mem)
-                           or w.kind == "wall" and voucher_for(w) in turn.shop for w in turn.ours)
+                           or w.kind == "wall" and w.level < wall_level_limit(turn, w.pos)
+                           and voucher_for(w) in turn.shop for w in turn.ours)
                     or any(p not in built_walls and p not in mem.build_failures for p in wall_sites))
     cutoff = (preparation_start(turn, cfg, mem, nav, free, tower_sites) if work_remains else 70) if trading else 0
     # Keep the selected supply worker in the preparation phase after a

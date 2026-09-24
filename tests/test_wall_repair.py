@@ -185,12 +185,12 @@ class WallRepairTests(unittest.TestCase):
         workers(t, c, m, n, l, [], sorted(l.wall_cells))
         self.assertEqual(l.commands["1"], command("build", (5, 8), name="wall"))
 
-    def test_replacement_buys_and_uses_both_levels_before_weapon_upgrades(self):
+    def test_flank_replacement_reaches_two_before_weapon_upgrades(self):
         p, c, m = self.repair_case()
-        self.assertEqual(m.wall_rebuild_levels[(5, 8)], 3)
+        self.assertEqual(m.wall_rebuild_levels[(5, 8)], 2)
         replacement = unit(99, "wall", 5, 8, health=1000)
         p["teamOur"]["roles"].append(replacement)
-        for level in (1, 2):
+        for level in (1,):
             replacement["level"] = level
             p["roundNo"] += 1
             t, c, n, l = setup_case(p)
@@ -202,7 +202,7 @@ class WallRepairTests(unittest.TestCase):
             self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=m))
             self.assertEqual(l.commands["1"], command("use", (5, 8), name=name))
             p["teamOur"]["roles"][0]["backpack"] = []
-        replacement["level"] = 3
+        replacement["level"] = 2
         m.observe(Turn(p, c), c)
         self.assertNotIn((5, 8), m.wall_rebuild_levels)
 
@@ -216,7 +216,7 @@ class WallRepairTests(unittest.TestCase):
         p, c, m = self.repair_case()
         p["roundNo"] = 260
         m.observe(Turn(p, c), c)
-        self.assertEqual(m.wall_rebuild_levels[(5, 8)], 3)
+        self.assertEqual(m.wall_rebuild_levels[(5, 8)], 2)
 
 
 if __name__ == "__main__":
