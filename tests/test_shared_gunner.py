@@ -18,6 +18,20 @@ class SharedGunnerTests(unittest.TestCase):
                                     targetTeam='challenger')]
         return p
 
+    def siege_case(self, round_no=70):
+        p = self.case(round_no)
+        p['robot']['roles'] = []
+        for tower in p['teamOur']['roles'][3:]:
+            tower.update(level=3, attackRange=20, cooldown=0)
+        p['teamEnemy']['roles'] = [unit(50, 'station', 10, 2)]
+        # The x=8 edge faces our station; the other cells are enemy flanks.
+        p['teamEnemy']['roles'] += [unit(60 + y, 'wall', 8, y, health=1000)
+                                    for y in range(6)]
+        p['teamEnemy']['roles'] += [unit(70, 'wall', 9, 1, health=1000),
+                                    unit(71, 'wall', 9, 4, health=1000),
+                                    unit(72, 'wall', 10, 4, health=1000)]
+        return p
+
     def test_four_corners_share_reachable_post_and_original_walls(self):
         for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
             p = payload(roles=[unit(13, 'station', x, y), unit(1, 'worker', 7, 7)])
@@ -112,6 +126,31 @@ class SharedGunnerTests(unittest.TestCase):
         for h in p['teamOur']['roles'][1:3]:
             h['health'] = 0
         self.assertFalse(any(c['action'] == 'attack' for c in agent.decide(p)['roleCommandMap'].values()))
+
+    def test_level_three_gunner_sieges_enemy_front_wall_at_night(self):
+        p = self.siege_case()
+        result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
+        shots = [c for c in result.values() if c['action'] == 'attack']
+        self.assertEqual(len(shots), 1)
+        self.assertEqual(shots[0]['controllerId'], '1')
+        self.assertEqual(len(shots[0]['targetPos']), 3)
+        self.assertTrue(all(point['x'] == 8 for point in shots[0]['targetPos']))
+        self.assertNotIn('1', result)
+
+    def test_enemy_wall_siege_is_never_controlled_during_day(self):
+        p = self.siege_case(round_no=69)
+        result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
+        self.assertFalse(any(c['action'] == 'attack' for c in result.values()))
+
+    def test_local_threat_keeps_gunner_on_robot_defence(self):
+        p = self.siege_case()
+        p['robot']['roles'] = [unit(90, 'smallRobot', 6, 11, health=500,
+                                    attackRange=1, targetTeam='challenger')]
+        result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
+        shots = [c for c in result.values() if c['action'] == 'attack']
+        self.assertEqual(len(shots), 1)
+        self.assertEqual(len(shots[0]['targetPos']), 3)
+        self.assertTrue(all(point == {'x': 6, 'y': 11} for point in shots[0]['targetPos']))
 
     def test_all_ready_guns_follow_persistent_rotation(self):
         agent = Agent(Config(llm_enabled=False))
