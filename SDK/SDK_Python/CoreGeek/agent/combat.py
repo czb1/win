@@ -230,6 +230,79 @@ def select_targets(turn, tower, damage, deadline):
     return result
 
 
+def _station_center(station):
+    """Return the geometric centre used for enemy-front classification."""
+    if station is None:
+        return None
+    cells = tuple(station.cells)
+    return (sum(p[0] for p in cells) / len(cells),
+            sum(p[1] for p in cells) / len(cells))
+
+
+def _enemy_front_axis(turn, walls=()):
+    """Return ``(axis, coordinate)`` for the wall edge facing our base.
+
+    The default map places bases in opposite corners and the existing layout
+    always defines the front edge on the x axis (the y axis is used only for a
+    degenerate same-column map).  A missing station falls back to distance-only
+    wall ordering below.
+    """
+    ours = _station_center(turn.station)
+    station = next((u for u in turn.enemies if u.kind == "station"), None)
+    enemy = _station_center(station)
+    if ours is None or enemy is None:
+        return None
+    dx, dy = enemy[0] - ours[0], enemy[1] - ours[1]
+    if dx:
+        coordinates = [wall.pos[0] for wall in walls]
+        edge = (min(coordinates) if dx > 0 else max(coordinates)) if coordinates else (
+            min(p[0] for p in station.cells) if dx > 0 else max(p[0] for p in station.cells))
+        return "x", edge
+    if dy:
+        coordinates = [wall.pos[1] for wall in walls]
+        edge = (min(coordinates) if dy > 0 else max(coordinates)) if coordinates else (
+            min(p[1] for p in station.cells) if dy > 0 else max(p[1] for p in station.cells))
+        return "y", edge
+    return None
+
+
+def enemy_wall_targets(turn, tower, deadline, radius=6):
+    """Choose level-sized enemy-wall targets for a safe night siege.
+
+    This is intentionally narrower than robot targeting: only a fully upgraded
+    three-rocket battery may switch to walls, and only when no living robot
+    threatening our base is within the local defence radius.  Front-edge walls
+    are ordered before flanks, then from the enemy wall's centre outward.
+    """
+    check_time(deadline)
+    if (turn.is_day or tower.kind != "rocket" or tower.level < 3
+            or len(turn.weapons) != 3
+            or any(w.kind != "rocket" or w.level < 3 for w in turn.weapons)):
+        return []
+    if any(turn.threatens_us(robot) and turn.base_distance(robot.pos) <= radius
+           for robot in turn.robots):
+        return []
+    walls = [w for w in turn.enemies
+             if w.kind == "wall" and w.health > 0
+             and distance(tower.pos, w.pos) <= tower.attack_range]
+    if len(walls) < tower.level:
+        return []
+    axis = _enemy_front_axis(turn, walls)
+    enemy_station = next((u for u in turn.enemies if u.kind == "station"), None)
+    centre = _station_center(enemy_station)
+
+    def key(wall):
+        if axis:
+            name, front = axis
+            front_rank = int(wall.pos[0 if name == "x" else 1] != front)
+            lateral = abs(wall.pos[1 if name == "x" else 0] - centre[1 if name == "x" else 0])
+        else:
+            front_rank, lateral = 0, 0
+        return (front_rank, lateral, distance(tower.pos, wall.pos), wall.pos)
+
+    return [wall.pos for wall in sorted(walls, key=key)[:tower.level]]
+
+
 def defend(turn, nav, ledger, pairs=None, posts=None):
     damage = {}
     pairs = pairs if pairs is not None else assignments(turn, nav, ledger)
@@ -372,7 +445,7 @@ def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
     return ([(hero, towers[0])] if towers else []), {hero.id: (post, length)}
 
 
-def shared_defend(turn, nav, ledger, mem, pairs, sites):
+def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6):
     """One action per worker; platform cooldown is authoritative."""
     if not pairs:
         return
@@ -386,6 +459,8 @@ def shared_defend(turn, nav, ledger, mem, pairs, sites):
         if tower is None or tower.cooldown or distance(hero.pos, tower.pos) != 1:
             continue
         targets = select_targets(turn, tower, {}, nav.deadline)
+        if not targets:
+            targets = enemy_wall_targets(turn, tower, nav.deadline, radius=siege_radius)
         if targets and ledger.add(tower.id, {'action': 'attack', 'controllerId': str(hero.id),
                                            'targetPos': [dump(p) for p in targets]}):
             mem.next_gun = (index + 1) % len(sites)
