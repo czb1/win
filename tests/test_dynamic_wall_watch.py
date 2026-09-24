@@ -210,7 +210,7 @@ class DynamicWallWatchTests(unittest.TestCase):
         self.assertEqual(mem.wall_watch.night.unreachable, {30})
 
     def test_buys_only_difference_and_preserves_firepower_budget(self):
-        p = case(day=10, tick=40, packs=1)
+        p = case(day=10, tick=40, packs=1, damaged=False)
         p['teamOur']['goldNum'] = 150
         p['weaponShopList'].append({'name': 'WeaponUpgradeVoucher1', 'price': 100})
         t, cfg, nav, ledger = setup_case(p)
