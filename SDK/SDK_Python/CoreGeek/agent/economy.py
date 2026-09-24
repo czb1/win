@@ -1,6 +1,7 @@
 from collections import Counter
 from dataclasses import replace
 from .commands import command
+from .combat import block_enemy_controls
 from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, sale_inventory, return_destination
@@ -1123,6 +1124,8 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
             if mem.treasure:
                 mem.trace_treasure(turn, "treasure_progress", dedupe=True, reason="medicine_supply")
             return
+    if block_enemy_controls(turn, cfg, nav, ledger, hero, dusk_only=True):
+        return
     t = mem.treasure
     if t and not mem.treasure_done and not mem.treasure_attempted and turn.round <= t["endRound"]:
         required = Counter(t["items"])
