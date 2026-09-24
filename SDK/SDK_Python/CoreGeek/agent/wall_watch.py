@@ -2,7 +2,8 @@
 from dataclasses import replace
 from .commands import command
 from .model import neighbours, ORES
-from .mining import earn
+from .mining import earn, sale_inventory
+from .economy_plan import via
 from .wall_health import repair_risk
 
 
@@ -41,6 +42,15 @@ def watch_route(turn, nav, ledger, mem, hero, sites, target=None):
     return nav.search(hero, goals, reserved)
 
 
+def staging_wall(turn, sites):
+    walls = [w for w in turn.ours if w.kind == 'wall' and w.pos in sites]
+    if not walls:
+        return None
+    from .wall_health import WALL_MAX_HEALTH
+    return min(walls, key=lambda w: (w.health / WALL_MAX_HEALTH[w.level - 1],
+                                     turn.base_distance(w.pos), w.id))
+
+
 def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     """Return (worker locked, gold reserved); retain early daytime production."""
     if not hero or hero.id in ledger.used:
@@ -60,6 +70,8 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
                    + min(upgrades, default=0))
     previous = mem.wall_watch.history[-1] if mem.wall_watch.history else None
     safety_stock = max(3, previous.used + 2) if previous and previous.unmet else 3
+    if turn.day >= 6:
+        safety_stock = max(safety_stock, target)
     if price is not None and price > 0:
         minimum = max(0, min(safety_stock, target) - held)
         quota = min(need, ledger.gold // price,
@@ -75,7 +87,8 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
                                 reserved_gold=funds, core_budget=core_budget,
                                 gold=ledger.gold, price=price, **extra)
 
-    home = watch_route(turn, nav, ledger, mem, hero, sites)
+    stage = staging_wall(turn, sites)
+    home = watch_route(turn, nav, ledger, mem, hero, sites, stage)
     if home is None:
         report('wait', 'no_home_route')
         return False, 0
@@ -87,7 +100,7 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
             route = nav.search(hero, {cell}, ledger.reserved)
             if route is None:
                 continue
-            back = watch_route(turn, nav, ledger, mem, replace(hero, pos=cell), sites)
+            back = watch_route(turn, nav, ledger, mem, replace(hero, pos=cell), sites, stage)
             if back:
                 shops.append((route[0] + back[0] + 1, route))
     shop = min(shops, key=lambda o: o[0], default=None)
@@ -100,6 +113,26 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     if hero.health <= 165 and hero.inventory['Medicine']:
         ledger.add(hero.id, command('use', name='Medicine'))
         return True, funds
+    if held and any(w.health < 500 for w in walls):
+        from .economy import use_inventory
+        if use_inventory(turn, nav, ledger, hero, mem=mem):
+            report('repair', 'daytime_low_wall')
+            return True, 0
+    # Sell the watcher's own ore before shopping, including while carrying
+    # packs. Keep enough daylight for the vendor, shop and inside return.
+    from .economy import refresh_stone_reserves
+    refresh_stone_reserves(turn, cfg, mem, ledger)
+    ores = sale_inventory(turn, mem, hero)
+    if ores and stage:
+        vendors = [[p] for p, kind in turn.zones.items() if kind == 'vendor']
+        shops_for_sale = [[p] for p, kind in turn.zones.items() if kind == 'weaponShop'] if quota else []
+        trips = [via(nav, hero, [vendor, *([shop] if shop else []), [stage.pos]], ledger.reserved)
+                 for vendor in vendors for shop in (shops_for_sale or [None])]
+        if any(trip is not None and trip + len(ores) + int(bool(quota))
+               + cfg.return_margin < turn.day_left for trip in trips):
+            if earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False):
+                report('sell', 'liquidate_before_stock')
+                return True, funds
     if quota and shop:
         if shop[0] + cfg.return_margin < turn.day_left:
             if hero.space < quota and any(hero.inventory[k] for k in ORES):
@@ -114,13 +147,11 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
                                    command('buy', name='WallFixer', num=count))
                 report('move' if route[1] else 'buy', 'restock' if added else 'command_rejected', count=count)
                 return True, funds if route[1] else 0
-    if held:
-        if home[1] is not None:
-            ledger.add(hero.id, command('move', home[1]))
-        report('move' if home[1] else 'hold', 'return_with_stock', steps=home[0])
-        return True, 0
-    report('release', 'no_funds' if not quota else 'shop_or_deadline_unavailable')
-    return False, 0
+    if home[1] is not None:
+        ledger.add(hero.id, command('move', home[1]))
+    report('move' if home[1] else 'hold',
+           'return_with_stock' if held else 'return_without_stock', steps=home[0])
+    return True, 0
 
 
 def repair_watch(turn, mem, nav, ledger, hero, sites):
@@ -155,8 +186,8 @@ def repair_watch(turn, mem, nav, ledger, hero, sites):
         item = (rank, wall, route, risk)
         if risk.needed:
             options.append(item)
-        elif hostile and (turn.day >= 8 or risk.nearby and (
-                wall.health * 10 <= risk.maximum * 3 or slack <= 2)):
+        elif ((wall.health * 10 <= risk.maximum * 4)
+              or hostile and (turn.day >= 8 or risk.nearby and slack <= 2)):
             waiting.append(item)
     selected = min(options or waiting, key=lambda o: o[0], default=None)
     if selected:
@@ -170,7 +201,12 @@ def repair_watch(turn, mem, nav, ledger, hero, sites):
                                 steps=route[0], action=action, accepted=accepted,
                                 reason=risk.reason if risk.needed else 'preposition')
         return accepted
-    reason = ('no_pack' if not held else 'no_route') if critical else 'no_urgent_wall'
-    mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, action='hold' if critical and held else 'release',
+    stage = staging_wall(turn, sites)
+    home = watch_route(turn, nav, ledger, mem, hero, sites, stage) if stage else None
+    action = 'move' if home and home[1] is not None else 'hold'
+    if action == 'move':
+        ledger.add(hero.id, command('move', home[1]))
+    reason = 'no_pack' if not held else 'no_route' if critical else 'inside_watch'
+    mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, action=action,
                             reason=reason, held=held, critical=[w.id for w in critical])
-    return bool(critical and held)
+    return True

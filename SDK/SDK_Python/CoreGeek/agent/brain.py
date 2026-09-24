@@ -230,8 +230,8 @@ class Agent:
                     if watcher and hero.id == watcher.id and hero.id not in ledger.used:
                         if hero.health <= 165 and hero.inventory["Medicine"]:
                             use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem)
-                        elif not repair_watch(turn, mem, nav, ledger, hero, walls):
-                            night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=shared is not None)
+                        else:
+                            repair_watch(turn, mem, nav, ledger, hero, walls)
                         continue
                     if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
                         continue
@@ -245,6 +245,12 @@ class Agent:
                         elif turn.station:
                             walk(nav, ledger, hero, turn.station.cells)
             else:
+                # Reserve the watcher's repair budget before other dusk buyers
+                # spend it. The watcher may sell its own ore first.
+                watch_locked, watch_gold = prepare_watch(turn, self.cfg, mem, nav, ledger, watcher, walls)
+                if watch_locked:
+                    returning.add(watcher.id)
+                ledger.gold -= min(watch_gold, ledger.gold)
                 dusk_resources(turn, self.cfg, mem, nav, ledger, towers)
                 for hero, tower in pairs:
                     if hero.id in returning and hero.id not in ledger.used:
@@ -253,10 +259,6 @@ class Agent:
                             if shared is not None and returning else None)
                 defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning], ledger.operator_posts)
                 ledger.reserved.update(corridor or ())
-                watch_locked, watch_gold = prepare_watch(turn, self.cfg, mem, nav, ledger, watcher, walls)
-                if watch_locked:
-                    returning.add(watcher.id)
-                ledger.gold -= min(watch_gold, ledger.gold)
                 if not turn.phase_task:
                     mem.recovery.resume(turn, self.cfg, mem, nav, ledger, returning)
                     mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning, loops_only=True)

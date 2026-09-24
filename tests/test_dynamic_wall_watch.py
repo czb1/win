@@ -32,13 +32,13 @@ class DynamicWallWatchTests(unittest.TestCase):
 
     def test_late_pressure_twenty_percent_boundary_for_all_levels(self):
         for level, maximum in ((1, 1000), (2, 1500), (3, 2000)):
-            for hp in (maximum, maximum - 1, maximum // 5 + 1, maximum // 5, maximum // 5 - 1):
+            for hp in (maximum, maximum - 1, maximum // 4 + 1, maximum // 4, maximum // 4 - 1):
                 with self.subTest(level=level, hp=hp):
                     t, _, nav, ledger = setup_case(self.risk_case(health=hp, level=level))
                     risk = repair_risk(t, t.units[30])
-                    self.assertEqual(risk.threshold, maximum // 5)
-                    self.assertEqual(risk.reason, 'late_20pct')
-                    self.assertEqual(use_inventory(t, nav, ledger, t.workers[0], mem=Memory()), hp < maximum // 5)
+                    self.assertEqual(risk.threshold, maximum // 4)
+                    self.assertEqual(risk.reason, 'late_25pct')
+                    self.assertEqual(use_inventory(t, nav, ledger, t.workers[0], mem=Memory()), hp < maximum // 4)
 
     def test_early_single_attacker_and_late_weak_attacker_keep_ten_percent(self):
         for day, power in ((7, 40), (10, 5)):
@@ -46,12 +46,12 @@ class DynamicWallWatchTests(unittest.TestCase):
             p['robot']['roles'][0].update(roleType='smallRobot', attackPower=power)
             t, _, _, _ = setup_case(p)
             risk = repair_risk(t, t.units[30])
-            self.assertEqual((risk.threshold, risk.needed), (100, False))
+            self.assertEqual((risk.threshold, risk.needed), (150, False))
 
     def test_early_focus_fire_lifts_threshold(self):
         t, _, _, _ = setup_case(self.risk_case(day=4, robots=3))
         risk = repair_risk(t, t.units[30])
-        self.assertEqual((risk.reason, risk.threshold, risk.needed), ('focus_20pct', 200, True))
+        self.assertEqual((risk.reason, risk.threshold, risk.needed), ('focus_25pct', 250, True))
 
     def test_cleared_opponent_and_stunned_waves_do_not_spend(self):
         for mode in ('clear', 'opponent', 'dizzy'):
@@ -164,8 +164,19 @@ class DynamicWallWatchTests(unittest.TestCase):
             p['teamOur']['roles'][2].update(backPackCapability=12, backpack=['copper'] * 3)
             t, _, _, _ = setup_case(p)
             mem = Memory(wall_watch_id=2)
-            self.assertEqual(mem.wall_watch.stock_target(t), day - 1)
-            self.assertEqual(reserve_watch_space(t, mem, t.workers[1]).space, 12 - 3 - (day - 1))
+            self.assertEqual(mem.wall_watch.stock_target(t), {4: 4, 5: 6, 6: 9, 7: 12}.get(day, 18 + 2 * (day - 8)))
+            self.assertEqual(reserve_watch_space(t, mem, t.workers[1]).space, max(0, 12 - 3 - min(12, mem.wall_watch.stock_target(t))))
+
+    def test_late_baseline_is_eighteen_but_single_worker_capacity_limits_purchase(self):
+        p = case(day=8, tick=40, packs=2, damaged=False)
+        p['teamOur']['roles'][2]['backPackCapability'] = 10
+        p['teamOur']['goldNum'] = 200
+        t, cfg, nav, ledger = setup_case(p)
+        mem = Memory(wall_watch_id=2)
+        self.assertEqual(mem.wall_watch.stock_target(t), 18)
+        prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
+        self.assertEqual(ledger.commands['2'], {'action': 'buy', 'name': 'WallFixer', 'num': 8})
+        self.assertNotIn('1', ledger.commands)
 
     def test_early_exhaustion_adds_more_than_late_exhaustion(self):
         t, _, _, _ = setup_case(case(day=5, tick=5))
@@ -175,7 +186,7 @@ class DynamicWallWatchTests(unittest.TestCase):
             mem.wall_watch.history.append(NightRecord(4, 3, 70, {}, used=3,
                                                        empty_tick=tick, unmet={30}))
             targets.append(mem.wall_watch.stock_target(t))
-        self.assertEqual(targets, [10, 5])
+        self.assertEqual(targets, [10, 6])
 
     def test_stock_target_caps_and_surplus_decays_without_midday_oscillation(self):
         t, _, _, _ = setup_case(case(day=5, tick=5))
@@ -206,10 +217,10 @@ class DynamicWallWatchTests(unittest.TestCase):
         mem = Memory(wall_watch_id=2, gunner_post=(4, 11))
         locked, reserved = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertTrue(locked)
-        self.assertEqual((ledger.commands['2']['num'], ledger.gold, reserved), (5, 100, 0))
+        self.assertEqual((ledger.commands['2']['num'], ledger.gold, reserved), (15, 0, 0))
 
     def test_minimum_stock_survives_small_budget_and_capacity_limits(self):
-        for gold, capacity, expected in ((15, 100, 1), (75, 2, 2), (75, 100, 3)):
+        for gold, capacity, expected in ((15, 100, 1), (75, 2, 2), (75, 100, 7)):
             p = case(day=10, tick=40, packs=0)
             p['teamOur']['goldNum'] = gold
             p['teamOur']['roles'][2]['backPackCapability'] = capacity
@@ -311,7 +322,7 @@ class DynamicWallWatchTests(unittest.TestCase):
 
         adaptive = replay('adaptive', 35, 450)
         early = replay('fixed20', 35, 450)
-        self.assertEqual(adaptive, (2, True))
+        self.assertEqual(adaptive, (3, True))
         self.assertEqual(early, (3, True))
         self.assertFalse(replay('fixed10', 280, 1000)[1])
         self.assertTrue(replay('adaptive', 280, 1000)[1])

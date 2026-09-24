@@ -497,12 +497,8 @@ def buy_supply(turn, ledger, hero, plan):
     return False
 
 
-def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
-    """Liquidate surplus ore early, then spend daylight before return locks."""
-    if not turn.is_day or turn.tick < 40:
-        return
-    # This pass runs before workers(), so refresh stone reservations from the
-    # current blueprint rather than selling against yesterday's allocation.
+def refresh_stone_reserves(turn, cfg, mem, ledger):
+    """Protect current blueprint stone before any daytime sale."""
     structures = {p for b in (*turn.ours, *turn.enemies) if b.kind not in HEROES for p in b.cells}
     missing = [p for p in ledger.wall_cells if p not in structures
                and p not in mem.build_failures and turn.zones.get(p, "land") == "land"]
@@ -512,6 +508,13 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
                                                -h.inventory["stone"], h.id)):
         mem.stone_reserves[h.id] = min(stone_need, h.inventory["stone"])
         stone_need -= mem.stone_reserves[h.id]
+
+
+def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
+    """Liquidate surplus ore early, then spend daylight before return locks."""
+    if not turn.is_day or turn.tick < 40:
+        return
+    refresh_stone_reserves(turn, cfg, mem, ledger)
     planned = planned_weapons(turn, cfg, mem, tower_sites)
     reserve = sum(w.id < 0 for w in planned) * cfg.weapon_cost
     for hero in turn.heroes:
