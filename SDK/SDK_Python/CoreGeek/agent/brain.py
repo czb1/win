@@ -8,6 +8,7 @@ from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
 from .combat import assignments, return_plan, defend, emergency_items, shared_crew, shared_defend, clear_gunner_route
+from .combat import block_enemy_controls
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .economy import reserve_treasure_gold
 from .intelligence import Memory, Intelligence
@@ -244,6 +245,8 @@ class Agent:
                             continue
                         if hero.kind == "worker":
                             night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=shared is not None)
+                        elif block_enemy_controls(turn, self.cfg, nav, ledger, hero):
+                            continue
                         elif turn.station:
                             walk(nav, ledger, hero, turn.station.cells)
             else:
@@ -282,6 +285,8 @@ class Agent:
                             walk(nav, ledger, h, turn.station.cells)
                     else:
                         pioneer(turn, self.cfg, mem, nav, ledger, h)
+                        if h.id not in ledger.used:
+                            block_enemy_controls(turn, self.cfg, nav, ledger, h)
                         if h.id not in ledger.used:
                             vacate_site(turn, nav, ledger, h, towers + walls +
                                         ([mem.gunner_post] if shared is not None and mem.gunner_post else []))

@@ -2,9 +2,51 @@
 import logging
 from itertools import permutations, product
 from collections import deque
-from .model import distance, dump, neighbours
+from .model import HEROES, WEAPONS, distance, dump, neighbours
 from .commands import command
 from .navigation import check_time
+
+
+def block_enemy_controls(turn, cfg, nav, ledger, hero, dusk_only=False):
+    """Park a free pioneer on a reachable enemy control cell, without attacking.
+
+    A single actor can deny a sole control cell or occupy a shared post; other
+    open neighbouring cells still let the opponent operate individual towers.
+    Remembered weapons remain targets only while movement memory retains them.
+    """
+    if hero.kind != "pioneer" or hero.id in ledger.used or turn.phase_task:
+        return False
+    towers = dict(nav.memory.buildings) if nav.memory else {}
+    towers.update({w.pos: w for w in turn.enemies if w.kind in WEAPONS})
+    if not towers:
+        return False
+    mobile = {u.pos for u in (*turn.ours, *turn.enemies) if u.kind in HEROES}
+    mobile.update(r.pos for r in turn.robots)
+    static = (turn.blocked - mobile) | set(towers)
+    controls = [{p for p in neighbours(w.pos) if turn.inside(p) and p not in static}
+                for w in towers.values()]
+    # Do not park on our construction sites or reserved defensive posts.
+    excluded = (ledger.tower_cells | ledger.wall_cells | ledger.reserved
+                | set(ledger.operator_posts.values()))
+    candidates = set().union(*controls) - excluded
+    options = []
+    for post in sorted(candidates):
+        route = nav.search(hero, {post}, ledger.reserved)
+        if route is not None:
+            denied = sum(cells == {post} for cells in controls)
+            shared = sum(post in cells for cells in controls)
+            options.append((-denied, -shared, route[0], post, route))
+    if not options:
+        return False
+    _, _, length, post, route = min(options)
+    if dusk_only and turn.is_day and turn.day_left > length + cfg.return_margin:
+        return False
+    if route[1] is not None:
+        return ledger.add(hero.id, command("move", route[1]))
+    # There is no wait command. Lock the actor so idle fallback keeps the post.
+    ledger.used.add(hero.id)
+    ledger.reserved.add(post)
+    return True
 
 
 def line_cells(start, end):
