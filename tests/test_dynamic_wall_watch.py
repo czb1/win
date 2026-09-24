@@ -165,7 +165,9 @@ class DynamicWallWatchTests(unittest.TestCase):
             t, _, _, _ = setup_case(p)
             mem = Memory(wall_watch_id=2)
             self.assertEqual(mem.wall_watch.stock_target(t), {4: 4, 5: 6, 6: 9, 7: 18}.get(day, 30 + 2 * (day - 8)))
-            self.assertEqual(reserve_watch_space(t, mem, t.workers[1]).space, max(0, 12 - 3 - min(12, mem.wall_watch.stock_target(t))))
+            affordable = t.gold // t.shop['WallFixer']
+            self.assertEqual(reserve_watch_space(t, mem, t.workers[1]).space,
+                             max(0, 12 - 3 - min(12, mem.wall_watch.stock_target(t), affordable)))
 
     def test_late_baseline_is_thirty_but_single_worker_capacity_limits_purchase(self):
         p = case(day=8, tick=40, packs=2, damaged=False)

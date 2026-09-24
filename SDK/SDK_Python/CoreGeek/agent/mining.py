@@ -34,9 +34,11 @@ def return_destination(turn, nav, ledger, hero):
 def reserve_watch_space(turn, mem, hero):
     if turn.is_day and turn.day >= 4 and hero.id == mem.wall_watch_id:
         price = turn.shop.get("WallFixer")
-        if price is not None and 0 <= price <= turn.gold:
+        if price is not None and price >= 0:
             target = min(hero.capacity, mem.wall_watch.stock_target(turn))
-            return replace(hero, capacity=max(0, hero.capacity - max(0, target - hero.inventory["WallFixer"])))
+            missing = max(0, target - hero.inventory["WallFixer"])
+            affordable = missing if price == 0 else min(missing, turn.gold // price)
+            return replace(hero, capacity=max(0, hero.capacity - affordable))
     return hero
 
 
