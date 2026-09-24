@@ -14,6 +14,12 @@ BASE_MAX_HEALTH = 1500
 RESOURCE_POLICY_DAY = 4
 
 
+def pending_delivery(hero, mem):
+    """Night-watch repair stock is not an outstanding daytime delivery."""
+    return (any("UpgradeVoucher" in name for name in hero.backpack)
+            or bool(hero.inventory["WallFixer"] and hero.id != mem.wall_watch_id))
+
+
 def dusk_stop(turn, nav, ledger, hero, destinations, actions=1, require_home=True):
     """A real delivery tile plus the assigned operator post must fit daylight.
 
@@ -529,7 +535,7 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
                 continue
         # Begin well before tick 60 so selling several ore types and returning
         # can fit. Reopen a completed daily sale for newly collected surplus.
-        carrying = any("UpgradeVoucher" in k or k == "WallFixer" for k in hero.backpack)
+        carrying = pending_delivery(hero, mem)
         if (hero.kind == "worker" and not carrying
                 and hero.id != mem.wall_repair_worker and sale_inventory(turn, mem, hero)
                 and earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False)):
@@ -949,7 +955,7 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
         # by worker() below so the persistent supply-worker lock is retained;
         # spending the carrier here would let the other worker claim the build
         # slot and strand the remaining delivery behind it.
-        if any("UpgradeVoucher" in k or k == "WallFixer" for k in h.backpack):
+        if pending_delivery(h, mem):
             continue
         if h.id == repair_buyer:
             continue
@@ -969,8 +975,9 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     for h in free:
         if h.id not in developing:
             continue
-        if h.inventory["WallFixer"] or any(h.inventory[voucher_for(b)] for b in turn.ours
-                                          if voucher_for(b) and wall_upgrade_allowed(turn, b, mem)):
+        if ((h.inventory["WallFixer"] and h.id != mem.wall_watch_id)
+                or any(h.inventory[voucher_for(b)] for b in turn.ours
+                       if voucher_for(b) and wall_upgrade_allowed(turn, b, mem))):
             continue
         p = supplies(turn, cfg, mem, nav, ledger, h, reserve, planned=planned, bulk=True)
         if p:

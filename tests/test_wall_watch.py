@@ -8,7 +8,7 @@ from agent.wall_watch import select_watch, prepare_watch, repair_watch, geometry
 from agent.navigation import layout
 from agent.economy import use_inventory
 from agent.wall_health import needs_night_repair
-from agent.model import Unit
+from agent.model import Unit, Turn
 
 
 class WallWatchTests(unittest.TestCase):
@@ -199,6 +199,83 @@ class WallWatchTests(unittest.TestCase):
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(gunner_post=(4, 11))
         self.assertEqual(prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]), (False, 30))
+
+    def funded_watch(self, tick=41, mirror=False):
+        p = self.case(tick=tick, mirror=mirror, packs=3, damaged=False)
+        p['robot']['roles'] = []
+        p['teamOur']['goldNum'] = 600
+        for role in p['teamOur']['roles']:
+            if role['roleType'] == 'rocket':
+                role['level'] = 3
+        p['weaponShopList'] += [{'name': 'WallUpgradeVoucher1', 'price': 20},
+                                {'name': 'WallUpgradeVoucher2', 'price': 30}]
+        agent = Agent(Config(llm_enabled=False))
+        turn = Turn(p, agent.cfg)
+        post = (10 if mirror else 4, 11)
+        mem = Memory(day=turn.day, last_round=turn.round - 1, gunner_id=1,
+                     gunner_post=post, wall_watch_id=2,
+                     return_targets={1: turn.weapons[0].id}, return_posts={1: post})
+        agent.sessions[(*turn.key, turn.station.pos)] = mem
+        return p, agent
+
+    def test_stocked_watch_can_buy_while_gunner_is_already_returning(self):
+        for mirror in (False, True):
+            for tick in (41, 50, 59):
+                with self.subTest(mirror=mirror, tick=tick):
+                    p, agent = self.funded_watch(tick, mirror)
+                    commands = agent.decide(p)['roleCommandMap']
+                    self.assertEqual(commands['2']['action'], 'buy')
+                    self.assertEqual(commands['2']['name'], 'WallUpgradeVoucher1')
+                    self.assertGreater(commands['2']['num'], 0)
+                    self.assertNotIn('1', commands)
+
+    def test_stocked_watch_is_released_until_actual_return_deadline(self):
+        for tick, locked in ((41, False), (64, False), (65, True)):
+            with self.subTest(tick=tick):
+                p, _ = self.funded_watch(tick)
+                t, cfg, nav, ledger = setup_case(p)
+                mem = Memory(gunner_post=(4, 11), wall_watch_id=2)
+                self.assertEqual(prepare_watch(t, cfg, mem, nav, ledger,
+                                              t.workers[1], layout(t, cfg)[1]), (locked, 0))
+                self.assertFalse(ledger.commands)
+
+    def test_watch_repair_stock_does_not_block_surplus_ore_sale(self):
+        p, agent = self.funded_watch()
+        p['teamOur']['roles'][2]['backpack'] += ['copper'] * 4
+        p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 6, 'y': 10}})
+        p['vendorShopList'] = [{'name': 'copper', 'price': 5}]
+        self.assertEqual(agent.decide(p)['roleCommandMap']['2'],
+                         {'action': 'sell', 'name': 'copper', 'num': 4})
+
+    def test_stocked_watch_purchases_and_uses_both_wall_tiers(self):
+        p, agent = self.funded_watch()
+        wall = next(r for r in p['teamOur']['roles']
+                    if r['roleType'] == 'wall' and r['pos'] == {'x': 8, 'y': 10})
+        for role in p['teamOur']['roles']:
+            if role['roleType'] in ('wall', 'station') and role is not wall:
+                role['level'] = 3
+        hero = p['teamOur']['roles'][2]
+        for action, name in (('buy', 'WallUpgradeVoucher1'), ('use', 'WallUpgradeVoucher1'),
+                             ('buy', 'WallUpgradeVoucher2'), ('use', 'WallUpgradeVoucher2')):
+            result = agent.decide(p)['roleCommandMap']
+            self.assertEqual(set(result), {'2'})
+            cmd = result['2']
+            self.assertEqual((cmd['action'], cmd['name']), (action, name))
+            if action == 'buy':
+                self.assertEqual(cmd['num'], 1)
+                price = next(x['price'] for x in p['weaponShopList'] if x['name'] == name)
+                p['teamOur']['goldNum'] -= price
+                hero['backpack'].append(name)
+            else:
+                self.assertEqual(cmd['targetPos'], [wall['pos']])
+                hero['backpack'].remove(name)
+                wall['level'] += 1
+                wall['health'] = 1500
+            p['roundNo'] += 1
+            p['lastRoundRoleActionResults'] = {'2': True}
+        self.assertEqual(p['teamOur']['goldNum'], 550)
+        self.assertEqual(wall['level'], 3)
+        self.assertEqual(hero['backpack'], ['WallFixer'] * 3)
 
     def test_no_money_no_pack_does_not_lock_worker(self):
         p = self.case(tick=50, packs=0)
