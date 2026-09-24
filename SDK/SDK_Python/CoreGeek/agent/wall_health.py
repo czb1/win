@@ -30,17 +30,17 @@ def repair_risk(turn, wall, mem=None):
     recent = mem.wall_watch.recent_damage(wall, turn.round) if mem else 0
     # Range overlap is a pressure indicator, not proof every robot hits this wall.
     potential = sum(r.power or ROBOT_POWER.get(r.kind, 0) for r in nearby)
-    reason = "base_10pct"
+    reason = "base_15pct"
     if nearby and (len(nearby) >= 3 and potential * 20 >= maximum or recent * 20 >= maximum):
-        reason = "focus_20pct"
+        reason = "focus_25pct"
     elif nearby and turn.day >= 8 and max(potential, recent) * 50 >= maximum:
-        reason = "late_20pct"
-    threshold = maximum // (10 if reason == "base_10pct" else 5)
-    # Only observed wall damage can lift the threshold beyond 20%. Require a
+        reason = "late_25pct"
+    threshold = maximum * (15 if reason == "base_15pct" else 25) // 100
+    # Only observed wall damage can lift the threshold beyond 25%. Require a
     # current attacker so stale damage or a cleared wave cannot waste a pack.
     emergency = bool(nearby and recent and wall.health <= (recent * 5 + 3) // 4)
     if emergency:
-        threshold = max(threshold, min(maximum - 1, (recent * 5 + 3) // 4))
+        threshold = max(threshold, min(maximum * 35 // 100, (recent * 5 + 3) // 4))
         reason = "observed_burst"
     needed = bool(wall.kind == "wall" and 0 < wall.health < maximum and hostile
                   and (wall.health < threshold or emergency))
@@ -53,4 +53,4 @@ def needs_night_repair(wall, turn=None, mem=None):
     if turn is not None:
         return repair_risk(turn, wall, mem).needed
     return (wall.kind == "wall" and 0 < wall.health
-            and wall.health * 10 < WALL_MAX_HEALTH[wall.level - 1])
+            and wall.health * 100 < 15 * WALL_MAX_HEALTH[wall.level - 1])

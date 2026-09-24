@@ -56,12 +56,12 @@ class WallWatchTests(unittest.TestCase):
                             role['health'] = health
                     result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
                     uses = [c for c in result.values() if c.get('name') == 'WallFixer']
-                    self.assertEqual(len(uses), int(health < 100))
+                    self.assertEqual(len(uses), int(health < 150))
                     self.assertTrue(any(c['action'] == 'attack' for c in result.values()))
 
     def test_official_maximum_works_without_full_health_observation(self):
         for level, maximum in ((1, 1000), (2, 1500), (3, 2000)):
-            for health in (maximum, maximum - 1, maximum // 10 + 1, maximum // 10, maximum // 10 - 1):
+            for health in (maximum, maximum - 1, maximum * 15 // 100 + 1, maximum * 15 // 100, maximum * 15 // 100 - 1):
                 with self.subTest(level=level, health=health):
                     p = self.case(damaged=False)
                     for role in p['teamOur']['roles']:
@@ -69,12 +69,12 @@ class WallWatchTests(unittest.TestCase):
                             role.update(level=level, health=health)
                     agent = Agent(Config(llm_enabled=False))
                     result = agent.decide(p)['roleCommandMap']
-                    self.assertEqual(result.get('2', {}).get('name') == 'WallFixer', health * 10 < maximum)
+                    self.assertEqual(result.get('2', {}).get('name') == 'WallFixer', health * 100 < maximum * 15)
 
     def test_generic_inventory_cannot_bypass_night_threshold(self):
         for day in (1, 3, 4):
             for kind in ('worker', 'pioneer'):
-                for level, threshold in ((1, 100), (2, 150), (3, 200)):
+                for level, threshold in ((1, 150), (2, 225), (3, 300)):
                     for health in (499, threshold, threshold - 1):
                         with self.subTest(day=day, kind=kind, level=level, health=health):
                             p = payload((day - 1) * 130 + 70, [
@@ -105,7 +105,7 @@ class WallWatchTests(unittest.TestCase):
             p['roundNo'] += 1
             front['health'] = health
             result = agent.decide(p)['roleCommandMap']
-            self.assertEqual(result.get('2', {}).get('name') == 'WallFixer', health < 100)
+            self.assertEqual(result.get('2', {}).get('name') == 'WallFixer', health < 150)
 
     def test_healthy_front_does_not_hide_critical_flank(self):
         p = self.case(damaged=False)
@@ -115,7 +115,7 @@ class WallWatchTests(unittest.TestCase):
         p['teamOur']['roles'][2]['pos'] = {'x': 7, 'y': 12}
         for role in p['teamOur']['roles']:
             if role['roleType'] == 'wall' and role['pos']['x'] == 8:
-                role['health'] = 100
+                role['health'] = 150
         t, cfg, nav, ledger = setup_case(p)
         self.assertTrue(repair_watch(t, Memory(), nav, ledger, t.workers[1], layout(t, cfg)[1]))
         self.assertEqual(ledger.commands['2']['targetPos'][0], target['pos'])
@@ -134,7 +134,8 @@ class WallWatchTests(unittest.TestCase):
         wall['health'] = 1000
         p['roundNo'] += 1
         t, cfg, nav, ledger = setup_case(p)
-        self.assertFalse(repair_watch(t, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]))
+        self.assertTrue(repair_watch(t, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]))
+        self.assertNotEqual(ledger.commands.get('2', {}).get('name'), 'WallFixer')
 
     def test_rebuilt_wall_uses_current_level_not_previous_maximum(self):
         p = self.case(damaged=False)
@@ -151,12 +152,12 @@ class WallWatchTests(unittest.TestCase):
         for level in (1, 2, 3):
             self.assertFalse(needs_night_repair(Unit.load(unit(30, 'wall', 5, 5, level=level, health=0))))
 
-    def test_no_pack_or_healthy_walls_release_miner(self):
+    def test_no_pack_or_healthy_walls_keep_watcher_inside(self):
         for packs, damaged in ((0, True), (3, False)):
             p = self.case(packs=packs, damaged=damaged)
             p['teamOur']['roles'][2]['pos'] = {'x': 10, 'y': 2}
             result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
-            self.assertEqual(result['2']['action'], 'collect')
+            self.assertNotEqual(result['2']['action'], 'collect')
 
     def test_daytime_buys_batch_even_with_healthy_walls(self):
         p = self.case(tick=40, packs=0, damaged=False)
@@ -164,19 +165,45 @@ class WallWatchTests(unittest.TestCase):
         mem = Memory(gunner_id=1, gunner_post=(4, 11), wall_watch_id=2)
         locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertTrue(locked)
-        self.assertEqual(ledger.commands['2'], {'action': 'buy', 'name': 'WallFixer', 'num': 3})
+        self.assertEqual(ledger.commands['2'], {'action': 'buy', 'name': 'WallFixer', 'num': 4})
+
+    def test_watch_worker_sells_ore_before_buying_packs(self):
+        p = self.case(day=6, tick=40, packs=2, damaged=False)
+        p['teamOur']['roles'][2]['backpack'].extend(['copper'] * 3)
+        p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 7, 'y': 9}})
+        p['vendorShopList'] = [{'name': 'copper', 'price': 5}]
+        t, cfg, nav, ledger = setup_case(p)
+        mem = Memory(wall_watch_id=2)
+        locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
+        self.assertTrue(locked)
+        self.assertEqual(ledger.commands['2'], {'action': 'sell', 'name': 'copper', 'num': 3})
+        self.assertNotIn('1', ledger.commands)
+        p['teamOur']['roles'][2]['backpack'] = ['WallFixer'] * 2
+        p['roundNo'] += 1
+        t, cfg, nav, ledger = setup_case(p)
+        prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
+        self.assertEqual(ledger.commands['2']['name'], 'WallFixer')
+
+    def test_watcher_does_not_mine_at_night_without_damage_or_stock(self):
+        for packs in (0, 4):
+            p = self.case(day=7, packs=packs, damaged=False)
+            p['robot']['roles'] = []
+            p['teamOur']['roles'][2]['pos'] = {'x': 10, 'y': 2}
+            result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
+            self.assertNotEqual(result.get('2', {}).get('action'), 'collect')
+            self.assertNotEqual(result.get('2', {}).get('name'), 'WallFixer')
 
     def test_early_day_reserves_gold_without_locking_worker(self):
         p = self.case(tick=5, packs=0)
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(gunner_post=(4, 11))
-        self.assertEqual(prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]), (False, 30))
+        self.assertEqual(prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]), (False, 40))
 
-    def test_no_money_no_pack_does_not_lock_worker(self):
+    def test_no_money_no_pack_still_recalls_watch_worker(self):
         p = self.case(tick=50, packs=0)
         p['teamOur']['goldNum'] = 0
         t, cfg, nav, ledger = setup_case(p)
-        self.assertEqual(prepare_watch(t, cfg, Memory(), nav, ledger, t.workers[1], layout(t, cfg)[1]), (False, 0))
+        self.assertEqual(prepare_watch(t, cfg, Memory(), nav, ledger, t.workers[1], layout(t, cfg)[1]), (True, 0))
 
     def test_inside_routes_never_enter_front_or_flank_boundary(self):
         p = self.case()
@@ -223,17 +250,18 @@ class WallWatchTests(unittest.TestCase):
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory()
         select_watch(t, mem, [])
-        for health, expected in ((1799, False), (201, False), (200, False), (199, True)):
+        for health, expected in ((1799, False), (301, False), (300, False), (299, True)):
             wall['health'] = health
             t, cfg, nav, ledger = setup_case(p)
             select_watch(t, mem, [])
-            self.assertEqual(repair_watch(t, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]), expected)
+            self.assertTrue(repair_watch(t, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]))
+            self.assertEqual(ledger.commands.get('2', {}).get('name') == 'WallFixer', expected)
 
     def test_mining_worker_returns_when_front_takes_damage(self):
         p = self.case(damaged=False)
         p['teamOur']['roles'][2]['pos'] = {'x': 10, 'y': 2}
         agent = Agent(Config(llm_enabled=False))
-        self.assertEqual(agent.decide(p)['roleCommandMap']['2']['action'], 'collect')
+        self.assertNotEqual(agent.decide(p)['roleCommandMap']['2']['action'], 'collect')
         front = next(r for r in p['teamOur']['roles'] if r['roleType'] == 'wall' and r['pos']['x'] == 8)
         front['health'] = 99
         repaired = False
