@@ -34,8 +34,10 @@ def watch_route(turn, nav, ledger, mem, hero, sites, target=None):
     goals = (set(neighbours(target.pos)) if target else
              {p for wall in sites for p in neighbours(wall)}) & inside
     reserved = set(ledger.reserved)
-    if mem.gunner_post:
-        reserved.add(mem.gunner_post)
+    post = (getattr(ledger, 'daytime_gunner_post', mem.gunner_post)
+            if turn.is_day else mem.gunner_post)
+    if post:
+        reserved.add(post)
     if hero.pos in inside:
         reserved.update((x, y) for x in range(turn.width) for y in range(turn.height)
                         if (x, y) not in inside)
@@ -55,6 +57,7 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     """Return (worker locked, gold reserved); retain early daytime production."""
     if not hero or hero.id in ledger.used:
         return False, 0
+    ledger.watch_pack_slots[hero.id] = 0
     walls = [w for w in turn.ours if w.kind == 'wall']
     if not walls:
         return False, 0
@@ -100,6 +103,7 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         # Keep ownership of the watch assignment while another actor briefly
         # blocks the corridor. Releasing it to the ordinary worker planner
         # alternates between a mining/home move and another attempted recall.
+        ledger.daytime_waits[hero.id] = 'no_home_route'
         return True, 0
     shops = []
     for point, kind in turn.zones.items():
@@ -117,6 +121,8 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     shop = min(shops, key=lambda o: o[0], default=None)
     if shop is None:
         funds = 0
+    else:
+        ledger.watch_pack_slots[hero.id] = quota
     refresh_stone_reserves(turn, cfg, mem, ledger)
     ores = sale_inventory(turn, mem, hero)
     trips = []
@@ -136,8 +142,11 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         report('reserve', 'daytime_production')
         return False, funds
     if hero.health <= 165 and hero.inventory['Medicine']:
-        ledger.add(hero.id, command('use', name='Medicine'))
-        return True, funds
+        added = ledger.add(hero.id, command('use', name='Medicine'))
+        if not added:
+            ledger.daytime_waits[hero.id] = 'command_rejected'
+            ledger.watch_pack_slots[hero.id] = 0
+        return True, funds if added else 0
     if held and any(w.health < 500 for w in walls):
         from .economy import use_inventory
         if use_inventory(turn, nav, ledger, hero, mem=mem):
@@ -163,10 +172,26 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
                 route = shop[1]
                 added = ledger.add(hero.id, command('move', route[1]) if route[1] else
                                    command('buy', name='WallFixer', num=count))
+                if not added:
+                    funds = 0
+                    ledger.daytime_waits[hero.id] = 'command_rejected'
+                    ledger.watch_pack_slots[hero.id] = 0
                 report('move' if route[1] else 'buy', 'restock' if added else 'command_rejected', count=count)
                 return True, funds if route[1] else 0
+    ledger.watch_pack_slots[hero.id] = 0
+    inside, _ = geometry(turn, sites)
+    if not held and hero.pos in inside and turn.zones.get(mem.mine_targets.get(hero.id)) in ORES:
+        # Continue a short inside fallback instead of alternating a mining
+        # move with an unconditional empty-handed recall. The final daytime
+        # pass rechecks the return budget and recalls when work no longer fits.
+        ledger.daytime_waits[hero.id] = 'empty_watch'
+        report('work', 'resume_local_production', steps=home[0])
+        return True, 0
     if home[1] is not None:
-        ledger.add(hero.id, command('move', home[1]))
+        if not ledger.add(hero.id, command('move', home[1])):
+            ledger.daytime_waits[hero.id] = 'command_rejected'
+    else:
+        ledger.daytime_waits[hero.id] = 'watch_ready' if held else 'empty_watch'
     report('move' if home[1] else 'hold',
            'return_with_stock' if held else 'return_without_stock', steps=home[0])
     return True, 0

@@ -31,28 +31,41 @@ def return_destination(turn, nav, ledger, hero):
     return (tower.cells if tower else mining_home(turn, nav, hero, ledger.reserved)), False
 
 
-def reserve_watch_space(turn, mem, hero):
+def reserve_watch_space(turn, mem, hero, ledger=None):
     if turn.is_day and turn.day >= 4 and hero.id == mem.wall_watch_id:
         price = turn.shop.get("WallFixer")
         if price is not None and price >= 0:
             target = min(hero.capacity, mem.wall_watch.stock_target(turn))
             missing = max(0, target - hero.inventory["WallFixer"])
-            affordable = missing if price == 0 else min(missing, turn.gold // price)
+            gold = ledger.gold if ledger is not None else turn.gold
+            affordable = missing if price == 0 else min(missing, gold // price)
+            if ledger is not None:
+                affordable = ledger.watch_pack_slots.get(hero.id, affordable)
             return replace(hero, capacity=max(0, hero.capacity - affordable))
     return hero
 
 
-def spare_mine(turn, cfg, mem, nav, ledger, hero):
+def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
+               reserved=(), max_steps=2, allow_blocked_home=False):
     """Use otherwise idle daylight near ore; carry it to a later day's sale."""
-    hero = reserve_watch_space(turn, mem, hero)
+    hero = reserve_watch_space(turn, mem, hero, ledger)
     if not turn.is_day or not hero.space:
         LOG.debug("round=%s worker=%s spare_mining=unavailable day=%s free_space=%s",
                   turn.round, hero.id, turn.is_day, hero.space)
         return False
-    home, exact = return_destination(turn, nav, ledger, hero)
-    if not home:
+    if home is None:
+        home, exact = return_destination(turn, nav, ledger, hero)
+    if not home and not allow_blocked_home:
         LOG.debug("round=%s worker=%s spare_mining=no_return_destination", turn.round, hero.id)
         return False
+    danger = {(x, y) for r in turn.robots if turn.threatens_us(r)
+              for x in range(max(0, r.pos[0] - r.attack_range - 2),
+                             min(turn.width, r.pos[0] + r.attack_range + 3))
+              for y in range(max(0, r.pos[1] - r.attack_range - 2),
+                             min(turn.height, r.pos[1] + r.attack_range + 3))}
+    if hero.pos in danger:
+        return False
+    reserved = set(ledger.reserved) | set(reserved) | danger
     options = []
     for target, kind in turn.zones.items():
         if (kind not in ORES or turn.prices.get(kind, 0) <= 0 or target in mem.collect_failures
@@ -63,20 +76,28 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero):
         # Check the return from the actual collection tile, not from a
         # different side of the deposit. At most two steps start a spare trip.
         for cell in neighbours(target):
-            route = nav.search(hero, {cell}, ledger.reserved)
-            if route is None or route[0] > 2:
+            route = nav.search(hero, {cell}, reserved)
+            if route is None or route[0] > max_steps:
                 continue
             original = turn.blocked
             try:
                 turn.blocked = original - {hero.pos}
                 proxy = replace(hero, pos=cell)
-                back = (nav.search(proxy, home, ledger.reserved) if exact
-                        else nav.approach(proxy, home, ledger.reserved))
+                back = (nav.search(proxy, home, reserved) if exact
+                        else nav.approach(proxy, home, reserved)) if home else None
             finally:
                 turn.blocked = original
-            if back is None or route[0] + 1 + back[0] + cfg.return_margin > turn.day_left:
-                continue
-            options.append((route[0], -turn.prices[kind], back[0], target, cell, route))
+            if back is None:
+                # A blocked recall may still use an adjacent deposit, but may
+                # never start a walk without a verified way home.
+                if not allow_blocked_home or route[0] or turn.day_left <= cfg.return_margin:
+                    continue
+                return_steps = 0
+            else:
+                return_steps = back[0]
+                if route[0] + 1 + return_steps + cfg.return_margin > turn.day_left:
+                    continue
+            options.append((route[0], -turn.prices[kind], return_steps, target, cell, route))
     if not options:
         LOG.debug("round=%s worker=%s spare_mining=no_safe_mine_within_two_steps day_left=%s",
                   turn.round, hero.id, turn.day_left)
@@ -101,7 +122,7 @@ def sale_inventory(turn, mem, hero):
 
 def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
          deadline=None, stockpile=False, dedicated=False):
-    hero = reserve_watch_space(turn, mem, hero)
+    hero = reserve_watch_space(turn, mem, hero, ledger)
     if not hero.space:
         LOG.debug("round=%s worker=%s mining=backpack_full", turn.round, hero.id)
         return False
@@ -229,7 +250,7 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
     if hero.id in mem.sold_workers and hero.id not in mem.sale_workers and not force_sale:
         if turn.tick < 40 and mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=True):
             return True
-        if turn.tick < 40 and allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero):
+        if allow_spare and not (turn.tick >= 40 and total) and spare_mine(turn, cfg, mem, nav, ledger, hero):
             return True
         # A completed daily sale forbids another vendor visit, not useful
         # repositioning. Leave the vendor and return to a base/operator area.
@@ -282,9 +303,16 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
         return True
     if sell():
         return True
+    # Carry an unsellable late load home before starting any new trip. Once
+    # there, the final daytime pass may use adjacent work without moving out.
+    if allow_spare and turn.tick >= 40 and total and not sale_fits and home:
+        back = (nav.search(hero, home, ledger.reserved) if exact
+                else nav.approach(hero, home, ledger.reserved))
+        if back and back[1] is not None:
+            return ledger.add(hero.id, command("move", back[1]))
     # A pause before a scheduled build/shop phase is not spare time: even one
     # extra trip can change who reaches a narrow construction entrance first.
-    spare_allowed = (allow_spare and turn.tick < 40
+    spare_allowed = (allow_spare and not (turn.tick >= 40 and total)
                      and (deadline is None or deadline >= 70 or turn.tick >= deadline))
     if spare_allowed and spare_mine(turn, cfg, mem, nav, ledger, hero):
         return True
