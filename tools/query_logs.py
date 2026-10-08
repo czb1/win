@@ -3,30 +3,22 @@
 import argparse
 from collections import Counter
 import json
-from pathlib import Path
 import sys
-
-
-def events(path):
-    with Path(path).open(encoding="utf-8") as source:
-        for number, line in enumerate(source, 1):
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-                if not isinstance(record, dict):
-                    raise ValueError("expected object")
-            except ValueError:
-                print(f"跳过无效日志：{path}:{number}", file=sys.stderr)
-                continue
-            yield record
+from log_records import events
 
 
 def matches(record, args):
-    for key in ("day", "phase", "category", "task_id", "session", "team", "level"):
+    for key in ("day", "phase", "category", "task_id", "session", "team", "level", "event"):
         value = getattr(args, key)
         if value is not None and record.get(key) != value:
             return False
+    if args.unit_id is not None and str(record.get("unit_id")) != args.unit_id:
+        return False
+    number = record.get("round")
+    if args.from_round is not None and (type(number) is not int or number < args.from_round):
+        return False
+    if args.to_round is not None and (type(number) is not int or number > args.to_round):
+        return False
     return args.contains is None or args.contains in record.get("message", "")
 
 
@@ -35,7 +27,11 @@ def main(argv=None):
     parser.add_argument("log", help="Path to events.jsonl")
     parser.add_argument("--day", type=int)
     parser.add_argument("--phase", choices=("day", "night"))
-    parser.add_argument("--category", choices=("general", "evolution", "long_context"))
+    parser.add_argument("--category")
+    parser.add_argument("--event")
+    parser.add_argument("--unit-id")
+    parser.add_argument("--from-round", type=int)
+    parser.add_argument("--to-round", type=int)
     for key in ("task-id", "session", "team", "contains"):
         parser.add_argument("--" + key)
     parser.add_argument("--level", choices=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"))

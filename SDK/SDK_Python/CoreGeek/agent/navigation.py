@@ -19,6 +19,13 @@ class Navigator:
         self.memory = memory
         self._trees = {}
         self._distances = {}
+        self.diagnostics = {}
+
+    def record_search(self, uid, outcome, **facts):
+        record = self.diagnostics.setdefault(uid, {"outcomes": {}, "last_failure": None})
+        record["outcomes"][outcome] = record["outcomes"].get(outcome, 0) + 1
+        if outcome not in ("route_found", "at_goal"):
+            record["last_failure"] = {"reason": outcome, **facts}
 
     def distances_to(self, targets, vacated=(), reserved=()):
         """One reverse BFS serves every mine; no BFS per deposit endpoint."""
@@ -50,8 +57,11 @@ class Navigator:
         blocked = frozenset((self.turn.blocked | set(reserved) | avoided) - {hero.pos})
         goals = {g for g in goals if self.turn.inside(g) and g not in blocked}
         if not goals:
+            self.record_search(hero.id, "goals_occupied_or_outside_map", blocked_count=len(blocked),
+                               avoided_count=len(avoided), reserved_count=len(reserved))
             return None
         if hero.pos in goals:
+            self.record_search(hero.id, "at_goal")
             return 0, None
         # Many mines/build sites share the same actor and occupancy snapshot.
         # Cache the entire BFS, including deterministic discovery order.
@@ -77,6 +87,9 @@ class Navigator:
         routes = self._trees[key]
         route = min((routes[g] for g in goals if g in routes),
                     key=lambda r: (r[0], r[2]), default=None)
+        self.record_search(hero.id, "route_found" if route else "unreachable",
+                           goal_count=len(goals), blocked_count=len(blocked), avoided_count=len(avoided),
+                           reserved_count=len(reserved), expanded_cells=len(routes))
         return route[:2] if route else None
 
     def approach(self, hero, targets, reserved=()):

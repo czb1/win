@@ -3,7 +3,8 @@ import json
 import logging
 from collections import OrderedDict
 from time import monotonic
-from .logging_system import turn_context, update_context
+from .logging_system import turn_context, update_context, request_context, emit_event
+from . import diagnostics
 from .config import Config
 from .daytime import finish_daytime_work
 from .model import Turn, distance
@@ -81,20 +82,30 @@ class Agent:
 
     def decide(self, data):
         started = monotonic()
-        turn = Turn(data, self.cfg)
-        with turn_context(turn):
+        with request_context(data):
             try:
-                return self._decide(data, turn, started)
+                turn = Turn(data, self.cfg)
             except Exception:
-                LOG.exception("decision failed", extra={"event": "decision_failed"})
+                LOG.exception("invalid turn", extra={"event": "turn_invalid", "category": "protocol", "data": {"input": data}})
                 raise
+            with turn_context(turn):
+                try:
+                    return self._decide(data, turn, started)
+                except Exception:
+                    LOG.exception("decision failed", extra={"event": "decision_failed"})
+                    raise
 
     def _decide(self, data, turn, started):
         digest = hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         key = (*turn.key, turn.station.pos if turn.station else None)
         mem = self.sessions.get(key)
         if mem and mem.last_round == turn.round and mem.last_digest == digest:
+            update_context(session=mem.log_session, task_id=mem.log_task_id, task_type=mem.log_task_type)
+            diagnostics.observe(turn, mem)
+            emit_event("cache_hit", {"input_sha256": digest}, "runtime")
+            diagnostics.finish(turn, mem, None, mem.last_response, (monotonic() - started) * 1000, cached=True)
             return json.loads(json.dumps(mem.last_response))
+        session_reason = "round_rewind" if mem is not None else "new_team_or_base"
         if mem is None or turn.round < mem.last_round:
             mem = Memory()
             self.sessions[key] = mem
@@ -102,6 +113,11 @@ class Agent:
         while len(self.sessions) > 8:
             self.sessions.popitem(last=False)
         update_context(session=mem.log_session, task_id=mem.log_task_id, task_type=mem.log_task_type)
+        if not hasattr(mem, "log_history"):
+            diagnostics.start_session(mem, self.cfg, session_reason)
+        emit_event("turn_started", {"input_sha256": digest}, "runtime")
+        diagnostics.observe(turn, mem)
+        diagnostics.incoming_payloads(turn, mem)
         previous_day, previous_tick = divmod(mem.last_round - self.cfg.round_origin, 130)
         if (mem.last_round < 0 or previous_day != turn.day - 1
                 or (previous_tick < 70) != turn.is_day):
@@ -109,6 +125,7 @@ class Agent:
                      "day" if turn.is_day else "night", extra={"event": "phase_start"})
         previous_mines = mem.mine_kinds.copy()
         mem.observe(turn, self.cfg)
+        diagnostics.task_state(turn, mem)
         if mem.last_round < 0 or previous_mines != mem.mine_kinds:
             LOG.info("round=%s source=mapInfo.zones mines_received=%s mines=%s", turn.round,
                      len(mem.mine_kinds), json.dumps(
@@ -133,6 +150,7 @@ class Agent:
         prompt, execute = "", ""
         pairs = []
         shared = None
+        budget_reached = False
         try:
             h = turn.pioneer
             within_timeout = bool(h and turn.phase_task and turn.round - mem.task_started <
@@ -150,6 +168,11 @@ class Agent:
             first_watch = (turn.day == 1 and bool(home)
                            and turn.day_left <= task_return + self.cfg.return_margin)
             hold_task = within_timeout and not danger and not first_watch and not mem.stop_reason
+            if turn.phase_task or mem.log_task_id:
+                emit_event("task_schedule", {"active": bool(turn.phase_task), "within_timeout": within_timeout,
+                           "return_steps": task_return, "return_margin": self.cfg.return_margin,
+                           "day_left": turn.day_left, "danger": danger, "first_watch": first_watch,
+                           "hold_task": hold_task, "stop_reason": mem.stop_reason}, "evolution")
             if not turn.is_day:
                 emergency_items(turn, ledger)
             early_gunner = bool(h and turn.day <= 2 and turn.weapons
@@ -209,6 +232,9 @@ class Agent:
                     continue
                 length = route[0] if route else posts[hero.id][1] + self.cfg.return_margin
                 if hero.id in mem.return_targets or not turn.is_day or turn.day_left <= length + self.cfg.return_margin:
+                    ledger.plans[hero.id] = {"reason": "defence_recall", "return_steps": length,
+                                            "return_margin": self.cfg.return_margin, "day_left": turn.day_left,
+                                            "post": posts.get(hero.id), "tower": tower.id}
                     returning.add(hero.id)
                     mem.return_targets[hero.id] = tower.id
                     if hero.id in posts:
@@ -245,6 +271,10 @@ class Agent:
                     prompt, execute = intel.task(ledger, available_rounds=available)
                 if hold_task:
                     ledger.used.add(h.id)
+                    if str(h.id) not in ledger.commands:
+                        ledger.explain(h.id, "task_work_pending", pending=mem.pending,
+                                       return_steps=task_return, day_left=turn.day_left,
+                                       return_margin=self.cfg.return_margin)
                 elif not mem.stop_reason:
                     mem.stop_reason = ("defence_threat" if danger else
                                        "first_wave_deadline" if first_watch else "task_deadline")
@@ -328,6 +358,8 @@ class Agent:
                     if not prompt:
                         prompt = mem.recovery.prompt(intel)
         except DeadlineExceeded:
+            budget_reached = True
+            emit_event("budget_reached", {"validated_actions": len(ledger.commands)}, "runtime", level=logging.WARNING)
             LOG.warning("round=%s budget reached; returning %s validated actions", turn.round, len(ledger.commands))
         response = ledger.response(prompt, execute)
         if mem.news or mem.treasure:
@@ -356,6 +388,7 @@ class Agent:
                          json.dumps({"actor": uid, **action}, ensure_ascii=False))
         mem.last_round, mem.last_digest, mem.last_response = turn.round, digest, response
         mem.last_commands = response["roleCommandMap"]
+        diagnostics.finish(turn, mem, ledger, response, (monotonic() - started) * 1000, budget_reached, navigation=nav)
         if turn.is_day:
             for worker in turn.workers:
                 LOG.debug("round=%s worker=%s position=%s free_space=%s mining_target=%s command=%s",

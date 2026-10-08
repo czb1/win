@@ -105,6 +105,9 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
     _, _, _, target, _, route = min(options, key=lambda o: o[:5])
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
+        ledger.explain(hero.id, "spare_mining_for_later", target=target, route_steps=route[0],
+                       day_left=turn.day_left, return_margin=cfg.return_margin,
+                       free_space=hero.space)
         changed = mem.mine_targets.get(hero.id) != target
         mem.mine_targets[hero.id] = target
         ledger.mine_claims[hero.id] = target
@@ -215,6 +218,8 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
                                  (amount * (sale_walk + 1) / max(1, batch) if sale_walk is not None else 0))
         options.append((score, route[0], turn.base_distance(p), p, route))
     if not options:
+        ledger.explain(hero.id, "no_mining_candidate", skipped=dict(skipped),
+                       day_left=turn.day_left, deadline=deadline, free_space=hero.space)
         LOG.debug("round=%s worker=%s mining=no_candidate skipped=%s day_left=%s deadline=%s",
                   turn.round, hero.id, dict(skipped), turn.day_left, deadline)
         mem.mine_targets.pop(hero.id, None)
@@ -227,6 +232,12 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
     _, _, _, target, route = chosen
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
+        ledger.explain(hero.id, "mine_wall_material" if want_stone else "mine_for_later" if stockpile else "mine_for_sale",
+                       target=target, route_steps=route[0], candidate_count=len(options),
+                       skipped=dict(skipped), selected_score=chosen[0], best_score=best[0],
+                       retained_previous=chosen is previous, retention_ratio=0.65,
+                       free_space=hero.space, day_left=turn.day_left, deadline=deadline,
+                       return_margin=cfg.return_margin)
         changed = mem.mine_targets.get(hero.id) != target
         mem.mine_targets[hero.id] = target
         ledger.mine_claims[hero.id] = target
@@ -285,6 +296,10 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
         action = (command("sell", name=kind, num=counts[kind]) if route[1] is None
                   else command("move", route[1]))
         if ledger.add(hero.id, action):
+            ledger.explain(hero.id, "sell_surplus_ore", vendor=vendor, route_steps=route[0],
+                           kind=kind, quantity=counts[kind], price=turn.prices[kind],
+                           sale_fits=sale_fits, due=due, force_sale=force_sale,
+                           day_left=turn.day_left, return_margin=cfg.return_margin)
             mem.sale_workers.add(hero.id)
             if route[1] is None:
                 mem.sold_workers.add(hero.id)

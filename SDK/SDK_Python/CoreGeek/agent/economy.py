@@ -87,9 +87,14 @@ def dusk_batch(turn, nav, ledger, hero, candidates, count, elapsed, require_home
 def walk(nav, ledger, hero, targets):
     route = nav.approach(hero, targets, ledger.reserved)
     if route is None:
+        ledger.explain(hero.id, "route_unavailable", targets=list(targets))
         return False
     if route[1] is not None:
-        return ledger.add(hero.id, command("move", route[1]))
+        accepted = ledger.add(hero.id, command("move", route[1]))
+        if accepted:
+            ledger.explain(hero.id, "approach_destination", targets=list(targets), route_steps=route[0])
+        return accepted
+    ledger.explain(hero.id, "already_at_destination", targets=list(targets), route_steps=0)
     return True
 
 
