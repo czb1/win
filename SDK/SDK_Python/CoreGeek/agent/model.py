@@ -3,6 +3,7 @@ from collections import Counter
 
 WEAPONS = ("gatling", "railgun", "rocket")
 HEROES = ("worker", "pioneer")
+CHARACTERS = (*HEROES, "imp")
 ORES = ("stone", "iron", "copper")
 Pos = tuple[int, int]
 
@@ -40,6 +41,7 @@ class Unit:
     backpack: tuple = ()
     target_team: str = ""
     abnormal_state: str = ""
+    is_driving: bool = False
 
     @classmethod
     def load(cls, r):
@@ -48,7 +50,7 @@ class Unit:
                    int(r.get("attackRange") or 0), int(r.get("attackPower") or 0),
                    int(r.get("cooldown") or 0), int(r.get("backPackCapability") or 0),
                    tuple(r.get("backpack") or ()), r.get("targetTeam", ""),
-                   r.get("abnormalState", ""))
+                   r.get("abnormalState", ""), r.get("isDriving") is True)
 
     @property
     def cells(self):
@@ -84,10 +86,14 @@ class Turn:
         self.key = str(team.get("teamId", self.team)), self.team
         self.gold = max(0, int(team.get("goldNum", 0)))
         self.zones = {pos(z["pos"]): z["neutralType"] for z in m.get("zones", [])}
+        self.mine_remain = {pos(z["pos"]): z.get("remain") for z in m.get("zones", [])
+                            if z["neutralType"] in ORES}
         self.ours = tuple(Unit.load(r) for r in team.get("roles", []) if int(r["health"]) > 0)
         self.enemies = tuple(Unit.load(r) for r in data.get("teamEnemy", {}).get("roles", []) if int(r["health"]) > 0)
         self.robots = tuple(Unit.load(r) for r in data.get("robot", {}).get("roles", []) if int(r["health"]) > 0)
         self.heroes = sorted((r for r in self.ours if r.kind in HEROES), key=lambda r: r.id)
+        self.characters = sorted((r for r in self.ours if r.kind in CHARACTERS), key=lambda r: r.id)
+        self.imps = [r for r in self.characters if r.kind == "imp"]
         self.workers = [r for r in self.heroes if r.kind == "worker"]
         self.pioneer = next((r for r in self.heroes if r.kind == "pioneer"), None)
         self.weapons = sorted((r for r in self.ours if r.kind in WEAPONS), key=lambda r: r.id)
@@ -111,6 +117,17 @@ class Turn:
 
     def base_distance(self, p):
         return min(distance(p, q) for q in self.station.cells) if self.station else 999
+
+    def mine_half(self, p):
+        """Signed side of the bottom-left/top-right diagonal; zero is ambiguous."""
+        return p[1] * (self.width - 1) - p[0] * (self.height - 1)
+
+    def enemy_mine(self, p):
+        if (not self.station or not self.inside(p) or self.zones.get(p) not in ORES
+                or self.mine_remain.get(p) is not None and self.mine_remain[p] <= 0):
+            return False
+        home = sum(self.mine_half(cell) for cell in self.station.cells)
+        return home * self.mine_half(p) < 0
 
     def threatens_us(self, robot):
         # The protocol field is authoritative; spawn side and current distance

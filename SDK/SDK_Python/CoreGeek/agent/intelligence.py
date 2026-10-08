@@ -21,6 +21,7 @@ from .task_runtime import runtime_code, runtime_result, command_output
 from .task_sop import answer_contract, answer_error, engineering_code
 from .task_query import reference_paths, query_config, query_code
 from .movement import MovementMemory
+from .sabotage import ImpMemory
 from .navigation import layout, wall_gaps
 from .economy_plan import wall_level_limit
 from .task_skills import (bind_recipe, recipe_proposal, compatible, learned_method,
@@ -307,6 +308,7 @@ class Memory:
     return_targets: dict = field(default_factory=dict)
     return_posts: dict = field(default_factory=dict)
     movement: MovementMemory = field(default_factory=MovementMemory)
+    sabotage: ImpMemory = field(default_factory=ImpMemory)
     last_response: dict | None = None
     last_digest: str = ""
     wall_health: dict = field(default_factory=dict)
@@ -319,6 +321,7 @@ class Memory:
     station_health_peaks: dict = field(default_factory=dict)
 
     def observe(self, turn, cfg):
+        self.sabotage.observe(turn, self)
         self.wall_watch.observe(turn, self)
         if turn.station:
             level = turn.station.level

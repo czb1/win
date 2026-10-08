@@ -11,7 +11,7 @@ import platform
 import re
 
 from .logging_system import context, emit_event, emit_payload, logging_failure
-from .model import HEROES, WEAPONS
+from .model import CHARACTERS, WEAPONS
 
 
 def observational(function):
@@ -164,7 +164,7 @@ def finish(turn, mem, ledger, response, elapsed_ms, budget_reached=False, cached
                 reason = "operating_weapon"
             elif int(role.get("health") or 0) <= 0:
                 reason = "not_alive"
-            elif kind not in HEROES and kind not in WEAPONS:
+            elif kind not in CHARACTERS and kind not in WEAPONS:
                 reason = "not_supported_by_current_strategy"
             elif ledger.daytime_waits.get(int(uid)):
                 reason = ledger.daytime_waits[int(uid)]

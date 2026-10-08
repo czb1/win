@@ -1,7 +1,7 @@
 """One per-turn ledger owns role locks, gold and destination reservations."""
 from collections import Counter
 import sys
-from .model import WEAPONS, HEROES, ORES, dump, distance, pos
+from .model import WEAPONS, CHARACTERS, ORES, dump, distance, pos
 from .logging_system import logging_failure
 
 EMPTY = {"roleCommandMap": {}, "prompt": "", "executeCmd": ""}
@@ -84,7 +84,8 @@ class Ledger:
                    "sell": "sell_selected_ore", "use": "use_available_item",
                    "collect": "collect_selected_mine", "acceptTask": "accept_available_task",
                    "submitAnswer": "submit_ready_answer", "summonTreasure": "attempt_treasure_opening",
-                   "remove": "remove_selected_wall", "drop": "drop_selected_item"}
+                   "remove": "remove_selected_wall", "drop": "drop_selected_item",
+                   "destroy": "destroy_enemy_mine", "catch": "catch_enemy_imp"}
         self.explain(uid, reasons.get(action, "selected_by_strategy"),
                      gold_before=gold_before, reserved_cost=gold_before - self.gold, gold_after=self.gold,
                      free_space=unit.space, stone_count=unit.inventory["stone"],
@@ -122,7 +123,7 @@ class Ledger:
                 return self._reject("invalid_controller")
             expected = 1 if unit.kind == "railgun" else unit.level
             if (self.turn.is_day or unit.kind not in WEAPONS or unit.cooldown > 0
-                    or controller.kind not in HEROES or controller.id in self.used
+                    or controller.kind not in CHARACTERS or controller.id in self.used
                     or not self.turn.adjacent(controller.pos, unit.pos)
                     or len(points) != expected or unit.attack_range <= 0
                     or any(distance(unit.pos, p) > unit.attack_range for p in points)):
@@ -132,9 +133,11 @@ class Ledger:
                 if any(a[0]*b[0]+a[1]*b[1] < 0 for a in vectors for b in vectors):
                     return self._reject("gatling_cone_exceeded")
         else:
-            if unit.kind not in HEROES:
+            if unit.kind not in CHARACTERS:
                 return self._reject("actor_kind_unsupported")
-            needs_pos = action in ("move", "collect", "build", "remove", "summonTreasure")
+            if unit.kind == "imp" and action not in ("move", "destroy", "catch"):
+                return self._reject("imp_action_unsupported")
+            needs_pos = action in ("move", "collect", "build", "remove", "summonTreasure", "destroy", "catch")
             if needs_pos and len(points) != 1:
                 return self._reject("expected_one_target")
             if action == "move":
@@ -160,6 +163,14 @@ class Ledger:
                         or self.turn.zones.get(target) not in ORES
                         or not self.turn.adjacent(unit.pos, target)):
                     return self._reject("collect_preconditions")
+            elif action == "destroy":
+                if (unit.kind != "imp" or not self.turn.adjacent(unit.pos, target)
+                        or not self.turn.enemy_mine(target)):
+                    return self._reject("destroy_requires_adjacent_enemy_mine")
+            elif action == "catch":
+                if not self.turn.adjacent(unit.pos, target) or not any(
+                        u.kind == "imp" and u.pos == target for u in self.turn.enemies):
+                    return self._reject("catch_requires_adjacent_enemy_imp")
             elif action in ("sell", "buy"):
                 num = cmd.get("num", 1)
                 if type(num) is not int or num <= 0 or not isinstance(name, str):

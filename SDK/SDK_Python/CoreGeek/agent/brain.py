@@ -17,6 +17,7 @@ from .economy import reserve_treasure_gold
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
 from .wall_watch import select_watch, prepare_watch, repair_watch
+from .sabotage import act_imps
 
 LOG = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ class Agent:
         shared = None
         budget_reached = False
         try:
+            act_imps(turn, mem.sabotage, nav, ledger)
             h = turn.pioneer
             within_timeout = bool(h and turn.phase_task and turn.round - mem.task_started <
                                   min(mem.task_timeout, self.cfg.task_max_rounds))
