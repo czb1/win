@@ -3,7 +3,7 @@
 import argparse
 import logging
 import os
-import sys
+from agent.logging_system import configure_logging
 from agent.brain import Agent
 from agent.config import Config
 from agent.server import serve
@@ -24,9 +24,9 @@ def main():
     parser.add_argument("--config", default=os.environ.get("FUTURE_WAR_CONFIG"))
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
+    parser.add_argument("--log-dir", help="Save game.log and searchable events.jsonl")
     args = parser.parse_args()
-    logging.basicConfig(stream=sys.stderr, level=getattr(logging, args.log_level),
-                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    configure_logging(args.log_level, args.log_dir)
     cfg = Config.load(args.config)
     if cfg.layout_mode == "demo_inferred":
         logging.warning("Build layout/costs inferred from demo; confirm image-only rules before competition.")

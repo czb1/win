@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Stream/filter events.jsonl; --list provides a day/phase/task directory."""
+import argparse
+from collections import Counter
+import json
+from pathlib import Path
+import sys
+
+
+def events(path):
+    with Path(path).open(encoding="utf-8") as source:
+        for number, line in enumerate(source, 1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    raise ValueError("expected object")
+            except ValueError:
+                print(f"跳过无效日志：{path}:{number}", file=sys.stderr)
+                continue
+            yield record
+
+
+def matches(record, args):
+    for key in ("day", "phase", "category", "task_id", "session", "team", "level"):
+        value = getattr(args, key)
+        if value is not None and record.get(key) != value:
+            return False
+    return args.contains is None or args.contains in record.get("message", "")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("log", help="Path to events.jsonl")
+    parser.add_argument("--day", type=int)
+    parser.add_argument("--phase", choices=("day", "night"))
+    parser.add_argument("--category", choices=("general", "evolution", "long_context"))
+    for key in ("task-id", "session", "team", "contains"):
+        parser.add_argument("--" + key)
+    parser.add_argument("--level", choices=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"))
+    parser.add_argument("--list", action="store_true", help="List matching day/phase/task groups and counts")
+    parser.add_argument("--json", action="store_true", help="Output JSON Lines for further processing")
+    parser.add_argument("--limit", type=int, default=0, help="Maximum displayed events; 0 means all")
+    args = parser.parse_args(argv)
+    if args.limit < 0:
+        parser.error("--limit must be non-negative")
+    groups = Counter()
+    count = 0
+    for record in events(args.log):
+        if not matches(record, args):
+            continue
+        if args.list:
+            groups[tuple(record.get(k) for k in ("day", "phase", "team", "session", "category", "task_id"))] += 1
+            continue
+        if args.json:
+            print(json.dumps(record, ensure_ascii=False))
+        else:
+            phase = {"day": "白天", "night": "黑夜"}.get(record.get("phase"), "系统")
+            print(f"第{record.get('day')}天{phase} round={record.get('round')} "
+                  f"{record.get('level')} [{record.get('category')}] "
+                  f"team={record.get('team')} task_id={record.get('task_id')} "
+                  f"{record.get('message', '')}")
+            if record.get("exception"):
+                print(record["exception"])
+        count += 1
+        if args.limit and count >= args.limit:
+            break
+    if args.list:
+        print("天数\t昼夜\t队伍\t场次\t类别\t任务编号\t日志数")
+        for key, total in sorted(groups.items(), key=lambda item: (item[0][0] or 0, item[0][1] == "night", *(str(v or "") for v in item[0][2:]))):
+            print("\t".join(str(v if v is not None else "-") for v in (*key, total)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

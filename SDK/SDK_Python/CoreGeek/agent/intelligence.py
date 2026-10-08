@@ -1,4 +1,6 @@
 """Asynchronous judger LLM/sandbox loop; nothing here runs shell commands locally."""
+from uuid import uuid4
+from .logging_system import update_context
 from collections import deque
 from dataclasses import dataclass, field
 import ast
@@ -222,6 +224,9 @@ class Memory:
     gunner_post: tuple | None = None
     next_gun: int = 0
     pending: tuple | None = None
+    log_session: str = field(default_factory=lambda: uuid4().hex[:12])
+    log_task_id: str | None = None
+    log_task_type: str | None = None
     task_text: str = ""
     task_started: int = 0
     accepted_round: int | None = None
@@ -381,6 +386,9 @@ class Memory:
         errors = turn.raw.get("errors") or []
         if self.accepted_round is not None and turn.round > self.accepted_round and not turn.phase_task:
             # A rejected acceptTask must not leave an old origin/deadline behind.
+            LOG.info("task_accept_rejected point=%s", self.task_point)
+            self.log_task_id = self.log_task_type = None
+            update_context(task_id=None, task_type=None)
             self.accepted_round = None
             self.task_point = None
             self.task_timeout = cfg.task_max_rounds
@@ -458,10 +466,11 @@ class Memory:
                 self.task_outcomes.append(outcome)
                 LOG.info("round=%s task_outcome=%s", turn.round,
                          json.dumps(outcome, ensure_ascii=False, separators=(",", ":")))
-            LOG.info("round=%s task_event=%s point=%s reason=%s retries=%s errors=%s", turn.round,
-                     "started" if turn.phase_task else "ended", self.task_point,
-                     self.stop_reason or ("judger_error" if errors else "unknown"), self.task_failures,
-                     json.dumps(compact_errors(errors), ensure_ascii=False, separators=(",", ":")))
+            if self.task_text:
+                LOG.info("round=%s task_event=ended point=%s reason=%s retries=%s errors=%s", turn.round,
+                         self.task_point, self.stop_reason or ("judger_error" if errors else "unknown"),
+                         self.task_failures, json.dumps(compact_errors(errors), ensure_ascii=False,
+                                                       separators=(",", ":")), extra={"event": "task_ended"})
             self.task_text = turn.phase_task
             self.task_started = (self.accepted_round if self.accepted_round is not None else turn.round) if turn.phase_task else 0
             self.accepted_round = None
@@ -473,10 +482,17 @@ class Memory:
                     self.task_point = pos(active["taskPosition"])
                     self.task_timeout = int(active.get("timeoutRounds", cfg.task_max_rounds))
             if turn.phase_task:
+                self.log_task_id = f"{self.log_session}/r{self.task_started}"
+                self.log_task_type = next((task.get("taskType") for task in turn.tasks
+                                           if pos(task["taskPosition"]) == self.task_point), "自进化类")
+                update_context(task_id=self.log_task_id, task_type=self.log_task_type)
+                LOG.info("task_started point=%s", self.task_point, extra={"event": "task_started"})
                 # Log the full question once per task so downloadable runner logs can diagnose failures.
                 LOG.info("round=%s task_point=%s task_question=%s", turn.round, self.task_point,
-                         json.dumps(turn.phase_task, ensure_ascii=False))
+                         json.dumps(turn.phase_task, ensure_ascii=False), extra={"event": "task_question"})
             else:
+                self.log_task_id = self.log_task_type = None
+                update_context(task_id=None, task_type=None)
                 self.task_point = None
                 self.task_timeout = cfg.task_max_rounds
             self.answer = self.python = None
