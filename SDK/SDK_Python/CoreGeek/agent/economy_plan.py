@@ -96,9 +96,5 @@ def front_sites(turn, sites):
 
 
 def wall_level_limit(turn, position, sites=None):
-    """Use the existing mirrored front convention; flanks stop at level two."""
-    if sites is None:
-        # Keep a destroyed front from making a surviving flank the new front.
-        sites = [*getattr(turn, "planned_wall_sites", ()),
-                 *(w.pos for w in turn.ours if w.kind == "wall")]
-    return 3 if position in front_sites(turn, sites) else 2
+    """Every side can reach level three; upgrade order controls the stages."""
+    return 3

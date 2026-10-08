@@ -4,7 +4,7 @@ from collections import Counter
 from dataclasses import replace
 from .commands import command
 from .combat import block_enemy_controls, enemy_control_post
-from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
+from .model import ORES, WEAPONS, HEROES, CHARACTERS, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, spare_mine, sale_inventory, return_destination
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit
@@ -62,12 +62,12 @@ def dusk_batch(turn, nav, ledger, hero, candidates, count, elapsed, require_home
     pending, delivered = list(candidates), 0
     while pending and delivered < count:
         options = []
-        # Budget ordinary level-3 walls in the same center-out stages as use.
+        # Budget ordinary walls in the same front-first stages as actual use.
         # A nearby edge cannot stand in for an inner delivery that won't fit.
         stages = [priority[1:4] for priority, name, _ in pending
-                  if name == "WallUpgradeVoucher2" and priority[0] >= 0]
+                  if name.startswith("WallUpgradeVoucher") and priority[0] >= 0]
         for index, (priority, name, cells) in enumerate(pending):
-            if (name == "WallUpgradeVoucher2" and priority[0] >= 0
+            if (name.startswith("WallUpgradeVoucher") and priority[0] >= 0
                     and priority[1:4] != min(stages)):
                 continue
             stop = dusk_stop(turn, nav, ledger, hero, cells, actions=elapsed + 1,
@@ -123,8 +123,9 @@ def wall_sector(turn, wall):
     walls = [w for w in turn.ours if w.kind == "wall"]
     if not walls or not turn.station:
         return None
-    xs = [w.pos[0] for w in walls]
-    ys = [w.pos[1] for w in walls]
+    sites = [*getattr(turn, "planned_wall_sites", ()), *(w.pos for w in walls)]
+    xs = [p[0] for p in sites]
+    ys = [p[1] for p in sites]
     front = max(xs) if turn.station.pos[0] < turn.width / 2 else min(xs)
     if wall.pos[0] == front:
         return "front"
@@ -132,11 +133,13 @@ def wall_sector(turn, wall):
         return "top"
     if wall.pos[1] == max(ys):
         return "bottom"
+    if wall.pos[0] == (min(xs) if front == max(xs) else max(xs)):
+        return "rear"
     return None
 
 
 def exposed_wall(turn, wall, mem):
-    """Strengthen damaged walls and cover the three sides before the third night."""
+    """Strengthen damaged walls and cover each side before the third night."""
     if turn.day < 2 or wall.level != 1:
         return False
     sector = wall_sector(turn, wall)
@@ -156,12 +159,19 @@ def rebuilding_wall(turn, building, mem):
 
 
 def wall_upgrade_allowed(turn, building, mem=None):
-    """Replacements first; all level 2, then front center outward to level 3."""
+    """Replacements first; front to two, all to two, front to three, others to three."""
     if building.kind == "wall" and building.level >= wall_level_limit(turn, building.pos):
         return False
-    if building.kind != "wall" or building.level == 1 or rebuilding_wall(turn, building, mem):
+    if building.kind != "wall" or rebuilding_wall(turn, building, mem):
         return True
     walls = [w for w in turn.ours if w.kind == "wall"]
+    if building.level == 1:
+        return (wall_sector(turn, building) == "front"
+                or not any(w.level == 1 and wall_sector(turn, w) == "front" for w in walls))
+    # A planned but unbuilt wall also needs its level-two prerequisite. A
+    # missing front must never promote the surviving rear to the new front.
+    if set(getattr(turn, "planned_wall_sites", ())) - {w.pos for w in walls}:
+        return False
     if any(w.level == 1 for w in walls):
         return False
     stage = wall_three_stage(turn, building)
@@ -173,13 +183,17 @@ def wall_three_stage(turn, building):
     if wall_sector(turn, building) != "front":
         return (1, 0)
     # Include completed walls so the midpoint cannot drift during upgrades.
-    ys = [w.pos[1] for w in turn.ours if w.kind == "wall" and w.pos[0] == building.pos[0]]
+    sites = [*getattr(turn, "planned_wall_sites", ()),
+             *(w.pos for w in turn.ours if w.kind == "wall")]
+    ys = [p[1] for p in sites if p[0] == building.pos[0]]
     return (0, abs(2 * building.pos[1] - min(ys) - max(ys)))
 
 
 def walls_ready_for_station(turn, mem):
     # Carried vouchers and same-turn upgrade claims are not completed walls.
-    return (all(w.level >= wall_level_limit(turn, w.pos) for w in turn.ours if w.kind == "wall")
+    walls = [w for w in turn.ours if w.kind == "wall"]
+    return (set(getattr(turn, "planned_wall_sites", ())) <= {w.pos for w in walls}
+            and all(w.level >= wall_level_limit(turn, w.pos) for w in walls)
             and not mem.wall_rebuild_levels)
 
 
@@ -265,12 +279,11 @@ def upgrade_order(turn, building, mem=None):
         return (emergency if critical_station(turn, building, mem) else 2 if building.level == 1 else 3, building.id)
     if building.kind in WEAPONS:
         return (0 if building.level == 1 else 1, building.id)
-    xs = [u.pos[0] for u in turn.ours if u.kind == "wall"]
-    front = (max(xs) if turn.station and turn.station.pos[0] < turn.width / 2 else min(xs)) if xs else 0
+    stage = wall_three_stage(turn, building) if building.level == 2 else (
+        int(wall_sector(turn, building) != "front"), 0)
     if mem is not None and exposed_wall(turn, building, mem):
-        return (1.25, -mem.wall_hits.get(building.pos, 0), building.health,
+        return (1.25, building.level, *stage, -mem.wall_hits.get(building.pos, 0), building.health,
                 turn.base_distance(building.pos), building.id)
-    stage = wall_three_stage(turn, building) if building.level == 2 else (int(building.pos[0] != front), 0)
     return (1.75, building.level, *stage, building.health, building.id)
 
 
@@ -581,7 +594,7 @@ def wall_keeps_access(turn, nav, ledger, target):
     # into a permanent extra hole. Check actors at their proposed end positions.
     original = turn.blocked
     mobile = {r.pos for r in (*turn.ours, *turn.enemies, *turn.robots)
-              if r.kind in HEROES or r in turn.robots}
+              if r.kind in CHARACTERS or r in turn.robots}
     built = {pos(c["targetPos"][0]) for c in ledger.commands.values() if c["action"] == "build"}
     turn.blocked = (original - mobile) | built
     heroes = []
@@ -1004,7 +1017,7 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     else:
         buyer = None
     mem.supply_worker = buyer
-    # Complete the configured wall blueprint; the default contains the front and short connected flanks.
+    # Complete the configured wall blueprint; the default surrounds the base except for its side gate.
     selected_walls = wall_sites
     builders = [h for h in free if h.id in developing and h.id != buyer]
     if trading:

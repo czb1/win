@@ -7,7 +7,7 @@ from agent.brain import Agent
 from agent.config import Config
 from agent.commands import command
 from agent.economy import (supplies, use_inventory, workers, wall_upgrade_allowed,
-                           upgrade_order, dusk_batch)
+                           upgrade_order, dusk_batch, wall_sector)
 from agent.economy_plan import preparation_start
 from agent.intelligence import Memory
 from agent.model import Turn
@@ -60,18 +60,26 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         self.assertEqual(supplies(t, c, Memory(), n, l, t.workers[0])[0], "StationUpgradeVoucher1")
         self.assertIsNone(supplies(t, c, Memory(wall_rebuild_levels={(7, 4): 3}), n, l, t.workers[0]))
 
-    def test_flank_cap_blocks_purchase_use_and_recovery_after_front_done(self):
+    def test_flank_can_purchase_use_and_recover_to_three_after_front_done(self):
         for tick in (40, 65, 440):
             p = self.case(tick)
             p["teamOur"]["roles"][3]["level"] = 3
             p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher2"]
             t, c, n, l = self.setup(p)
             mem = Memory(wall_rebuild_levels={(5, 4): 3})
-            self.assertFalse(use_inventory(t, n, l, t.workers[0], mem=mem))
-            self.assertIsNone(Recovery().action((1, "use", (5, 4)), t, c, mem, n, l))
+            self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=mem))
+            self.assertEqual(l.commands["1"], command("use", (5, 4), name="WallUpgradeVoucher2"))
+            t, c, n, l = self.setup(p)
+            if tick != 65:
+                self.assertEqual(Recovery().action((1, "use", (5, 4)), t, c, mem, n, l),
+                                 command("use", (5, 4), name="WallUpgradeVoucher2"))
+            p["teamOur"]["roles"][0]["backpack"] = []
+            t, c, n, l = self.setup(p)
             plan = supplies(t, c, mem, n, l, t.workers[0], bulk=True)
-            self.assertTrue(plan is None or not plan[0].startswith("WallUpgrade"))
+            self.assertEqual(plan[0], "WallUpgradeVoucher2")
             # Once the observed rebuild is complete, a healthy base can upgrade.
+            p["teamOur"]["roles"][4]["level"] = 3
+            t, c, n, l = self.setup(p)
             mem.observe(t, c)
             self.assertFalse(mem.wall_rebuild_levels)
             plan = supplies(t, c, mem, n, l, t.workers[0])
@@ -83,9 +91,10 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         t, c, _, _ = self.setup(p)
         mem = Memory()
         mem.observe(t, c)
+        self.assertNotEqual(wall_sector(t, t.ours[-1]), "front")
         self.assertFalse(wall_upgrade_allowed(t, t.ours[-1], mem))
 
-    def test_flank_rebuild_cannot_inherit_level_three_from_front(self):
+    def test_flank_rebuild_preserves_level_three_after_destruction(self):
         for mirror in (False, True):
             p = self.case(129)
             p["teamOur"]["roles"][3].update(level=3, pos={"x": 7, "y": 4})
@@ -100,10 +109,52 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
             p["roundNo"] = 130
             p["teamOur"]["roles"][4].update(id=99, level=1)
             mem.observe(Turn(p, c), c)
-            self.assertEqual(mem.wall_rebuild_levels[tuple(sites[1])], 2)
+            self.assertEqual(mem.wall_rebuild_levels[tuple(sites[1])], 3)
             p["teamOur"]["roles"][4]["level"] = 2
             mem.observe(Turn(p, c), c)
+            self.assertEqual(mem.wall_rebuild_levels[tuple(sites[1])], 3)
+            p["teamOur"]["roles"][4]["level"] = 3
+            mem.observe(Turn(p, c), c)
             self.assertFalse(mem.wall_rebuild_levels)
+
+    def test_front_two_precedes_nearer_flank_at_dusk_and_with_old_target(self):
+        for mirror in (False, True):
+            for tick in (40, 65, 450):
+                with self.subTest(mirror=mirror, tick=tick):
+                    p = self.case(tick)
+                    for r in p["teamOur"]["roles"][3:]:
+                        r["level"] = 1
+                    p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher1"]
+                    if mirror:
+                        for r in p["teamOur"]["roles"]:
+                            r["pos"]["x"] = 14 - r["pos"]["x"] - (r["roleType"] == "station")
+                        p["mapInfo"]["zones"][0]["pos"]["x"] = 8
+                    t, c, n, l = self.setup(p)
+                    front, flank = t.ours[3:]
+                    mem = Memory(upgrade_targets={1: flank.pos})
+                    self.assertFalse(wall_upgrade_allowed(t, flank, mem))
+                    self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=mem))
+                    self.assertEqual(mem.upgrade_targets[1], front.pos)
+                    self.assertIn(front.id, l.upgrade_claims)
+                    self.assertFalse(wall_upgrade_allowed(t, flank, mem))
+                    t, c, n, l = self.setup(p)
+                    self.assertIsNone(Recovery().action((1, "use", flank.pos), t, c, mem, n, l))
+                    p["teamOur"]["roles"][3]["level"] = 2
+                    t, _, n, l = self.setup(p)
+                    self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=mem))
+                    self.assertEqual(l.commands["1"], command("use", flank.pos, name="WallUpgradeVoucher1"))
+
+    def test_unbuilt_ring_wall_blocks_normal_level_three(self):
+        p = payload(40, [unit(13, "station", 3, 11)])
+        t, c, _, l = setup_case(p)
+        sites = sorted(l.wall_cells)
+        p["teamOur"]["roles"] += [unit(100+i, "wall", *s, level=2, health=1500)
+                                   for i, s in enumerate(sites) if s != (1, 11)]
+        t, c, _, _ = setup_case(p)
+        mem = Memory()
+        mem.observe(t, c)
+        self.assertTrue(all(not wall_upgrade_allowed(t, w, mem)
+                            for w in t.ours if w.kind == "wall"))
 
     def test_every_wall_reaches_two_before_normal_level_three(self):
         for tick in (40, 65):
@@ -140,7 +191,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher1"]
         t, c, n, l = self.setup(p)
         plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
-        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 1))
+        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 2))
 
     def test_shop_buys_both_wall_tiers_before_delivery(self):
         for rebuilding in (False, True):
@@ -149,7 +200,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                 w["level"] = 1
             p["teamOur"]["roles"].append(unit(32, "wall", 7, 4, level=2, health=1000))
             mem = Memory(wall_rebuild_levels={(7, 5): 3, (5, 4): 3} if rebuilding else {})
-            for name, count in (("WallUpgradeVoucher1", 2), ("WallUpgradeVoucher2", 2)):
+            for name, count in (("WallUpgradeVoucher1", 2), ("WallUpgradeVoucher2", 3)):
                 t, c, n, l = self.setup(p)
                 workers(t, c, mem, n, l, [(4, 6)], [(7, 5), (5, 4), (7, 4)])
                 self.assertEqual(l.commands["1"], command("buy", name=name, num=count))
@@ -182,7 +233,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
             p["mapInfo"]["zones"][0]["pos"]["x"] = 8
         return p
 
-    def test_front_three_expands_in_symmetric_layers_and_flanks_stop_at_two(self):
+    def test_front_three_expands_in_symmetric_layers_then_flanks_reach_three(self):
         for rows in (range(2, 9), range(2, 8)):
             for mirror in (False, True):
                 with self.subTest(rows=list(rows), mirror=mirror):
@@ -197,7 +248,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                             if w["pos"]["y"] in allowed:
                                 w["level"] = 3
                     t, _, _, _ = self.setup(p)
-                    self.assertFalse(wall_upgrade_allowed(t, t.ours[-1], Memory()))
+                    self.assertTrue(wall_upgrade_allowed(t, t.ours[-1], Memory()))
 
     def test_front_center_beats_nearer_edge_old_target_and_recovery(self):
         for mirror in (False, True):

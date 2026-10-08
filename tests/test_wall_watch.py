@@ -12,6 +12,18 @@ from agent.model import Unit, neighbours
 
 
 class WallWatchTests(unittest.TestCase):
+    def test_perimeter_patrol_excludes_rear_boundary_and_side_gate(self):
+        for mirror in (False, True):
+            p = self.case(mirror=mirror)
+            t, cfg, _, _ = setup_case(p)
+            sites = layout(t, cfg)[1]
+            inside, _ = geometry(t, sites)
+            self.assertTrue(inside)
+            self.assertTrue(all(min(x for x, _ in sites) < x < max(x for x, _ in sites)
+                                and min(y for _, y in sites) < y < max(y for _, y in sites)
+                                for x, y in inside))
+            self.assertFalse(set(sites) & inside)
+
     def case(self, day=4, tick=70, mirror=False, packs=3, damaged=True):
         p = payload((day - 1) * 130 + tick, [unit(13, 'station', 5, 11, health=1500),
             unit(1, 'worker', 4, 11, health=220),
@@ -218,7 +230,8 @@ class WallWatchTests(unittest.TestCase):
         self.assertEqual(ledger.commands['2']['name'], 'WallFixer')
 
     def test_long_sale_shop_return_starts_before_fixed_cutoff(self):
-        p = self.case(day=7, tick=39, packs=0, damaged=False)
+        # The full perimeter adds travel: begin six turns before tick 40.
+        p = self.case(day=7, tick=34, packs=0, damaged=False)
         p['teamOur']['roles'][2].update(pos={'x': 0, 'y': 0}, backpack=['copper'] * 3)
         p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 13, 'y': 3}})
         p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
@@ -228,6 +241,18 @@ class WallWatchTests(unittest.TestCase):
         self.assertTrue(locked)
         self.assertEqual(ledger.commands['2']['action'], 'move')
         self.assertIn(2, mem.sale_workers)
+
+    def test_late_long_sale_cannot_miss_the_perimeter_return_deadline(self):
+        p = self.case(day=7, tick=39, packs=0, damaged=False)
+        p['teamOur']['roles'][2].update(pos={'x': 0, 'y': 0}, backpack=['copper'] * 3)
+        p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 13, 'y': 3}})
+        p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
+        t, cfg, nav, ledger = setup_case(p)
+        mem = Memory(wall_watch_id=2)
+        locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
+        self.assertTrue(locked)
+        self.assertEqual(ledger.commands['2']['action'], 'move')
+        self.assertNotIn(2, mem.sale_workers)
 
     def test_watcher_does_not_mine_at_night_without_damage_or_stock(self):
         for packs in (0, 4):
@@ -410,5 +435,18 @@ class WallWatchTests(unittest.TestCase):
         corridor = clear_gunner_route(t, nav, ledger, mem, [(t.workers[0], t.weapons[0])])
         self.assertIn(2, ledger.used)
         self.assertEqual(ledger.commands['2']['action'], 'move')
+        destination = ledger.commands['2']['targetPos'][0]
+        # The gate is the only first step out of this pocket. The gunner
+        # cannot claim the same destination or swap with the helper.
+        gate = (destination['x'], destination['y'])
+        self.assertEqual(gate, (3, 10))
+        self.assertIn(gate, ledger.reserved)
+        from agent.commands import command
+        self.assertFalse(ledger.add(1, command('move', gate)))
+        p['teamOur']['roles'][2]['pos'] = destination
+        p['roundNo'] += 1
+        t, cfg, nav, ledger = setup_case(p)
+        corridor = clear_gunner_route(t, nav, ledger, mem, [(t.workers[0], t.weapons[0])])
+        self.assertIn(2, ledger.used)
         destination = ledger.commands['2']['targetPos'][0]
         self.assertNotIn((destination['x'], destination['y']), corridor)

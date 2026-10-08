@@ -10,7 +10,7 @@ from test_agent import payload, unit, setup_case, ROOT
 from agent.brain import Agent
 from agent.config import Config
 from agent.model import Turn, distance, neighbours
-from agent.navigation import layout, Navigator, DeadlineExceeded
+from agent.navigation import layout, wall_gaps, Navigator, DeadlineExceeded
 from agent.commands import command
 from agent.economy import worker, build, wall_keeps_access, mine
 from agent.combat import select_targets
@@ -51,14 +51,43 @@ class LayoutRegressionTests(unittest.TestCase):
     def test_front_is_anchored_to_entire_station_footprint(self):
         t, c, _, _ = setup_case(payload())
         towers, walls = layout(t, c)
-        self.assertEqual(len(walls), 12)
+        self.assertEqual(len(walls), 19)
         self.assertEqual(len(set(walls)), len(walls))
         self.assertTrue(all(t.base_distance(p) == 2 for p in walls))
         self.assertTrue(all(p[0] in (1, 6) or p[1] in (8, 13) for p in walls))
         self.assertTrue(all(t.base_distance(p) == 1 for p in towers))
-        # Two contiguous rear gate cells.
+        # A single side/rear cell keeps the shared post and inner aisle open.
         self.assertNotIn((1, 10), walls)
-        self.assertNotIn((1, 11), walls)
+        self.assertIn((1, 11), walls)
+        self.assertIn((2, 8), walls)
+
+    def test_only_one_side_gate_connects_inside_and_outside_in_all_corners(self):
+        for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
+            with self.subTest(station=(x, y)):
+                p = payload(roles=[unit(13, "station", x, y), unit(10, "worker", 7, 7)])
+                t, cfg, _, _ = setup_case(p)
+                towers, walls = layout(t, cfg)
+                perimeter = {(a, b) for a in range(x - 2, x + 4) for b in range(y - 3, y + 3)
+                             if a in (x - 2, x + 3) or b in (y - 3, y + 2)}
+                gate = (x - 2 if x < 7 else x + 3, y - 1 if y > 7 else y)
+                self.assertEqual(perimeter - set(walls), {gate})
+                p["teamOur"]["roles"] += [unit(100+i, "wall", *s) for i, s in enumerate(walls)]
+                p["teamOur"]["roles"] += [unit(20+i, "rocket", *s) for i, s in enumerate(towers)]
+                t, _, nav, _ = setup_case(p)
+                self.assertIsNotNone(nav.approach(t.workers[0], t.station.cells))
+                t.blocked.add(gate)
+                self.assertIsNone(nav.approach(t.workers[0], t.station.cells))
+                self.assertNotIn(gate, wall_gaps(t, walls, {gate: 10}))
+
+    def test_side_gate_is_never_queued_as_a_repair(self):
+        p = payload(roles=[unit(13, "station", 3, 11)])
+        cfg = Config()
+        _, walls = layout(Turn(p, cfg), cfg)
+        p["teamOur"]["roles"] += [unit(100+i, "wall", *s) for i, s in enumerate(walls)]
+        mem = Memory(wall_hits={(1, 10): 10})
+        mem.observe(Turn(p, cfg), cfg)
+        self.assertNotIn((1, 10), mem.wall_rebuild_levels)
+        self.assertFalse(mem.wall_rebuild_levels)
 
     def test_side_switch_mirrors_the_entire_blueprint(self):
         a = payload(roles=[unit(13, "station", 3, 11)])
@@ -122,6 +151,25 @@ class LayoutRegressionTests(unittest.TestCase):
 
 
 class ConstructionRegressionTests(unittest.TestCase):
+    def test_last_rear_wall_keeps_access_with_a_character_passing_the_gate(self):
+        for kind in ("worker", "pioneer", "imp"):
+            with self.subTest(kind=kind):
+                p = payload(roles=[unit(13, "station", 3, 11),
+                                   unit(10, "worker", 2, 11, backpack=["stone"]),
+                                   unit(14, kind, 1, 10)])
+                t, cfg, _, _ = setup_case(p)
+                towers, walls = layout(t, cfg)
+                target = (1, 11)
+                p["teamOur"]["roles"] += [unit(100+i, "wall", *s) for i, s in enumerate(walls)
+                                           if s != target]
+                p["teamOur"]["roles"] += [unit(20+i, "rocket", *s) for i, s in enumerate(towers)]
+                p["mapInfo"]["zones"] = [{"neutralType": k, "pos": {"x": x, "y": 5}}
+                                         for k, x in (("vendor", 7), ("weaponShop", 8), ("stone", 9))]
+                t, cfg, nav, ledger = setup_case(p)
+                self.assertTrue(wall_keeps_access(t, nav, ledger, target))
+                self.assertTrue(build(t, cfg, Memory(), nav, ledger, t.workers[0], walls, lambda _: "wall"))
+                self.assertEqual(ledger.commands["10"], command("build", target, name="wall"))
+
     def test_distant_enemy_side_precedes_nearby_rear_wall(self):
         for station, worker_pos, front_x in (((3, 11), (0, 10), 6), ((10, 4), (14, 4), 8)):
             p = payload(roles=[unit(13, "station", *station),
@@ -226,7 +274,7 @@ class ConstructionRegressionTests(unittest.TestCase):
     def test_first_day_replay_completes_front_with_two_builders(self):
         for mirrored in (False, True):
             result = simulate_day(Agent, Config, mirrored)
-            self.assertEqual(result["walls_day1"], 12, result)
+            self.assertEqual(result["walls_day1"], 19, result)
             self.assertEqual(result["disconnected_builds"], 0, result)
             self.assertFalse(result["front_missing"], result)
             self.assertFalse(result["blueprint_missing"], result)
