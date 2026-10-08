@@ -5,7 +5,7 @@
   "wall_stones": 1,
   "weapon_cells": [],
   "wall_cells": [],
-  "loadout": ["rocket", "rocket", "rocket"],
+  "loadout": ["rocket", "rocket", "gatling"],
   "stone_batch": 10,
   "sell_batch": 40,
   "sell_batch_max": 80,

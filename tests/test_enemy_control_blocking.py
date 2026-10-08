@@ -37,7 +37,9 @@ class EnemyControlBlockingTests(unittest.TestCase):
                     for role in data[team]['roles']:
                         role['pos']['x'] = 14 - role['pos']['x']
                 target = (4, 5)
-            commands = Agent(Config(llm_enabled=False, layout_mode='explicit')).decide(data)['roleCommandMap']
+            turn, _, nav, ledger = setup_case(data, layout_mode='explicit')
+            self.assertTrue(block_enemy_controls(turn, Config(), nav, ledger, turn.pioneer))
+            commands = ledger.commands
             self.assertEqual(commands['11'], {'action': 'move', 'targetPos': [dict(zip(('x', 'y'), target))]})
             self.assertTrue(all(distance(target, pos(w['pos'])) == 1 for w in data['teamEnemy']['roles']))
 
@@ -45,10 +47,9 @@ class EnemyControlBlockingTests(unittest.TestCase):
         for round_no in (1, 69, 70, 129):
             data = battery(payload(round_no, [unit(11, 'pioneer', 10, 5),
                                                unit(13, 'station', 3, 11)]))
-            commands = Agent(Config(llm_enabled=False, layout_mode='explicit')).decide(data)['roleCommandMap']
-            self.assertNotIn('11', commands)
             turn, cfg, nav, ledger = setup_case(data, layout_mode='explicit')
             self.assertTrue(block_enemy_controls(turn, cfg, nav, ledger, turn.pioneer))
+            self.assertNotIn('11', ledger.commands)
             self.assertIn(11, ledger.used)
             self.assertIn((10, 5), ledger.reserved)
 
@@ -69,19 +70,17 @@ class EnemyControlBlockingTests(unittest.TestCase):
                                                   dusk_only=True), expected)
             self.assertEqual(bool(ledger.commands), expected)
 
-    def test_early_task_keeps_priority_but_dusk_departs_before_new_task(self):
-        for round_no, expected in ((1, 'acceptTask'), (63, 'move')):
+    def test_task_keeps_priority_without_enemy_post_departure(self):
+        for round_no, expected in ((1, 'acceptTask'), (63, 'acceptTask')):
             data = sole_post(round_no)
             data['teamOur']['roles'][0]['pos'] = {'x': 7, 'y': 5}
             data['teamOur']['playerTasks'] = [dict(isValid=True, coldDownRounds=0,
                 taskPosition={'x': 6, 'y': 5}, timeoutRounds=2, scoreReward=10, goldReward=10)]
             result = Agent(Config(layout_mode='explicit', task_min_rounds=1)).decide(data)
             self.assertEqual(result['roleCommandMap']['11']['action'], expected)
-            if expected == 'move':
-                self.assertEqual(pos(result['roleCommandMap']['11']['targetPos'][0])[0], 8)
 
-    def test_third_day_skips_task_that_would_delay_enemy_post(self):
-        for round_no, expected in ((280, 6), (310, 8)):
+    def test_third_day_task_route_does_not_depend_on_enemy_post(self):
+        for round_no, expected in ((280, 6), (310, 6)):
             data = sole_post(round_no)
             data['teamOur']['roles'][0]['pos'] = {'x': 7, 'y': 5}
             data['teamOur']['playerTasks'] = [dict(isValid=True, coldDownRounds=0,
@@ -107,11 +106,13 @@ class EnemyControlBlockingTests(unittest.TestCase):
             commands = Agent(Config(llm_enabled=False, layout_mode='explicit')).decide(data)['roleCommandMap']
             self.assertEqual(commands['11'], {'action': 'use', 'name': 'Medicine'})
 
-    def test_free_pioneer_goes_to_enemy_post_instead_of_home_at_night(self):
+    def test_free_pioneer_returns_home_at_night(self):
         data = sole_post(70)
         data['teamOur']['roles'].append(unit(13, 'station', 3, 11))
         commands = Agent(Config(llm_enabled=False, layout_mode='explicit')).decide(data)['roleCommandMap']
-        self.assertEqual(commands['11'], {'action': 'move', 'targetPos': [{'x': 9, 'y': 5}]})
+        self.assertEqual(commands['11']['action'], 'move')
+        self.assertLess(commands['11']['targetPos'][0]['x'], 8)
+        self.assertGreater(commands['11']['targetPos'][0]['y'], 5)
 
     def test_occupied_or_reserved_only_post_is_not_entered(self):
         for blocker in ('enemy', 'ally', 'robot', 'reservation', 'construction', 'operator'):
@@ -200,8 +201,9 @@ class EnemyControlBlockingTests(unittest.TestCase):
         self.assertEqual({k: v for k, v in changed.items() if k != '11'},
                          {k: v for k, v in baseline.items() if k != '11'})
         self.assertEqual(changed['2']['action'], 'collect')
-        self.assertEqual(changed['20']['controllerId'], '1')
-        self.assertEqual(changed['11']['action'], 'move')
+        self.assertFalse(any(c.get('controllerId') == '1' for c in changed.values()))
+        self.assertEqual(changed.get('11'), baseline.get('11'))
+        self.assertEqual(changed['1']['action'], 'move')
 
     def test_pioneer_needed_for_home_defence_is_not_redirected(self):
         for round_no in (69, 70):

@@ -13,8 +13,8 @@ class Config:
     wall_stones: int = 1
     weapon_cells: list = field(default_factory=list)
     wall_cells: list = field(default_factory=list)
-    # Rockets can fire over the continuous front wall; direct-fire guns cannot.
-    loadout: list = field(default_factory=lambda: ["rocket", "rocket", "rocket"])
+    # The rocket pair shares the rear post; the gatling has a worker by the gate.
+    loadout: list = field(default_factory=lambda: ["rocket", "rocket", "gatling"])
     stone_batch: int = 10
     sell_batch: int = 40
     sell_batch_max: int = 80

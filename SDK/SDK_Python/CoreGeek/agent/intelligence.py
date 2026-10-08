@@ -226,6 +226,7 @@ class Memory:
     wall_watch: WallWatchState = field(default_factory=WallWatchState)
     gunner_id: int | None = None
     gunner_post: tuple | None = None
+    gatling_operator_id: int | None = None
     next_gun: int = 0
     pending: tuple | None = None
     log_session: str = field(default_factory=lambda: uuid4().hex[:12])

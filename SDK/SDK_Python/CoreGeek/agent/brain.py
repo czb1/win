@@ -10,8 +10,7 @@ from .daytime import finish_daytime_work
 from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
-from .combat import assignments, return_plan, defend, emergency_items, shared_crew, shared_defend, clear_gunner_route
-from .combat import block_enemy_controls, block_enemy_workers
+from .combat import assignments, operator_posts, return_plan, defend, emergency_items, shared_crew, shared_defend, clear_gunner_route
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .economy import reserve_treasure_gold
 from .intelligence import Memory, Intelligence
@@ -151,6 +150,7 @@ class Agent:
         prompt, execute = "", ""
         pairs = []
         shared = None
+        gatling_pairs = []
         budget_reached = False
         try:
             act_imps(turn, mem.sabotage, nav, ledger)
@@ -177,31 +177,60 @@ class Agent:
                            "hold_task": hold_task, "stop_reason": mem.stop_reason}, "evolution")
             if not turn.is_day:
                 emergency_items(turn, ledger)
-            early_gunner = bool(h and turn.day <= 2 and turn.weapons
-                                and (not turn.is_day or not hold_task))
-            night_raid = bool(h and turn.day >= 3 and not turn.is_day)
-            if not turn.is_day and (early_gunner or night_raid):
+            pioneer_gunner = bool(h and turn.weapons and (not turn.is_day or not hold_task))
+            mixed = (self.cfg.loadout.count("rocket") == 2 and self.cfg.loadout.count("gatling") == 1
+                     and any(w.kind == "gatling" for w in turn.weapons))
+            if not turn.is_day and pioneer_gunner:
                 hold_task = False
                 if turn.phase_task and not mem.stop_reason:
                     mem.stop_reason = "defence_threat" if danger else "night_role"
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
-            excluded = ({h.id} if h and (hold_task or turn.day >= 3) else set())
-            if early_gunner:
+            excluded = ({h.id} if h and hold_task else set())
+            if pioneer_gunner and not mixed:
                 excluded.update(worker.id for worker in turn.workers)
             mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items() if uid not in excluded}
             mem.return_posts = {uid: post for uid, post in mem.return_posts.items() if uid not in excluded}
             shared = shared_crew(turn, self.cfg, mem, nav, towers, walls, excluded=excluded)
             if shared is not None:
                 pairs, posts = shared
-                # Previous multi-operator assignments must not recall the miner.
+                if mixed:
+                    # Use a separate worker/post, keeping the pioneer's common
+                    # control cell and the other worker available for wall watch.
+                    gatling = [w for w in turn.weapons if w.kind == "gatling"]
+                    holder = next((worker for worker in turn.workers
+                                   if worker.id == mem.gatling_operator_id), None)
+                    gatling_pairs = ([(holder, gatling[0])] if holder and holder.id in ledger.used else
+                        assignments(turn, nav, ledger,
+                            excluded={hero.id for hero in turn.heroes if hero.kind != "worker"},
+                            fixed={mem.gatling_operator_id: gatling[0].id}, towers=gatling))
+                    gatling_posts = operator_posts(turn, nav, gatling_pairs,
+                        walls + ([mem.gunner_post] if mem.gunner_post else []), mem.return_posts)
+                    if gatling_pairs and not gatling_posts:
+                        gatling_pairs = []
+                    mem.gatling_operator_id = gatling_pairs[0][0].id if gatling_pairs else None
+                    pairs += gatling_pairs
+                    posts.update(gatling_posts)
+                # Release stale assignments while preserving both active posts.
+                crew_ids = {hero.id for hero, _ in pairs}
                 mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items()
-                                      if uid == mem.gunner_id}
+                                      if uid in crew_ids}
                 mem.return_posts = {uid: p for uid, p in mem.return_posts.items()
-                                    if uid == mem.gunner_id}
+                                    if uid in crew_ids}
             else:
-                pairs = assignments(turn, nav, ledger, excluded=excluded,
-                                    fixed=mem.return_targets if turn.is_day else None)
-                pairs, posts = (return_plan(turn, nav, pairs, walls, mem.return_targets, mem.return_posts)
+                if mixed:
+                    pairs = assignments(turn, nav, ledger,
+                        excluded={worker.id for worker in turn.workers} | excluded,
+                        towers=sorted((w for w in turn.weapons if w.kind == "rocket"),
+                                      key=lambda w: (bool(w.cooldown), w.id)))
+                    gatling_pairs = assignments(turn, nav, ledger,
+                        excluded={hero.id for hero in turn.heroes if hero.kind != "worker"},
+                        towers=[w for w in turn.weapons if w.kind == "gatling"])
+                    pairs += gatling_pairs
+                else:
+                    pairs = assignments(turn, nav, ledger, excluded=excluded,
+                                        fixed=mem.return_targets if turn.is_day else None)
+                fixed = ({hero.id: weapon.id for hero, weapon in pairs} if mixed else mem.return_targets)
+                pairs, posts = (return_plan(turn, nav, pairs, walls, fixed, mem.return_posts)
                                 if turn.is_day else (pairs, {}))
             if not turn.is_day:
                 # Recall from the current position early enough for an approaching
@@ -215,11 +244,14 @@ class Agent:
                         turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius, lead + r.attack_range)
                         or distance(tower.pos, r.pos) <= tower.attack_range + 1)
                         or distance(hero.pos, r.pos) <= r.attack_range + 2 for r in turn.robots)
-                if shared is None:
-                    pairs = [(hero, tower) for hero, tower in pairs if needs_defence(hero, tower)]
+                pairs = [(hero, tower) for hero, tower in pairs
+                         if (shared is not None and tower.kind == "rocket") or needs_defence(hero, tower)]
+                posts = {uid: p for uid, p in posts.items() if uid in {hero.id for hero, _ in pairs}}
                 mem.return_targets.clear()
                 mem.return_posts.clear()
-            watcher = select_watch(turn, mem, pairs)
+            # A released gatling operator goes mining, rather than inheriting
+            # the other worker's wall-watch role when the local wave clears.
+            watcher = select_watch(turn, mem, pairs + gatling_pairs)
             ledger.return_pairs = pairs
             ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
             if turn.is_day:
@@ -262,7 +294,7 @@ class Agent:
                             returning.add(helper.id)
                             mem.return_targets[helper.id] = weapon.id
                             mem.return_posts[helper.id] = posts[helper.id][0]
-            if h and turn.phase_task and not (not turn.is_day and (early_gunner or night_raid)):
+            if h and turn.phase_task and not (not turn.is_day and pioneer_gunner):
                 # Submit a ready answer before a return movement can cancel it.
                 # LLM/sandbox work holds the pioneer at the task point and gets
                 # its own chance before expensive worker connectivity searches.
@@ -306,11 +338,7 @@ class Agent:
                         if hero.id in ledger.used:
                             continue
                         if hero.kind == "worker":
-                            night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=early_gunner or shared is not None)
-                        elif block_enemy_controls(turn, self.cfg, nav, ledger, hero):
-                            continue
-                        elif night_raid:
-                            block_enemy_workers(turn, nav, ledger, hero)
+                            night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=pioneer_gunner or shared is not None)
                         elif turn.station:
                             walk(nav, ledger, hero, turn.station.cells)
             else:
@@ -350,8 +378,6 @@ class Agent:
                     else:
                         pioneer(turn, self.cfg, mem, nav, ledger, h)
                         if h.id not in ledger.used:
-                            block_enemy_controls(turn, self.cfg, nav, ledger, h)
-                        if h.id not in ledger.used:
                             vacate_site(turn, nav, ledger, h, towers + walls +
                                         ([mem.gunner_post] if shared is not None and mem.gunner_post else []))
                 finish_daytime_work(turn, self.cfg, mem, nav, ledger, returning)
@@ -379,7 +405,8 @@ class Agent:
                                    position=hero.pos, action=action)
         mem.wall_watch.finish(turn, mem, response)
         if not turn.is_day or turn.tick in (0, 69):
-            diagnostic_pairs = ([(hero, w) for hero, _ in pairs for w in turn.weapons]
+            diagnostic_pairs = ([(hero, w) for hero, tower in pairs for w in turn.weapons
+                                 if (w.kind == "rocket" and hero.id == mem.gunner_id) or w.id == tower.id]
                                 if shared is not None else pairs)
             battle_diagnostics(turn, mem, diagnostic_pairs, response)
         for uid, action in response["roleCommandMap"].items():
