@@ -99,7 +99,7 @@ class Navigator:
 
 
 def layout(turn, cfg):
-    """Twelve-cell front and flanks; explicit layouts remain authoritative."""
+    """A full wall perimeter with one side gate; explicit layouts are authoritative."""
     if cfg.layout_mode == "explicit":
         return (list(dict.fromkeys(tuple(p) for p in cfg.weapon_cells if turn.inside(tuple(p)))),
                 list(dict.fromkeys(tuple(p) for p in cfg.wall_cells if turn.inside(tuple(p)))))
@@ -114,13 +114,17 @@ def layout(turn, cfg):
         return origin[0] + sx * p[0], origin[1] + sy * p[1]
 
     # Rear corner: all three guns touch the free control cell (-1, 0).
-    # Keep the original one-cell weapon ring and the front/flank wall blueprint.
+    # Keep the original one-cell weapon ring inside the two-cell wall perimeter.
     tower_order = [(-1, -1), (0, -1), (-1, 1)]
     towers = [world(p) for p in tower_order[:len(cfg.loadout)] if turn.inside(world(p))]
-    # Close the six-cell front first, then add three cells on each flank.
-    # Leave the rear open for mining, deliveries and operator circulation.
+    # Preserve the original six-cell front and flanks, then close the rear.
+    # The one-cell gate (-2, 1) is on the rear side beside the shared gunner
+    # post. Legal diagonal steps connect both the post and the inner aisle.
+    # It is absent from the blueprint, including breach repairs.
     order = [(3, v) for v in (0, 1, -1, 2, -2, 3)]
     order += [(u, v) for u in (2, 1, 0) for v in (-2, 3)]
+    order += [(-1, v) for v in (-2, 3)]
+    order += [(-2, v) for v in range(-2, 4) if v != 1]
     return towers, [world(p) for p in order if turn.inside(world(p))]
 
 

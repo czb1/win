@@ -32,7 +32,7 @@ class SharedGunnerTests(unittest.TestCase):
                                     unit(72, 'wall', 10, 4, health=1000)]
         return p
 
-    def test_four_corners_share_reachable_post_and_original_walls(self):
+    def test_four_corners_share_reachable_post_inside_wall_perimeter(self):
         for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
             p = payload(roles=[unit(13, 'station', x, y), unit(1, 'worker', 7, 7)])
             t, cfg, _, _ = setup_case(p)
@@ -43,7 +43,7 @@ class SharedGunnerTests(unittest.TestCase):
             posts = [(a, b) for a in range(15) for b in range(15)
                      if (a, b) not in t.blocked and all(distance((a, b), s) == 1 for s in sites)]
             self.assertTrue(any(nav.search(t.workers[0], {s}) for s in posts))
-            self.assertEqual(len(walls), 12)
+            self.assertEqual(len(walls), 19)
             self.assertTrue(all(t.base_distance(s) == 1 for s in sites))
             self.assertTrue(all(s[0] <= x if x < 7 else s[0] >= x for s in sites))
 

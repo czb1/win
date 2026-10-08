@@ -138,19 +138,19 @@ class NightMiningTests(unittest.TestCase):
         self.assertFalse(Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap'])
 
 
-class FrontOnlyTests(unittest.TestCase):
-    def test_twelve_walls_keep_front_first_and_rear_open_in_each_corner(self):
+class PerimeterTests(unittest.TestCase):
+    def test_nineteen_walls_keep_front_first_and_close_rear_in_each_corner(self):
         for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
             cfg = Config()
             t = Turn(payload(roles=[unit(13, 'station', x, y)]), cfg)
             _, walls = layout(t, cfg)
-            self.assertEqual(len(walls), 12)
+            self.assertEqual(len(walls), 19)
             self.assertEqual({p[0] for p in walls[:6]}, {x + 3 if x < 7 else x - 2})
-            self.assertEqual(len(set(walls)), 12)
-            self.assertEqual(sorted(sum(p[1] == y0 for p in walls[6:])
-                                    for y0 in {p[1] for p in walls[6:]}), [3, 3])
+            self.assertEqual(len(set(walls)), 19)
             rear_x = x - 2 if x < 7 else x + 3
-            self.assertNotIn(rear_x, {p[0] for p in walls})
+            gate_y = y - 1 if y > 7 else y
+            self.assertEqual({p[1] for p in walls if p[0] == rear_x},
+                             set(range(y - 3, y + 3)) - {gate_y})
 
     def test_wall_preserves_short_access_until_gun_is_built(self):
         roles = [unit(1, 'worker', 1, 1)] + [unit(100+y, 'wall', 3, y)

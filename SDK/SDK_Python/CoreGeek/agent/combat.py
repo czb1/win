@@ -589,6 +589,13 @@ def clear_gunner_route(turn, nav, ledger, mem, pairs):
             continue
         goals = set(neighbours(helper.pos)) - path - ledger.tower_cells - ledger.wall_cells
         escape = nav.search(helper, goals, ledger.reserved)
+        if escape is None:
+            # A one-cell gate can be the helper's only exit from the shared
+            # post. Let it retreat through the corridor toward a free tile;
+            # the destination reservation makes the gunner wait, not swap.
+            goals = {q for p in path for q in neighbours(p)}
+            goals -= path | ledger.tower_cells | ledger.wall_cells | {hero.pos}
+            escape = nav.search(helper, goals, ledger.reserved)
         if escape and escape[1] is not None:
             ledger.add(helper.id, command('move', escape[1]))
     # The gunner is dispatched before these reservations are installed by brain.

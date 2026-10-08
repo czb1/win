@@ -121,10 +121,10 @@ class DuskResourceTests(unittest.TestCase):
     def test_sixty_five_uses_nearby_voucher_before_stale_delivery_target(self):
         p = self.case(65)
         p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher1"]
-        p["teamOur"]["roles"].append(unit(31, "wall", 5, 2, health=1000))
+        p["teamOur"]["roles"].append(unit(31, "wall", 3, 8, health=1000))
         t, c, n, l = self.setup(p)
         l.operator_posts[1] = (2, 2)
-        mem = Memory(upgrade_targets={1: (5, 2)}, sale_workers={1})
+        mem = Memory(upgrade_targets={1: (3, 8)}, sale_workers={1})
         dusk_resources(t, c, mem, n, l, [(3, 3)])
         self.assertEqual(l.commands["1"], command("use", (3, 2), name="WallUpgradeVoucher1"))
 
@@ -172,14 +172,14 @@ class DuskResourceTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertEqual(plan[0], "WallUpgradeVoucher2")
 
-    def test_late_wall_phase_only_buys_level_three_for_front(self):
+    def test_late_wall_phase_prefetches_front_and_other_level_three(self):
         p = self.case(440, gold=120)
         p["teamOur"]["roles"][2]["level"] = 3
         p["teamOur"]["roles"][3]["level"] = 2
         p["teamOur"]["roles"].append(unit(31, "wall", 2, 3, level=2, health=1000))
         t, c, n, l = self.setup(p)
         plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
-        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 1))
+        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 2))
 
     def test_final_turn_can_use_adjacent_voucher_without_leaving_post(self):
         p = self.case(69)
@@ -191,7 +191,7 @@ class DuskResourceTests(unittest.TestCase):
 
     def test_nearby_wall_is_considered_when_first_wall_is_too_far(self):
         p = self.case(65, gold=20)
-        p["teamOur"]["roles"].append(unit(31, "wall", 14, 14, health=1000))
+        p["teamOur"]["roles"].append(unit(31, "wall", 3, 14, health=1000))
         t, c, n, l = self.setup(p)
         self.assertEqual(supplies(t, c, Memory(), n, l, t.workers[0])[0], "WallUpgradeVoucher1")
 

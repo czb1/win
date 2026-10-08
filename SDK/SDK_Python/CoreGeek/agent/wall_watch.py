@@ -22,10 +22,16 @@ def geometry(turn, sites):
     right = sum(p[0] for p in turn.station.cells) / 4 < (turn.width - 1) / 2
     front = (max if right else min)(p[0] for p in sites)
     low, high = min(p[1] for p in sites), max(p[1] for p in sites)
-    # Rear remains open; side/front boundaries come from the blueprint even
-    # when a wall is destroyed. Never cross a breach to patrol outside.
+    # Bound the rear as well when the blueprint encloses the base. Sparse
+    # explicit front-only layouts retain their existing patrol area.
+    base_x = [p[0] for p in turn.station.cells]
+    rear = (min if right else max)(p[0] for p in sites)
+    enclosed = rear < min(base_x) if right else rear > max(base_x)
+    # Blueprint boundaries survive destruction; the gate is for transit,
+    # not an outside patrol route through a breach or around the rear.
     inside = {(x, y) for x in range(turn.width) for y in range(low + 1, high)
-              if (x < front if right else x > front)}
+              if (x < front if right else x > front)
+              and (not enclosed or (x > rear if right else x < rear))}
     return inside, front
 
 
