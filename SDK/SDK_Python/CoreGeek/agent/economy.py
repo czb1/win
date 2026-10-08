@@ -1,3 +1,5 @@
+import logging
+from .logging_system import update_context
 from collections import Counter
 from dataclasses import replace
 from .commands import command
@@ -1197,5 +1199,9 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
             mem.task_point = point
             mem.task_timeout = int(task.get("timeoutRounds", cfg.task_max_rounds))
             mem.accepted_round = turn.round
+            mem.log_task_id = f"{mem.log_session}/r{turn.round}"
+            mem.log_task_type = task.get("taskType", "自进化类")
+            update_context(task_id=mem.log_task_id, task_type=mem.log_task_type)
+            logging.getLogger(__name__).info("task_accept point=%s", point)
     else:
         prepare_treasure(turn, cfg, mem, nav, ledger, hero)

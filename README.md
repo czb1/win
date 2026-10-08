@@ -61,6 +61,28 @@ run.bat 8080
 
 服务默认监听 `0.0.0.0`，判题入口为 `POST /`，健康检查为 `GET /healthz`。
 
+### 按天数、昼夜和任务查日志
+
+终端日志增加 `第2天黑夜第1回合`、队伍、场次和任务编号。使用 `--log-dir` 同时保存可读的 `game.log` 和可筛选的 `events.jsonl`；文件追加写入，`session` 区分不同队伍和进程内的新场次（回合倒退时重新编号）。不指定目录时仍只写 stderr。
+
+```bash
+.venv/bin/python SDK/SDK_Python/CoreGeek/main3.py 8080 --log-level INFO --log-dir artifacts/game
+# 离线回放同样支持；响应 JSON 仍单独输出
+.venv/bin/python tools/replay.py examples/request.json --log-level INFO --log-dir artifacts/replay
+# 先看天数、昼夜、任务编号及日志数量目录
+.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --list
+# 第2天黑夜；phase=day 表示白天
+.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --day 2 --phase night
+# 自进化：领取、题目、模型回复、沙盒执行、提交、结束及结果
+.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --category evolution
+# 长上下文：累计新闻、民间传闻、线索分析、用品准备与宝藏召唤
+.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --category long_context
+```
+
+从 `--list` 复制任务编号后，可用 `--task-id "编号"` 查看同一次任务跨白天／黑夜的记录；自进化编号为 `session/r领取回合`（没有领取记录时用首次看到题目的回合），长上下文编号为 `session/long-context`，用于串起整场累计线索。支持组合 `--team`、`--session`、`--contains`、`--level` 和 `--limit`；`--json` 输出筛选后的 JSON Lines。昼夜计算沿用配置 `round_origin`，白天70回合、黑夜60回合，阶段内回合从1计数；首次请求和昼夜切换输出 `phase_start` 标记。任务结束和 outcome 保留旧任务编号，新任务单独编号。领取失败记录 `task_accept_rejected`，不据此宣称任务成功。INFO 保留现有任务摘要，DEBUG 增加原有详细诊断；WARNING 及以上会隐藏正常任务日志。
+
+查询工具读取本次改动生成的 `events.jsonl`，不能自动给历史纯文本日志补充任务编号。使用 `callback()` 的外部宿主可调用 `agent.logging_system.configure_logging("INFO", "日志目录")` 启用相同输出。每次运行建议使用独立目录；场次编号基于代理内存生命周期，不代表官方比赛 ID。文件中的时间戳为 UTC，天数和昼夜表示游戏时间。
+
 排查找矿时，可开启诊断日志：
 
 ```bash

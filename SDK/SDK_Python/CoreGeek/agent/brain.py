@@ -3,6 +3,7 @@ import json
 import logging
 from collections import OrderedDict
 from time import monotonic
+from .logging_system import turn_context, update_context
 from .config import Config
 from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
@@ -80,6 +81,14 @@ class Agent:
     def decide(self, data):
         started = monotonic()
         turn = Turn(data, self.cfg)
+        with turn_context(turn):
+            try:
+                return self._decide(data, turn, started)
+            except Exception:
+                LOG.exception("decision failed", extra={"event": "decision_failed"})
+                raise
+
+    def _decide(self, data, turn, started):
         digest = hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         key = (*turn.key, turn.station.pos if turn.station else None)
         mem = self.sessions.get(key)
@@ -91,6 +100,12 @@ class Agent:
         self.sessions.move_to_end(key)
         while len(self.sessions) > 8:
             self.sessions.popitem(last=False)
+        update_context(session=mem.log_session, task_id=mem.log_task_id, task_type=mem.log_task_type)
+        previous_day, previous_tick = divmod(mem.last_round - self.cfg.round_origin, 130)
+        if (mem.last_round < 0 or previous_day != turn.day - 1
+                or (previous_tick < 70) != turn.is_day):
+            LOG.info("phase_start round=%s day=%s phase=%s", turn.round, turn.day,
+                     "day" if turn.is_day else "night", extra={"event": "phase_start"})
         previous_mines = mem.mine_kinds.copy()
         mem.observe(turn, self.cfg)
         if mem.last_round < 0 or previous_mines != mem.mine_kinds:
