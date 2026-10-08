@@ -227,12 +227,13 @@ class SharedGunnerTests(unittest.TestCase):
                 next(h for h in p['teamOur']['roles'] if h['id'] == int(uid))['pos'] = c['targetPos'][0]
         p['roundNo'] += 1
 
-    def test_late_night_choke_does_not_recall_pioneer(self):
+    def test_late_night_choke_recalls_pioneer(self):
         p = self.blocked_match()
         agent = Agent(Config(llm_enabled=False))
         commands = agent.decide(p)['roleCommandMap']
         self.assertFalse(any(c.get('controllerId') == '20011' for c in commands.values()))
-        self.assertNotEqual(next(iter(agent.sessions.values())).gunner_id, 20011)
+        self.assertEqual(next(iter(agent.sessions.values())).gunner_id, 20011)
+        self.assertEqual(commands['20011']['action'], 'move')
 
     def test_idle_ally_clears_return_corridor_without_collision(self):
         from agent.combat import clear_gunner_route

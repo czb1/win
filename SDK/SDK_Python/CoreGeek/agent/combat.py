@@ -116,8 +116,8 @@ def line_cells(start, end):
     return out
 
 
-def assignments(turn, nav, ledger, excluded=(), fixed=None):
-    towers = turn.weapons[:3]
+def assignments(turn, nav, ledger, excluded=(), fixed=None, towers=None):
+    towers = turn.weapons[:3] if towers is None else towers
     heroes = [h for h in turn.heroes if h.id not in ledger.used and h.id not in excluded]
     routes = {(h.id, w.id): nav.approach(h, [w.pos], ledger.reserved) for h in heroes for w in towers}
     # Preserve main's cooperative return: a teammate can yield, while a wall
@@ -290,7 +290,7 @@ def select_targets(turn, tower, damage, deadline):
             path = set(line_cells(tower.pos, robot.pos))
             hit = min((b for b in turn.robots if b.pos in path),
                       key=lambda b: distance(tower.pos, b.pos), default=robot)
-            shots[robot.pos] = {hit.id: 10}
+            shots[robot.pos] = {hit.id: 25}
     # Filter physical hits, not just aim points: splash and first-hit blocking
     # can otherwise help the opponent even when aiming at our own wave.
     shots = {point: hits for point, hits in shots.items() if not protected.intersection(hits)}
@@ -308,7 +308,16 @@ def select_targets(turn, tower, damage, deadline):
             ranked.append((score, point, hits))
         if not ranked:
             return []
-        score, target, hits = min(ranked, key=lambda x: (-x[0], x[1]))
+        if tower.kind == "gatling":
+            # Rank the robot actually hit, rather than a high-HP aim point
+            # hidden behind a smaller robot. Health is the observed current HP;
+            # planned damage only avoids spending more bullets on a covered kill.
+            health = {r.id: r.health for r in turn.robots}
+            score, target, hits = min(ranked, key=lambda x: (
+                -max((health[uid] for uid, amount in x[2].items() if amount > 0), default=0),
+                -x[0], x[1]))
+        else:
+            score, target, hits = min(ranked, key=lambda x: (-x[0], x[1]))
         if score <= 0 and not result:
             return []
         result.append(target)
@@ -358,14 +367,14 @@ def enemy_wall_targets(turn, tower, deadline, radius=6):
     """Choose level-sized enemy-wall targets for a safe night siege.
 
     This is intentionally narrower than robot targeting: only a fully upgraded
-    three-rocket battery may switch to walls, and only when no living robot
+    rocket battery may switch to walls, and only when no living robot
     threatening our base is within the local defence radius.  Front-edge walls
     are ordered before flanks, then from the enemy wall's centre outward.
     """
     check_time(deadline)
+    rockets = [w for w in turn.weapons if w.kind == "rocket"]
     if (turn.is_day or tower.kind != "rocket" or tower.level < 3
-            or len(turn.weapons) != 3
-            or any(w.kind != "rocket" or w.level < 3 for w in turn.weapons)):
+            or len(rockets) < 2 or any(w.level < 3 for w in rockets)):
         return []
     if any(turn.threatens_us(robot) and turn.base_distance(robot.pos) <= radius
            for robot in turn.robots):
@@ -373,7 +382,7 @@ def enemy_wall_targets(turn, tower, deadline, radius=6):
     walls = [w for w in turn.enemies
              if w.kind == "wall" and w.health > 0
              and distance(tower.pos, w.pos) <= tower.attack_range]
-    if len(walls) < tower.level:
+    if not walls:
         return []
     axis = _enemy_front_axis(turn, walls)
     enemy_station = next((u for u in turn.enemies if u.kind == "station"), None)
@@ -388,11 +397,13 @@ def enemy_wall_targets(turn, tower, deadline, radius=6):
             front_rank, lateral = 0, 0
         return (front_rank, lateral, distance(tower.pos, wall.pos), wall.pos)
 
-    return [wall.pos for wall in sorted(walls, key=key)[:tower.level]]
+    targets = [wall.pos for wall in sorted(walls, key=key)[:tower.level]]
+    # Target count must equal the weapon level, even when only one wall remains.
+    return targets + [targets[0]] * (tower.level - len(targets))
 
 
-def defend(turn, nav, ledger, pairs=None, posts=None):
-    damage = {}
+def defend(turn, nav, ledger, pairs=None, posts=None, damage=None):
+    damage = {} if damage is None else damage
     pairs = pairs if pairs is not None else assignments(turn, nav, ledger)
     for hero, tower in pairs:
         if hero.id in ledger.used:
@@ -407,10 +418,12 @@ def defend(turn, nav, ledger, pairs=None, posts=None):
         elif route and not turn.is_day and not tower.cooldown:
             planned = damage.copy()
             targets = select_targets(turn, tower, planned, nav.deadline)
+            if not targets:
+                targets = enemy_wall_targets(turn, tower, nav.deadline, ledger.cfg.task_danger_radius)
             if targets:
                 if ledger.add(tower.id, {"action": "attack", "controllerId": str(hero.id),
                                         "targetPos": [dump(p) for p in targets]}):
-                    damage = planned
+                    damage.update(planned)
 
 
 def yield_operator(turn, nav, ledger, hero, pairs, posts, route):
@@ -473,10 +486,15 @@ def emergency_items(turn, ledger):
 
 def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
     """Return one persistent operator/post, or None for non-clustered layouts."""
-    if len(sites) != 3 or any(w.pos not in sites or w.kind != "rocket" for w in turn.weapons):
+    mixed = (cfg.loadout.count("rocket") == 2 and cfg.loadout.count("gatling") == 1
+             and any(w.kind == "gatling" for w in turn.weapons))
+    if len(sites) != 3 or any(w.pos not in sites or
+            w.kind != (cfg.loadout[sites.index(w.pos)] if mixed else "rocket")
+            for w in turn.weapons):
         return None
-    common = set(neighbours(sites[0]))
-    for point in sites[1:]:
+    rocket_sites = [p for i, p in enumerate(sites) if not mixed or cfg.loadout[i] == "rocket"]
+    common = set(neighbours(rocket_sites[0]))
+    for point in rocket_sites[1:]:
         common.intersection_update(neighbours(point))
     mobile = {h.pos for h in turn.heroes}
     common -= set(sites) | set(walls) | (turn.blocked - mobile)
@@ -484,7 +502,9 @@ def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
     if not common:
         return None
     # Keep a living gunner even while medicine consumes this turn's action.
-    gunner = next((h for h in turn.heroes if h.id not in excluded and h.id == mem.gunner_id and
+    crew = ([turn.pioneer] if turn.pioneer and turn.pioneer.id not in excluded else
+            [] if mixed else [h for h in turn.heroes if h.id not in excluded])
+    gunner = next((h for h in crew if h.id == mem.gunner_id and
                    (not turn.is_day or h.id in mem.return_targets)), None)
     if gunner and mem.gunner_observation is not None:
         old_round, old_id, old_pos = mem.gunner_observation
@@ -494,12 +514,9 @@ def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
     else:
         mem.gunner_stalled = 0
     # A living but inaccessible operator is not a working defence assignment.
-    actual = {(h.id, p): nav.search(h, {p}) for h in turn.heroes
-              if h.id not in excluded for p in common}
+    actual = {(h.id, p): nav.search(h, {p}) for h in crew for p in common}
     if gunner and (mem.gunner_stalled >= 2 or not any(actual.get((gunner.id, p)) for p in common)):
         gunner = None
-    crew = [h for h in turn.heroes if h.id not in excluded
-            and (h.kind == 'worker' or not turn.is_day or turn.day <= 2)]
     original = turn.blocked
     # Keep the stone carrier available for existing daytime construction;
     # among equally free workers use the shortest return route.
@@ -520,6 +537,11 @@ def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
     finally:
         turn.blocked = original
     if not candidates:
+        if mixed:
+            mem.gunner_id = turn.pioneer.id if turn.pioneer else None
+            mem.gunner_post = min(common)
+            mem.gunner_observation, mem.gunner_stalled = None, 0
+            return [], {}
         return None
     _, _, _, _, length, _, _, _, post, hero = min(candidates, key=lambda c: c[:-1])
     if mem.gunner_id != hero.id:
@@ -529,24 +551,27 @@ def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
         mem.gunner_stalled = 0
     mem.gunner_observation = (turn.round, hero.id, hero.pos)
     mem.gunner_id, mem.gunner_post = hero.id, post
-    towers = sorted(turn.weapons, key=lambda w: sites.index(w.pos))
+    towers = sorted((w for w in turn.weapons if w.kind == "rocket"),
+                    key=lambda w: sites.index(w.pos))
     return ([(hero, towers[0])] if towers else []), {hero.id: (post, length)}
 
 
 def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6):
-    """One action per worker; platform cooldown is authoritative."""
-    if not pairs:
-        return
-    hero = pairs[0][0]
-    if hero.id in ledger.used:
+    """A worker fires the gatling; the pioneer rotates the ready rockets."""
+    damage = {}
+    defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id != mem.gunner_id],
+           ledger.operator_posts, damage=damage)
+    hero = next((h for h, _ in pairs if h.id == mem.gunner_id), None)
+    if hero is None or hero.id in ledger.used:
         return
     route = nav.search(hero, {mem.gunner_post}, ledger.reserved)
     for offset in range(len(sites)):
         index = (mem.next_gun + offset) % len(sites)
         tower = next((w for w in turn.weapons if w.pos == sites[index]), None)
-        if tower is None or tower.cooldown or distance(hero.pos, tower.pos) != 1:
+        if (tower is None or tower.kind != "rocket" or tower.cooldown
+                or distance(hero.pos, tower.pos) != 1):
             continue
-        targets = select_targets(turn, tower, {}, nav.deadline)
+        targets = select_targets(turn, tower, damage.copy(), nav.deadline)
         if not targets:
             targets = enemy_wall_targets(turn, tower, nav.deadline, radius=siege_radius)
         if targets and ledger.add(tower.id, {'action': 'attack', 'controllerId': str(hero.id),
@@ -561,7 +586,9 @@ def clear_gunner_route(turn, nav, ledger, mem, pairs):
     """Reserve the return corridor and move idle allies off it, without swaps."""
     if not pairs or mem.gunner_post is None:
         return
-    hero = pairs[0][0]
+    hero = next((h for h, _ in pairs if h.id == mem.gunner_id), None)
+    if hero is None:
+        return
     if hero.pos == mem.gunner_post:
         ledger.reserved.add(mem.gunner_post)
         return

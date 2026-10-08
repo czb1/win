@@ -20,7 +20,7 @@ class NightRolesTests(unittest.TestCase):
             self.assertEqual(result['1']['action'], 'collect')
             self.assertEqual(result['2']['action'], 'collect')
 
-    def test_third_night_replaces_previous_pioneer_gunner(self):
+    def test_third_night_keeps_pioneer_gunner_and_returns_home(self):
         agent = Agent(Config(llm_enabled=False))
         data = test_shared_gunner.SharedGunnerTests().case(200)
         data['teamOur']['roles'][1]['pos'] = {'x': 3, 'y': 11}
@@ -31,16 +31,24 @@ class NightRolesTests(unittest.TestCase):
         data['teamOur']['roles'][1]['pos'] = {'x': 4, 'y': 11}
         data['teamEnemy']['roles'] = [unit(50, 'rocket', 10, 5)]
         result = agent.decide(data)['roleCommandMap']
-        self.assertEqual({c['controllerId'] for c in result.values() if c['action'] == 'attack'}, {'1'})
-        self.assertEqual(result['11']['targetPos'][0]['x'], 9)
+        self.assertEqual(next(iter(agent.sessions.values())).gunner_id, 11)
+        self.assertFalse(any(c.get('controllerId') == '1' for c in result.values()))
+        # The worker occupying the post yields first; the pioneer cannot enter
+        # an ally's current tile in that same turn.
+        self.assertEqual(result['1']['action'], 'move')
+        data['teamOur']['roles'][1]['pos'] = result['1']['targetPos'][0]
+        data['roundNo'] += 1
+        result = agent.decide(data)['roleCommandMap']
+        self.assertLess(result['11']['targetPos'][0]['x'], 8)
 
-    def test_late_night_never_returns_home_even_without_target_or_with_task(self):
+    def test_late_night_returns_home_even_without_target_or_with_task(self):
         for task in ('', 'unfinished task'):
             data = payload(330, [unit(13, 'station', 3, 11), unit(11, 'pioneer', 8, 5),
                                  unit(20, 'rocket', 3, 12)])
             data['phaseTask'] = task
             result = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
-            self.assertNotIn('11', result)
+            self.assertEqual(result['11']['action'], 'move')
+            self.assertLess(result['11']['targetPos'][0]['x'], 8)
 
     def test_worker_block_fallback_moves_into_wall_base_gap_and_holds(self):
         for mirrored in (False, True):
