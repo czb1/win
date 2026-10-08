@@ -16,14 +16,15 @@ from .recovery import Recovery
 from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status
 from .wall_watch_state import WallWatchState
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
-from .task_runtime import runtime_code, runtime_result
+from .task_inputs import input_context, preview_code, zero_without_coverage
+from .task_runtime import runtime_code, runtime_result, command_output
 from .task_sop import answer_contract, answer_error, engineering_code
 from .task_query import reference_paths, query_config, query_code
 from .movement import MovementMemory
 from .navigation import layout, wall_gaps
 from .economy_plan import wall_level_limit
 from .task_skills import (bind_recipe, recipe_proposal, compatible, learned_method,
-                          output_supports, promote)
+                          output_supports, promote, parser_method)
 
 LOG = logging.getLogger(__name__)
 
@@ -194,10 +195,12 @@ def sandbox_result(text):
     """Only the documented clean exit and explicit marker authorize submission."""
     if not isinstance(text, str):
         return "missing", "", None
+    oversized = len(text.encode("utf-8")) > 65536
+    text = command_output(text)
     header, _, body = text.partition("\n")
     if header != "[exitCode:0]":
         return header or "missing", body, None
-    if "[TRUNCATED]" in body or len(text.encode("utf-8")) > 65536:
+    if "[TRUNCATED]" in body or oversized:
         return "truncated", body, None
     marker, separator, answer = body.strip().partition("\n")
     if marker == "FINAL_ANSWER" and separator and answer.strip():
@@ -242,6 +245,8 @@ class Memory:
     task_failures: int = 0
     proposal_counts: dict = field(default_factory=dict)
     failure_fingerprints: dict = field(default_factory=dict)
+    output_fingerprints: dict = field(default_factory=dict)
+    diagnosed_outputs: set = field(default_factory=set)
     rejected_answers: set = field(default_factory=set)
     exploration: deque = field(default_factory=lambda: deque(maxlen=4))
     submitted: tuple | None = None
@@ -254,6 +259,10 @@ class Memory:
     documents: list = field(default_factory=list)
     reference_reads: set = field(default_factory=set)
     query_blocked: bool = False
+    input_blocked: bool = False
+    inputs: dict = field(default_factory=dict)
+    diagnostic_pending: bool = False
+    parser_candidate: str | None = None
     contract: dict = field(default_factory=dict)
     sop_attempted: bool = False
     query_sop_attempted: bool = False
@@ -509,6 +518,9 @@ class Memory:
             self.supported_output = self.supported_python = ""
             self.reference_reads.clear()
             self.query_blocked = False
+            self.input_blocked = self.diagnostic_pending = False
+            self.inputs.clear()
+            self.parser_candidate = None
             self.contract.clear()
             self.sop_attempted = self.check_pending = False
             self.query_sop_attempted = False
@@ -522,6 +534,8 @@ class Memory:
             self.task_failures = 0
             self.proposal_counts.clear()
             self.failure_fingerprints.clear()
+            self.output_fingerprints.clear()
+            self.diagnosed_outputs.clear()
             self.rejected_answers.clear()
             self.exploration.clear()
             if self.pending and self.pending[0] in ("task", "cmd"):
@@ -530,6 +544,8 @@ class Memory:
         if self.submitted and turn.round > self.submitted[0]:
             if any(e.get("errorCode") == 2 for e in errors):
                 self.rejected_answers.add(answer_identity(self.submitted[1]))
+                if self.contract.get('input_kind') == 'logs':
+                    self.diagnostic_pending = True
             # Persist rejection beyond the one round in which errors is present.
             LOG.info("round=%s task_submission_feedback=%s", turn.round,
                      json.dumps({"actionResult": results.get(str(turn.pioneer.id)) if turn.pioneer else None,
@@ -582,6 +598,8 @@ class Memory:
                                  "sandbox": excerpt(str(raw), 7000), "status": status}
             if report:
                 self.last_attempt["http"] = report
+                if report.get('parse_lines'):
+                    self.last_attempt['parseCoverage'] = report['parse_lines']
                 if report.get("json_shapes"):
                     self.last_attempt["jsonShapes"] = report["json_shapes"]
             if status != "ok":
@@ -597,6 +615,25 @@ class Memory:
                 self.last_attempt["python"] = ""
                 self.last_attempt["tool"] = tool["kind"]
             if status == "ok":
+                if tool.get('kind') in ('discover', 'read', 'inspect'):
+                    self.inputs = input_context(body) or self.inputs
+                if not tool:
+                    self.parser_candidate = parser_method(self.running_python)
+                    observed_answer = answer
+                    if report.get('parse_lines', {}).get('matched', 0):
+                        self.input_blocked = False
+                    if answer is not None and zero_without_coverage(answer, self.contract, report):
+                        self.input_blocked = self.diagnostic_pending = True
+                        answer = None
+                        self.reject('日志结果全为零但没有成功解析记录的证据；先查看真实样例，使用 parse_line 并检查解析覆盖率。')
+                    fingerprint = answer_identity(observed_answer or body.strip())
+                    repeats = self.output_fingerprints.get(fingerprint, 0) + 1
+                    self.output_fingerprints[fingerprint] = repeats
+                    if (repeats >= 2 and (answer is None or answer_identity(answer) in self.rejected_answers)
+                            and fingerprint not in self.diagnosed_outputs):
+                        self.diagnosed_outputs.add(fingerprint)
+                        self.diagnostic_pending = True
+                        self.reject('运行成功但结果重复、没有进展；先检查当前输入与未匹配样例，禁止仅改写同一聚合脚本。')
                 for call in report.get('http_calls', []):
                     if call not in self.method_calls:
                         self.method_calls.append(call)
@@ -606,7 +643,7 @@ class Memory:
                 self.successful_python, self.successful_output = self.running_python, body
                 self.task_failures = 0
                 if tool.get("kind") in ("discover", "read", "list"):
-                    record = {**self.running_tool, "output": excerpt(body, 6500)}
+                    record = {**self.running_tool, "output": excerpt(body.partition('\nTASK_INPUTS ')[0], 6500)}
                     resolved = resolved_document(body) if tool.get("kind") != "list" else None
                     if resolved:
                         record["resolved_path"] = resolved
@@ -632,7 +669,8 @@ class Memory:
                 elif answer is not None and (not self.running_tool or checker or tool.get('kind') == 'query'):
                     if checker and not answer_error(answer, self.contract):
                         self.query_blocked = False  # An independent check is authoritative for token tasks.
-                    error = ("查询错误尚未解决；必须成功重查，不能把失败当作空数据提交。"
+                    error = ("输入解析尚未验证；先修复 parse_line 并重新计算。" if self.input_blocked else
+                             "查询错误尚未解决；必须成功重查，不能把失败当作空数据提交。"
                              if self.query_blocked else answer_error(answer, self.contract))
                     signature = hashlib.sha256(("answer:" + answer).encode()).hexdigest()
                     if error:
@@ -755,7 +793,7 @@ class Memory:
                 except (SyntaxError, ValueError) as error:
                     self.reject(f"Python语法错误：{error}")
                     return
-                proposal = "python:" + code
+                proposal = "python:" + ast.dump(tree, include_attributes=False)
             else:
                 answer = parsed["answer"]
                 answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
@@ -765,6 +803,10 @@ class Memory:
                 error = answer_error(answer, self.contract)
                 if error:
                     self.reject(error)
+                    return
+                if zero_without_coverage(answer, self.contract, self.last_attempt.get('http', {})):
+                    self.input_blocked = self.diagnostic_pending = True
+                    self.reject('日志零结果缺少解析覆盖率证据；先修复 parse_line，不能把未匹配当成无故障。')
                     return
                 if self.contract.get("kind") == "check_token":
                     self.check_pending = (self.last_attempt.get("tool") not in ("engineering", "check")
@@ -787,7 +829,7 @@ class Memory:
                 self.running_tool = file_request
             else:
                 self.answer = answer
-                self.answer_python = (self.supported_python if not self.query_blocked
+                self.answer_python = (self.supported_python if not self.query_blocked and not self.input_blocked
                                       and output_supports(answer, self.supported_output) else "")
                 self.history.append({"submitted_candidate": answer[:4000]})
         elif purpose == "news":
@@ -920,7 +962,8 @@ class Intelligence:
                      len(self.mem.answer), digest_text(self.mem.answer),
                      json.dumps(excerpt(self.mem.answer, LOG_EXCERPT), ensure_ascii=False))
             log_task_payload(self.turn.round, "submission_detail", self.mem.answer,
-                             source="sandbox" if self.mem.answer_python else "model",
+                             source="sandbox" if self.mem.answer_python or self.mem.last_attempt.get('tool')
+                             in ('engineering', 'check') else "model",
                              remaining=self.mem.remaining(self.turn, self.cfg))
             # Snapshot method evidence before reset; do not persist old data/code inputs.
             supported = (bool(self.mem.answer_python) or self.mem.last_attempt.get('tool') in
@@ -928,7 +971,7 @@ class Intelligence:
                 self.mem.answer, self.mem.supported_output)
             self.mem.submitted_method = (learned_method(
                 self.mem.task_point, self.mem.contract, self.mem.recipe_candidate,
-                self.mem.method_calls) if supported else None)
+                self.mem.method_calls, self.mem.parser_candidate) if supported else None)
             self.mem.submitted = (self.turn.round, self.mem.answer)
             self.mem.submitted_python = self.mem.answer_python
             self.mem.submitted_output = self.mem.successful_output if self.mem.answer_python else ""
@@ -948,10 +991,10 @@ class Intelligence:
             remaining = max(0, min(remaining, available_rounds))
         self.mem.work_deadline = self.turn.round + remaining
         if self.mem.answer is not None:
-            if self.mem.query_blocked:
+            if self.mem.query_blocked or self.mem.input_blocked:
                 self.mem.answer = None
                 self.mem.answer_python = ""
-                self.mem.reject("查询错误尚未解决；必须成功重查，禁止用默认零值或空集合提交答案。")
+                self.mem.reject("查询或输入解析错误尚未解决；必须成功重查，禁止用默认零值或空集合提交答案。")
             elif answer_identity(self.mem.answer) in self.mem.rejected_answers:
                 self.mem.answer = None
                 self.mem.answer_python = ""
@@ -964,13 +1007,23 @@ class Intelligence:
             return "", ""
         if (self.mem.contract.get("kind") == "check_token" and self.mem.contract.get("workspace")
                 and self.mem.pending is None):
-            if not self.mem.sop_attempted or self.mem.check_pending:
-                repair = not self.mem.sop_attempted
+            repair_spec = self.mem.contract.get('repair_spec', True)
+            if (repair_spec and not self.mem.sop_attempted) or self.mem.check_pending:
+                repair = repair_spec and not self.mem.sop_attempted
                 self.mem.sop_attempted = True
                 self.mem.check_pending = False
                 workspace = self.mem.contract["workspace"]
-                self.mem.python = engineering_code(workspace, repair)
+                self.mem.python = engineering_code(workspace, repair,
+                        self.mem.contract.get('checker', 'check'), repair_spec)
                 self.mem.running_tool = {"kind": "engineering" if repair else "check", "path": workspace}
+        if (self.mem.diagnostic_pending and self.mem.python is None and self.mem.pending is None
+                and self.mem.documents and remaining >= 3):
+            entry = self.mem.documents[0]
+            source = entry.get('resolved_path') or entry.get('path')
+            if source and source.startswith('/'):
+                self.mem.python = preview_code(repr(source), repr(entry.get('output', '')))
+                self.mem.running_tool = {'kind': 'inspect', 'path': source}
+            self.mem.diagnostic_pending = False
         if not self.mem.bootstrap_done and self.mem.pending is None and self.mem.python is None:
             self.mem.bootstrap_done = True
             path = document_path(self.turn.phase_task)
@@ -1011,13 +1064,15 @@ class Intelligence:
                              task_started=self.mem.task_started, point=self.mem.task_point)
             self.mem.history.append({"python": excerpt(code)})
             # executeCmd is passed to the official sandbox, never subprocess/eval on this HTTP host.
-            executed = code if tool else runtime_code(code, self.mem.task_directory())
+            executed = code if tool else runtime_code(code, self.mem.task_directory(),
+                                                      self.mem.contract.get('rounding'))
             return "", "python3 -c " + shlex.quote(executed)
         if not self.can_call():
             return "", ""
         if self.mem.contract.get("kind") == "check_token" and remaining <= 2:
             return "", ""  # Model reply + independent check + submission need three rounds.
-        hints = [s for s in self.mem.skills if compatible(s, self.mem.task_point, self.mem.contract)][-2:]
+        hints = [s for s in self.mem.skills if compatible(s, self.mem.task_point, self.mem.contract,
+                                                        for_hint=True)][-2:]
         # lastAttempt pins the code/output pair; avoid duplicating it in history.
         history = [{k: excerpt(str(v), 1800) for k, v in item.items() if k not in ("python", "sandbox")}
                    for item in list(self.mem.history)[-2:]]
@@ -1036,8 +1091,10 @@ class Intelligence:
                    "documents": self.mem.documents,
                    "submissionContract": self.mem.contract,
                    "taskDirectory": self.mem.task_directory(),
+                   "inputPreview": self.mem.inputs,
+                   "inputBlocked": self.mem.input_blocked,
                    "queryBlocked": self.mem.query_blocked,
-                   "previousSolutions": [{k: v for k, v in s.items() if k != "recipe"} for s in hints],
+                   "previousSolutions": [{k: v for k, v in s.items() if k not in ("recipe", "parser")} for s in hints],
                    "learnedSkills": hints}
         if remaining <= 2:
             step = "最后机会：下一回合必须提交，只输出 ANSWER 和当前有证据的最佳答案，禁止 READ、LIST、PYTHON。"
@@ -1057,7 +1114,7 @@ class Intelligence:
                     "按它修正解析和类型检查后再聚合。")
         else:
             step = ("修复 lastAttempt 中的报错，只改失败的那一步。" if self.mem.last_attempt.get("status", "ok") != "ok"
-                else "读取原题指定工作区的 spec.md；修复文件后由程序运行 ./check 验证并提取 token。" if self.mem.contract.get("kind") == "check_token"
+                else "根据当前样例和要求修改文件；程序会运行本题 checker 验证并提取 token。" if self.mem.contract.get("kind") == "check_token"
                 else "根据 submissionFeedback 修正答案，不要原样重交。" if self.mem.submission_feedback
                 else "根据已读文档执行一次查询并计算答案。" if self.mem.documents
                 else "先读取题目指定文档；没有路径时 LIST . 查看沙盒目录。已有充分信息可直接求解。")
@@ -1085,6 +1142,10 @@ class Intelligence:
                   "如果API返回很多条数据，只打印本题需要的字段；HTTP请求设timeout=8。\n"
                   "exploration保留本题最近查询及错误；复用已获得的接口说明，勿重复失败的路径。\n"
                   "taskDirectory是本题执行目录，每次PYTHON自动切换到该目录；不继承上次代码中的chdir。\n"
+                  "inputPreview来自本题文件，先看JSON顶层type/keys和sample；cases包装使用其真实列表和expected字段，不能猜cases[0]或output。样例不全时READ next_read指定文件。\n"
+                  "日志按每个系统的真实格式分别解析；写自包含parse_line(system,line)函数，每条非空行都调用它，返回(系统,时间,是否故障,模块)或None表示未匹配。运行时记录parseCoverage与未匹配样例；匹配为零不能当零故障提交。\n"
+                  "平均值按题目要求四舍五入；非负数用math.floor(value+0.5)，不要用Python round的偶数舍入。\n"
+                  "learnedSkills中的parser只含验证过的解析函数；同family可复制解析方法，再按本题submissionContract编写聚合。答案结构变化时不能直接use_skill执行旧聚合。\n"
                   "401/400时按响应中的认证方式、必填参数纠正文档；不要同时猜接口路径和统计字段。\n"
                   "沙盒会记录requests/urllib的HTTP失败；即使try/except吞掉错误也禁止提交，修正后重新完整查询。\n"
                   "临近截止也只能在查询成功且数据完整时打印FINAL_ANSWER；失败时保留诊断，不能强凑答案。\n"

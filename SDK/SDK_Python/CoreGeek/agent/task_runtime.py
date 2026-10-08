@@ -1,13 +1,27 @@
 """Build model execution wrappers; execution stays in the official sandbox."""
 import json
+import re
 
 
-def runtime_code(code, directory=None):
-    return f"TASK_CODE = {code!r}\nTASK_DIRECTORY = {directory!r}\n" + _RUNTIME
+def command_output(raw):
+    """Remove only the optional platform duration header; keep status/output strict."""
+    header, sep, body = raw.partition("\n")
+    first, newline, rest = body.partition("\n")
+    if re.fullmatch(r"\[durationMs:[0-9]+\]", first):
+        body = rest if newline else ""
+    return header + sep + body
+
+
+def runtime_code(code, directory=None, rounding=None):
+    return (f"TASK_CODE = {code!r}\nTASK_DIRECTORY = {directory!r}\n"
+            f"TASK_ROUNDING = {rounding!r}\n" + _RUNTIME)
 
 
 def runtime_result(raw):
     """Remove wrapper metadata before applying the strict final-answer parser."""
+    if len(raw.encode('utf-8')) > 65536:
+        return raw, {}
+    raw = command_output(raw)
     header, _, body = raw.partition("\n")
     first, sep, output = body.partition("\n")
     if not sep or not first.startswith("TASK_RUNTIME "):
@@ -22,7 +36,9 @@ def runtime_result(raw):
 
 
 _RUNTIME = r'''
+import ast
 import contextlib
+from decimal import Decimal, ROUND_HALF_UP
 import json
 import os
 import sys
@@ -33,6 +49,25 @@ import urllib.request
 from urllib.parse import urlsplit, parse_qs
 
 report = {'http_successes': 0, 'http_errors': [], 'http_calls': [], 'json_shapes': []}
+
+def task_round(value, ndigits=None):
+    places = 0 if ndigits is None else ndigits
+    rounded = Decimal(str(value)).quantize(Decimal('1').scaleb(-places), rounding=ROUND_HALF_UP)
+    return int(rounded) if ndigits is None else float(rounded)
+
+def track_parser(function):
+    # Observe the proposed parser, without supplying guessed formats or records.
+    def observed(*args, **kwargs):
+        coverage = report.setdefault('parse_lines', {'total': 0, 'matched': 0, 'unmatched': []})
+        coverage['total'] += 1
+        value = function(*args, **kwargs)
+        if value is not None and value is not False:
+            coverage['matched'] += 1
+        elif len(coverage['unmatched']) < 3:
+            line = kwargs.get('line') or next((x for x in reversed(args) if isinstance(x, str)), '')
+            coverage['unmatched'].append(line[:240])
+        return value
+    return observed
 
 def remember_call(method, url, headers=None, params=None):
     address = urlsplit(str(url))
@@ -171,8 +206,15 @@ with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
         try:
             if TASK_DIRECTORY:
                 os.chdir(TASK_DIRECTORY)
-            scope = {'__name__': '__main__'}
-            exec(compile(TASK_CODE, '<task>', 'exec'), scope)
+            scope = {'__name__': '__main__', '_task_track_parser': track_parser}
+            if TASK_ROUNDING == 'half_up':
+                scope['round'] = task_round
+            tree = ast.parse(TASK_CODE, '<task>', 'exec')
+            for node in tree.body:
+                if isinstance(node, ast.FunctionDef) and node.name == 'parse_line':
+                    node.decorator_list.append(ast.Name(id='_task_track_parser', ctx=ast.Load()))
+            ast.fix_missing_locations(tree)
+            exec(compile(tree, '<task>', 'exec'), scope)
         except SystemExit as error:
             exit_code = error.code if isinstance(error.code, int) else (1 if error.code else 0)
         except BaseException:

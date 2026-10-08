@@ -13,7 +13,7 @@ def answer_contract(documents):
     for document in documents:
         if document.get("kind") not in ("read", "discover"):
             continue
-        text = document.get("output", "")
+        text = document.get("output", "").partition('\nTASK_INPUTS ')[0]
         section = re.search(r"(?:^|\n)#{1,4}\s*(?:提交规则|提交格式|提交形式|答案格式|答案输出格式)[^\n]*\n"
                             r"(.*?)(?=\n#{1,4} |\Z)", text, re.S)
         if not section:
@@ -28,16 +28,27 @@ def answer_contract(documents):
                 continue
             if not isinstance(example, dict) or not example:
                 continue
-            contract = {"example": example, "source": document.get("resolved_path", document.get("path", ""))}
-            # This family is established by the real task in log091601.txt.
-            # Rebind its workspace from this task's document on every visit.
-            if set(example) == {"token"} and "./check" in text and "spec.md" in text and "TOKEN:" in text:
+            source = document.get("resolved_path") or document.get("path") or ''
+            contract = {"example": example, "source": source}
+            if source.startswith('/'):
+                name = PurePosixPath(source)
+                contract['family'] = name.parent.name + '/' + re.sub(r'\d+', '#', name.name)
+            if '日志' in text and ('日志文件' in text or '解析脚本' in text):
+                contract['input_kind'] = 'logs'
+            if '四舍五入' in text:
+                contract['rounding'] = 'half_up'
+            checkers = set(re.findall(r'\./(check(?:_[A-Za-z0-9_-]+)?)(?![A-Za-z0-9_./-])', text))
+            if set(example) == {"token"} and checkers:
                 contract["kind"] = "check_token"
+                if len(checkers) != 1:
+                    return contract  # Ambiguous checker: do not choose or invent one.
+                contract['checker'] = next(iter(checkers))
+                contract['repair_spec'] = contract['checker'] == 'check' and 'spec.md' in text
                 cd = re.search(r"`cd\s+([^`\n]+)`", text)
-                source = document.get("resolved_path", "")
-                if cd and source.startswith("/"):
+                source = document.get("resolved_path") or ''
+                if source.startswith("/"):
                     parent = PurePosixPath(source).parent
-                    workspace = PurePosixPath(cd[1].strip())
+                    workspace = PurePosixPath(cd[1].strip()) if cd else parent
                     if not workspace.is_absolute():
                         workspace = parent / workspace
                     if ".." not in workspace.parts and workspace.is_relative_to(parent):
@@ -72,9 +83,12 @@ def answer_error(answer, contract):
     return ""
 
 
-def engineering_code(workspace, repair=True):
+def engineering_code(workspace, repair=True, checker='check', spec_required=True):
     """Generate a repeatable spec-driven repair, followed by authoritative check."""
-    return f"WORKSPACE = {workspace!r}\nREPAIR = {repair!r}\n" + _ENGINEERING_SCRIPT
+    if not re.fullmatch(r'check(?:_[A-Za-z0-9_-]+)?', checker):
+        raise ValueError('unsupported checker name')
+    return (f"WORKSPACE = {workspace!r}\nREPAIR = {repair!r}\n"
+            f"CHECKER = {checker!r}\nSPEC_REQUIRED = {spec_required!r}\n" + _ENGINEERING_SCRIPT)
 
 
 _ENGINEERING_SCRIPT = r'''
@@ -102,8 +116,10 @@ def local(name):
     return target
 
 spec_path = base / 'spec.md'
-with spec_path.open(encoding='utf-8') as source:
-    spec = source.read(16001)
+spec = ''
+if SPEC_REQUIRED:
+    with spec_path.open(encoding='utf-8') as source:
+        spec = source.read(16001)
 issue = ''
 try:
     if len(spec) > 16000:
@@ -167,7 +183,7 @@ except (ValueError, OSError) as error:
 # Capture output separately so diagnostics can never masquerade as an answer.
 # A file bounds host memory even if the checker produces excessive output.
 def run_check(output):
-    checker = base / 'check'
+    checker = base / CHECKER
     try:
         return subprocess.run([str(checker)], cwd=base, stdout=output,
                               stderr=subprocess.STDOUT, timeout=8)

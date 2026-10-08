@@ -4,9 +4,11 @@ Recipes are proposals, not trusted host code. They are executed and checked in
 exactly the same official sandbox as ordinary model code, before promotion.
 """
 import ast
+import builtins
 import hashlib
 import json
 import re
+import symtable
 
 
 TYPES = {'str': str, 'int': int, 'float': float, 'bool': bool}
@@ -20,9 +22,55 @@ def shape(value):
     return type(value).__name__
 
 
-def compatible(skill, point, contract):
+def compatible(skill, point, contract, for_hint=False):
     return (skill.get('point') == point and not skill.get('disabled')
-            and skill.get('shape') == shape(contract.get('example')))
+            and (skill.get('shape') == shape(contract.get('example'))
+                 or (for_hint and skill.get('parser') and skill.get('family')
+                     and skill['family'] == contract.get('family'))))
+
+
+def parser_method(code):
+    """Retain only self-contained parsing functions, never top-level task data."""
+    try:
+        tree = ast.parse(code)
+        definitions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+        if 'parse_line' not in definitions:
+            return None
+        needed, pending = {}, ['parse_line']
+        while pending:
+            name = pending.pop()
+            if name in needed:
+                continue
+            needed[name] = definitions[name]
+            pending.extend(n.id for n in ast.walk(definitions[name])
+                           if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                           and n.id in definitions and n.id not in needed)
+        functions = list(needed.values())
+        imports = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))
+                   and all(name.split('.')[0] in {'re', 'datetime', 'collections', 'math', 'json'}
+                           for name in ([a.name for a in n.names] if isinstance(n, ast.Import)
+                                        else [n.module or '']))]
+        nodes = imports + functions
+        text = ast.unparse(ast.Module(body=nodes, type_ignores=[]))
+        if len(text) > 6000 or any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and any(marker in n.value for marker in ('/tmp/', 'Bearer ', 'http://', 'https://'))
+                for node in nodes for n in ast.walk(node)):
+            return None
+        allowed = set(dir(builtins)) - {'open', 'eval', 'exec', '__import__'}
+        allowed.update(n.name for n in functions)
+        for node in imports:
+            allowed.update(a.asname or (a.name.split('.')[0] if isinstance(node, ast.Import) else a.name)
+                           for a in node.names)
+        tables = list(symtable.symtable(text, '<parser>', 'exec').get_children())
+        while tables:
+            table = tables.pop()
+            if any(s.is_global() and s.is_referenced() and s.get_name() not in allowed
+                   for s in table.get_symbols()):
+                return None
+            tables.extend(table.get_children())
+        return text
+    except (SyntaxError, ValueError, TypeError):
+        return None
 
 
 def recipe_proposal(recipe, inputs, max_chars):
@@ -81,7 +129,7 @@ def output_supports(answer, output):
                                + output.splitlines())
 
 
-def learned_method(point, contract, recipe=None, calls=()):
+def learned_method(point, contract, recipe=None, calls=(), parser=None):
     if recipe:
         recipe = {'parameters': dict(recipe['parameters']),
                   'python': ast.unparse(ast.parse(recipe['python']))}
@@ -95,7 +143,16 @@ def learned_method(point, contract, recipe=None, calls=()):
                          'query_all_pages', 'validate_response', 'compute_current_answer']),
               'evidence': 'legal_submission_then_task_disappeared',
               'verified': False, 'successes': 1, 'failures': 0, 'disabled': False}
-    signature = json.dumps({k: method[k] for k in ('point', 'shape', 'workflow', 'recipe', 'interfaces')},
+    if parser:
+        method.update(parser=parser, family=contract.get('family'))
+    if contract.get('kind') == 'check_token' and not contract.get('repair_spec', True):
+        method['steps'] = ['inspect_current_cases_and_input', 'transform_current_records',
+                           'write_current_result', 'run_current_checker', 'submit_checked_token']
+    elif contract.get('input_kind') == 'logs':
+        method['steps'] = ['inspect_current_log_samples', 'parse_each_system',
+                           'check_parse_coverage', 'aggregate_current_requirements']
+    signature = json.dumps({k: method.get(k) for k in
+                           ('point', 'shape', 'workflow', 'recipe', 'interfaces', 'parser', 'family')},
                            sort_keys=True, ensure_ascii=False)
     method['id'] = hashlib.sha256(signature.encode()).hexdigest()[:16]
     return method

@@ -2,6 +2,7 @@
 import json
 import re
 import shlex
+from .task_inputs import preview_code
 
 
 def parse_file_tool(text):
@@ -88,7 +89,8 @@ def document_code(path, start=0, base=None):
             "    page = f.read(6000)\n"
             "    print(page)\n"
             "    if f.read(1):\n"
-            "        print('NEXT_READ', repr(resolved), cfg['start'] + len(page))\n")
+            "        print('NEXT_READ', repr(resolved), cfg['start'] + len(page))\n"
+            + (preview_code('resolved', 'page') if start == 0 else ''))
 
 
 def resolved_document(body):
@@ -123,4 +125,5 @@ def file_code(kind, path, start=0):
             "    page = f.read(6000)\n"
             "    print(page)\n"
             "    if f.read(1):\n"
-            "        print('NEXT_READ', repr(cfg['path']), cfg['start'] + len(page))\n")
+            "        print('NEXT_READ', repr(cfg['path']), cfg['start'] + len(page))\n"
+            + (preview_code("cfg['path']", 'page') if start == 0 else ''))
