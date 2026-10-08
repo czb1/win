@@ -55,12 +55,12 @@ class UnreachableDefenceTests(unittest.TestCase):
 
 
 class SpareMiningTests(unittest.TestCase):
-    def test_spare_collection_stops_at_tick_40(self):
-        for tick in (39, 40, 60):
+    def test_idle_empty_worker_uses_daylight_until_actual_return_deadline(self):
+        for tick in (39, 40, 60, 62, 63):
             with self.subTest(tick=tick):
                 t, cfg, nav, ledger = setup_case(late_case(rno=tick))
-                self.assertEqual(earn(t, cfg, Memory(), nav, ledger, t.workers[0]), tick < 40)
-                if tick < 40:
+                self.assertEqual(earn(t, cfg, Memory(), nav, ledger, t.workers[0]), tick <= 62)
+                if tick <= 62:
                     self.assertEqual(ledger.commands["1"], command("collect", (6, 5)))
                 else:
                     self.assertFalse(ledger.commands)

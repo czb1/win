@@ -5,6 +5,7 @@ from collections import OrderedDict
 from time import monotonic
 from .logging_system import turn_context, update_context
 from .config import Config
+from .daytime import finish_daytime_work
 from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger
@@ -196,6 +197,8 @@ class Agent:
             watcher = select_watch(turn, mem, pairs)
             ledger.return_pairs = pairs
             ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
+            if turn.is_day:
+                ledger.daytime_gunner_post = mem.gunner_post if shared is not None else None
             returning = set()
             for hero, tower in pairs:
                 route = (nav.search(hero, {posts[hero.id][0]}, ledger.reserved) if hero.id in posts
@@ -319,6 +322,7 @@ class Agent:
                         if h.id not in ledger.used:
                             vacate_site(turn, nav, ledger, h, towers + walls +
                                         ([mem.gunner_post] if shared is not None and mem.gunner_post else []))
+                finish_daytime_work(turn, self.cfg, mem, nav, ledger, returning)
                 if not prompt and not execute:
                     prompt = intel.news()
                     if not prompt:

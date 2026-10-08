@@ -27,6 +27,10 @@ class Ledger:
         self.mine_claims = {}
         self.return_pairs = []
         self.operator_posts = {}
+        # Daytime ownership is separate from issuing a command. Failed recall
+        # and intentional watch standby must have different fallback policies.
+        self.daytime_waits = {}
+        self.watch_pack_slots = {}
 
     def add(self, uid, cmd):
         unit = self.turn.units.get(uid)

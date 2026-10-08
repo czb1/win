@@ -6,7 +6,7 @@ from .commands import command
 from .combat import block_enemy_controls, enemy_control_post
 from .model import ORES, WEAPONS, HEROES, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
-from .mining import mine, earn, sale_inventory, return_destination
+from .mining import mine, earn, spare_mine, sale_inventory, return_destination
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit
 from .treasure_clues import preparation_items
 from .wall_health import needs_night_repair
@@ -875,12 +875,12 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
             return
     if earn(turn, cfg, mem, nav, ledger, hero, deadline):
         return
-    # A preparation deadline can make the normal income planner reject every
-    # mine because there is no time to sell and return before the cutoff. Do
-    # not leave the worker beside a wall with no command: stockpile a nearby
-    # load for the next sale, or at least move back toward the base.
-    if deadline is not None and turn.tick < min(deadline, 40):
-        if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True):
+    # Failed construction/shopping is not a reason to stop working at tick
+    # 40. A short stockpile action must fit the actual return destination;
+    # try it only after paid delivery and executable development work.
+    if deadline is not None:
+        max_steps = 0 if turn.tick >= 40 and sale_inventory(turn, mem, hero) else 2
+        if spare_mine(turn, cfg, mem, nav, ledger, hero, max_steps=max_steps):
             return
     if turn.station:
         walk(nav, ledger, hero, turn.station.cells)
