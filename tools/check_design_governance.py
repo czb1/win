@@ -9,11 +9,19 @@ import sys
 from pathlib import Path
 
 
+CURRENT_DESIGN_DIR = "2.0版本设计文档/"
+ARCHIVE_DESIGN_DIR = "1.0版本设计文档/"
+COMPETITION_DOCS_DIR = "比赛文档/"
 CANONICAL_DOCS = {
-    "docs/战斗.md",
-    "docs/经济.md",
-    "docs/防御.md",
-    "docs/自进化.md",
+    CURRENT_DESIGN_DIR + "战斗.md",
+    CURRENT_DESIGN_DIR + "经济.md",
+    CURRENT_DESIGN_DIR + "防御.md",
+    CURRENT_DESIGN_DIR + "自进化.md",
+}
+DESIGN_INDEXES = {CURRENT_DESIGN_DIR + "README.md", ARCHIVE_DESIGN_DIR + "README.md"}
+ARCHIVED_DOCS = {
+    ARCHIVE_DESIGN_DIR + name
+    for name in ("战斗.md", "经济.md", "防御.md", "自进化.md", "测试报告.md")
 }
 LEGACY_DOCS = {
     "docs/deadline-economy.md",
@@ -30,7 +38,10 @@ LEGACY_DOCS = {
 }
 REQUIRED_SECTIONS = ("## 关键设定与原因", "## 变更记录")
 REQUIRED_CHANGE_FIELDS = ("策略：", "设定：", "原因：", "经验教训：", "验证：")
-IGNORED_PREFIXES = (".github/", "docs/", "tests/")
+IGNORED_PREFIXES = (
+    ".github/", "docs/", "tests/", CURRENT_DESIGN_DIR,
+    ARCHIVE_DESIGN_DIR, COMPETITION_DOCS_DIR,
+)
 IGNORED_FILES = {"AGENTS.md", "README.md"}
 IGNORED_TOOLS = {"tools/check_design_governance.py", "tools/run_checks.py"}
 
@@ -77,11 +88,19 @@ def check(base: str, head: str) -> list[str]:
 
     for status, path in entries:
         deleting_legacy = status == "D" and path in LEGACY_DOCS
+        # Permit deletion of original docs when their archive destination exists.
+        archiving_original = (
+            status == "D" and path.startswith("docs/")
+            and Path(ARCHIVE_DESIGN_DIR + path.removeprefix("docs/")).is_file()
+        )
         if (
-            path.startswith("docs/")
+            path.startswith(("docs/", CURRENT_DESIGN_DIR, ARCHIVE_DESIGN_DIR))
             and path.endswith(".md")
             and path not in CANONICAL_DOCS
+            and path not in DESIGN_INDEXES
             and not deleting_legacy
+            and not archiving_original
+            and path not in ARCHIVED_DOCS
         ):
             errors.append(
                 f"不允许{ {'A': '新增', 'D': '删除'}.get(status, '修改') }非四模块文档：{path}"

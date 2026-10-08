@@ -10,6 +10,11 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: coregeek-release-${{ github.ref_name }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   package-and-release:
     name: Package and publish CoreGeek
@@ -23,11 +28,49 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Determine v2 release version
+        id: version
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_BRANCH: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+
+          latest_patch=-1
+          release_tag=""
+          while IFS= read -r tag; do
+            if [[ "$tag" =~ ^v2[.]0[.](0|[1-9][0-9]*)$ ]]; then
+              patch="${BASH_REMATCH[1]}"
+              if (( patch > latest_patch )); then
+                latest_patch="$patch"
+              fi
+              if [[ "$SOURCE_BRANCH" == "main" && "$(git rev-list -n 1 "$tag")" == "$SOURCE_SHA" ]]; then
+                release_tag="$tag"
+              fi
+            elif [[ "$SOURCE_BRANCH" != "main" && "$tag" =~ ^v2[.]0[.](0|[1-9][0-9]*)-dev[.]([0-9]+)$ ]]; then
+              tag_run="${BASH_REMATCH[2]}"
+              if [[ "$tag_run" == "$RUN_NUMBER" && "$(git rev-list -n 1 "$tag")" == "$SOURCE_SHA" ]]; then
+                release_tag="$tag"
+              fi
+            fi
+          done < <(git tag --list 'v2.0.*' --sort=version:refname)
+
+          if [[ -z "$release_tag" ]]; then
+            release_tag="v2.0.$((latest_patch + 1))"
+            if [[ "$SOURCE_BRANCH" != "main" ]]; then
+              release_tag="${release_tag}-dev.${RUN_NUMBER}"
+            fi
+          fi
+          printf 'tag=%s\n' "$release_tag" >> "$GITHUB_OUTPUT"
+
       - name: Build and verify archive
         id: archive
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.ref_name == 'main' && format('v1.0.{0}', github.run_number) || format('v1.0.dev.{0}', github.run_number) }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
 
