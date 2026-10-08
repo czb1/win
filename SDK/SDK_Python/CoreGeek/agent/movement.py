@@ -23,7 +23,7 @@ class MovementMemory:
         self.failure_counts = {k: value for k, value in self.failure_counts.items()
                                if k[0] in turn.units and turn.round - value[1] < 130}
         consecutive = mem.last_round == turn.round - 1
-        for hero in turn.heroes:
+        for hero in turn.characters:
             cmd = mem.last_commands.get(str(hero.id), {}) if consecutive else {}
             if cmd.get("action") != "move":
                 self.trails.pop(hero.id, None)
@@ -44,13 +44,16 @@ class MovementMemory:
                 self.looped.add(hero.id)
                 # Release a repeatedly unproductive destination for this actor.
                 for p in (mem.mine_targets.get(hero.id), mem.build_targets.get(hero.id),
-                          mem.sale_targets.get(hero.id), mem.upgrade_targets.get(hero.id)):
+                          mem.sale_targets.get(hero.id), mem.upgrade_targets.get(hero.id),
+                          mem.sabotage.targets.get(hero.id, (None, None))[0]):
                     if p is not None:
                         self.targets[hero.id, p] = turn.round + 8
                 mem.mine_targets.pop(hero.id, None)
                 mem.build_targets.pop(hero.id, None)
                 mem.sale_targets.pop(hero.id, None)
                 mem.upgrade_targets.pop(hero.id, None)
+                mem.sabotage.targets.pop(hero.id, None)
+                mem.sabotage.progress.pop(hero.id, None)
                 trail.clear()
         # Neutral zones are supplied globally by v1.0; never retain exhausted
         # mines as obstacles. Enemy weapons, however, disappear outside vision.

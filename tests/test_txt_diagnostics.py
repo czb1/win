@@ -51,7 +51,8 @@ class TxtDiagnosticsTests(unittest.TestCase):
         self.assertEqual(snapshots[1]["teamEnemy"]["roles"], [])
         self.assertEqual(snapshots[1]["enemy_last_seen"][0]["last_seen_round"], 1)
         decision = next(r for r in result if r["event"] == "unit_decision" and r["unit_id"] == 14)
-        self.assertEqual(decision["data"]["reason"], "not_supported_by_current_strategy")
+        self.assertEqual(decision["data"]["reason"], "imp_escape")
+        self.assertFalse(decision["data"]["conditions"]["safe_exit"])
 
     def test_feedback_distinguishes_legality_effect_and_skipped_rounds(self):
         data = payload(1)
