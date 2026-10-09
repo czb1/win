@@ -25,18 +25,21 @@ def shape(value):
 def compatible(skill, point, contract, for_hint=False):
     return (skill.get('point') == point and not skill.get('disabled')
             and (skill.get('shape') == shape(contract.get('example'))
-                 or (for_hint and skill.get('parser') and skill.get('family')
+                 or (for_hint and (skill.get('parser') or skill.get('rules')) and skill.get('family')
                      and skill['family'] == contract.get('family'))))
 
 
-def parser_method(code):
+def parser_method(code, used=None):
     """Retain only self-contained parsing functions, never top-level task data."""
     try:
         tree = ast.parse(code)
         definitions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-        if 'parse_line' not in definitions:
+        roots = [name for name in definitions if name == 'parse_line' or re.fullmatch(r'parse_[a-z][a-z0-9_]*_log', name)]
+        if used is not None:
+            roots = [name for name in roots if name in used]
+        if not roots:
             return None
-        needed, pending = {}, ['parse_line']
+        needed, pending = {}, roots[:]
         while pending:
             name = pending.pop()
             if name in needed:
@@ -46,18 +49,40 @@ def parser_method(code):
                            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
                            and n.id in definitions and n.id not in needed)
         functions = list(needed.values())
+        for function in functions:
+            if function.decorator_list:
+                return None
+            if function.body and isinstance(function.body[0], ast.Expr) and isinstance(function.body[0].value, ast.Constant) and isinstance(function.body[0].value.value, str):
+                function.body = function.body[1:] or [ast.Pass()]
+        references = {n.id for fn in functions for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+        constants = []
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id in references:
+                value = ast.literal_eval(node.value)
+                if len(repr(value)) > 2000:
+                    return None
+                constants.append(node)
         imports = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))
-                   and all(name.split('.')[0] in {'re', 'datetime', 'collections', 'math', 'json'}
+                   and all(name.split('.')[0] in {'re', 'datetime', 'collections', 'math', 'json', 'os', 'pathlib'}
                            for name in ([a.name for a in n.names] if isinstance(n, ast.Import)
                                         else [n.module or '']))]
-        nodes = imports + functions
+        nodes = imports + constants + functions
         text = ast.unparse(ast.Module(body=nodes, type_ignores=[]))
-        if len(text) > 6000 or any(isinstance(n, ast.Constant) and isinstance(n.value, str)
+        if len(text) > 12000 or any(isinstance(n, ast.Constant) and isinstance(n.value, str)
                 and any(marker in n.value for marker in ('/tmp/', 'Bearer ', 'http://', 'https://'))
                 for node in nodes for n in ast.walk(node)):
             return None
-        allowed = set(dir(builtins)) - {'open', 'eval', 'exec', '__import__'}
+        # File parsers must receive their path, never retain a prior input name.
+        for node in nodes:
+            for call in ast.walk(node):
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in ('open', 'Path'):
+                    if not call.args or not isinstance(call.args[0], ast.Name):
+                        return None
+                if isinstance(call, ast.Constant) and isinstance(call.value, str) and re.search(r'\b(?:19|20)\d{2}\b|\.(?:log|json)$', call.value):
+                    return None
+        allowed = set(dir(builtins)) - {'eval', 'exec', '__import__'}
         allowed.update(n.name for n in functions)
+        allowed.update(n.targets[0].id for n in constants)
         for node in imports:
             allowed.update(a.asname or (a.name.split('.')[0] if isinstance(node, ast.Import) else a.name)
                            for a in node.names)
@@ -129,7 +154,7 @@ def output_supports(answer, output):
                                + output.splitlines())
 
 
-def learned_method(point, contract, recipe=None, calls=(), parser=None):
+def learned_method(point, contract, recipe=None, calls=(), parser=None, rules=''):
     if recipe:
         recipe = {'parameters': dict(recipe['parameters']),
                   'python': ast.unparse(ast.parse(recipe['python']))}
@@ -143,8 +168,8 @@ def learned_method(point, contract, recipe=None, calls=(), parser=None):
                          'query_all_pages', 'validate_response', 'compute_current_answer']),
               'evidence': 'legal_submission_then_task_disappeared',
               'verified': False, 'successes': 1, 'failures': 0, 'disabled': False}
-    if parser:
-        method.update(parser=parser, family=contract.get('family'))
+    if parser or rules:
+        method.update(parser=parser, rules=rules, family=contract.get('family'))
     if contract.get('kind') == 'check_token' and not contract.get('repair_spec', True):
         method['steps'] = ['inspect_current_cases_and_input', 'transform_current_records',
                            'write_current_result', 'run_current_checker', 'submit_checked_token']
@@ -152,7 +177,8 @@ def learned_method(point, contract, recipe=None, calls=(), parser=None):
         method['steps'] = ['inspect_current_log_samples', 'parse_each_system',
                            'check_parse_coverage', 'aggregate_current_requirements']
     signature = json.dumps({k: method.get(k) for k in
-                           ('point', 'shape', 'workflow', 'recipe', 'interfaces', 'parser', 'family')},
+                           (('point', 'shape', 'workflow', 'recipe', 'interfaces', 'parser', 'family')
+                            + (('rules',) if rules else ()))},
                            sort_keys=True, ensure_ascii=False)
     method['id'] = hashlib.sha256(signature.encode()).hexdigest()[:16]
     return method

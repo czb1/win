@@ -1,6 +1,7 @@
 """Build model execution wrappers; execution stays in the official sandbox."""
 import json
 import re
+from .task_evidence import LOG_AUDIT
 
 
 def command_output(raw):
@@ -12,9 +13,10 @@ def command_output(raw):
     return header + sep + body
 
 
-def runtime_code(code, directory=None, rounding=None):
+def runtime_code(code, directory=None, rounding=None, log_task=False, parser=None):
     return (f"TASK_CODE = {code!r}\nTASK_DIRECTORY = {directory!r}\n"
-            f"TASK_ROUNDING = {rounding!r}\n" + _RUNTIME)
+            f"TASK_ROUNDING = {rounding!r}\nTASK_LOG = {log_task!r}\nLEARNED_PARSER = {parser!r}\n"
+            + _RUNTIME.replace("# LOG_AUDIT_SETUP", LOG_AUDIT if log_task else ""))
 
 
 def runtime_result(raw):
@@ -200,20 +202,54 @@ else:
     requests.sessions.Session.request = checked_request
     requests.models.Response.json = checked_json
 
+# LOG_AUDIT_SETUP
+
+def parser_exception():
+    error = sys.exc_info()[1]
+    if isinstance(error, (ValueError, OSError)):
+        log_error("caught_parser_error", type(error).__name__ + ": " + str(error))
+
+def instrument(tree):
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            is_parser = node.name == "parse_line" or (node.name.startswith("parse_") and node.name.endswith("_log"))
+            if node.name == "parse_line":
+                node.decorator_list.append(ast.Name(id="_task_track_parser", ctx=ast.Load()))
+            if TASK_LOG and is_parser:
+                node.decorator_list.append(ast.Name(id="_task_audit_parser", ctx=ast.Load()))
+                for handler in ast.walk(node):
+                    if isinstance(handler, ast.ExceptHandler):
+                        handler.body.insert(0, ast.Expr(value=ast.Call(func=ast.Name(id="_task_parser_exception", ctx=ast.Load()), args=[], keywords=[])))
+            if TASK_LOG and node.name.startswith("merge_") and "event" in node.name:
+                node.decorator_list.append(ast.Name(id="_task_audit_merge", ctx=ast.Load()))
+    ast.fix_missing_locations(tree)
+    return tree
+
 exit_code = 0
 with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
         try:
             if TASK_DIRECTORY:
                 os.chdir(TASK_DIRECTORY)
-            scope = {'__name__': '__main__', '_task_track_parser': track_parser}
+            scope = {'__name__': '__main__', '_task_track_parser': track_parser,
+                     'task_result': lambda value: print('FINAL_ANSWER\n' + json.dumps(value, ensure_ascii=False))}
+            learned_scope = {}
+            if TASK_LOG:
+                scope.update(_task_audit_parser=audited_function, _task_parser_exception=parser_exception,
+                             _task_audit_merge=audit_merge, task_events=task_events, task_parse=task_parse)
+                if LEARNED_PARSER:
+                    learned_scope = dict(scope)
+                    exec(compile(instrument(ast.parse(LEARNED_PARSER)), '<learned-parser>', 'exec'), learned_scope)
             if TASK_ROUNDING == 'half_up':
                 scope['round'] = task_round
             tree = ast.parse(TASK_CODE, '<task>', 'exec')
-            for node in tree.body:
-                if isinstance(node, ast.FunctionDef) and node.name == 'parse_line':
-                    node.decorator_list.append(ast.Name(id='_task_track_parser', ctx=ast.Load()))
-            ast.fix_missing_locations(tree)
+            if TASK_LOG and LEARNED_PARSER:
+                names = [n.name for n in ast.parse(LEARNED_PARSER).body if isinstance(n, ast.FunctionDef)]
+                scope.update({name: learned_scope[name] for name in names})
+                # Explicit same-format tasks reuse verified functions, not model rewrites.
+                tree.body = [n for n in tree.body if not (isinstance(n, ast.FunctionDef) and n.name in names)]
+                report['reused_parsers'] = names
+            tree = instrument(tree)
             exec(compile(tree, '<task>', 'exec'), scope)
         except SystemExit as error:
             exit_code = error.code if isinstance(error.code, int) else (1 if error.code else 0)
@@ -226,6 +262,9 @@ print('TASK_RUNTIME ' + json.dumps(report, ensure_ascii=False))
 print(body[:60000], end='')
 if len(body) > 60000:
     print('\n[TRUNCATED]')
+if TASK_LOG and (log_report['errors'] or any(not f['complete'] for f in log_report['files'].values())):
+    print('\nTASK_INPUT_FAILED: missing/incomplete input or caught parsing error; repair before submitting.')
+    exit_code = 1
 if report['http_errors']:
     # Caught HTTP/JSON errors must not turn into successful empty statistics.
     print('\nTASK_QUERY_FAILED: fix the request; no aggregate answer is valid from this run.')

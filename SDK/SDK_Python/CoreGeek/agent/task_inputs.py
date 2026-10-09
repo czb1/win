@@ -41,7 +41,11 @@ def zero_without_coverage(answer, contract, report):
 
     visit(value)
     coverage = report.get('parse_lines', {})
-    return bool(numbers) and not any(numbers) and not coverage.get('matched', 0)
+    logs = report.get('logs', {})
+    files = logs.get('files', {})
+    # Exhausted empty/normal files with an invoked file parser are valid zero inputs.
+    file_evidence = bool(files) and bool(logs.get('parsers')) and not logs.get('errors') and all(f.get('complete') for f in files.values())
+    return bool(numbers) and not any(numbers) and not coverage.get('matched', 0) and not file_evidence
 
 
 _PREVIEW = r'''
