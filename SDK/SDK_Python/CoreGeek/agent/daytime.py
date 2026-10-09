@@ -1,5 +1,6 @@
 """Last-chance daytime work without giving up recall or watch ownership."""
 import logging
+from dataclasses import replace
 
 from .commands import command
 from .economy import use_inventory
@@ -8,6 +9,67 @@ from .model import neighbours
 from .wall_watch import geometry
 
 LOG = logging.getLogger(__name__)
+
+
+def park_idle_pioneer(turn, cfg, mem, nav, ledger, hero):
+    """Wait outside the rear wall; a gate is a transit cell, never a parking spot."""
+    if (not turn.is_day or turn.phase_task or not turn.station or hero.id in ledger.used
+            or hero.id in mem.return_targets):
+        return False
+    home, exact = return_destination(turn, nav, ledger, hero)
+    if not home:
+        return False
+    sites = ledger.wall_cells or turn.station.cells
+    right = turn.station.pos[0] < turn.width / 2
+    rear = (min if right else max)(x for x, _ in sites)
+    danger = {p for r in turn.robots if turn.threatens_us(r)
+              for p in ((x, y) for x in range(max(0, r.pos[0] - r.attack_range - 2),
+                                               min(turn.width, r.pos[0] + r.attack_range + 3))
+                                for y in range(max(0, r.pos[1] - r.attack_range - 2),
+                                               min(turn.height, r.pos[1] + r.attack_range + 3)))}
+    forbidden = ledger.tower_cells | ledger.wall_cells | ledger.reserved | danger
+    forbidden.update(ledger.operator_posts.values())
+    options = []
+    for x in range(max(0, rear - 3), min(turn.width, rear + 4)):
+        if not (x < rear if right else x > rear):
+            continue
+        for y in range(max(0, turn.station.pos[1] - 5), min(turn.height, turn.station.pos[1] + 6)):
+            point = x, y
+            if point in forbidden or not 3 <= turn.base_distance(point) <= 5:
+                continue
+            route = nav.search(hero, {point}, forbidden)
+            if route is not None:
+                options.append((point != mem.pioneer_wait_post, route[0],
+                                turn.base_distance(point), point, route))
+    for _, _, _, point, route in sorted(options):
+        original = turn.blocked
+        try:
+            turn.blocked = original - {hero.pos}
+            proxy = replace(hero, pos=point)
+            back = (nav.search(proxy, home, danger) if exact else nav.approach(proxy, home, danger))
+            if back is None or route[0] + back[0] + 2 * cfg.return_margin >= turn.day_left:
+                continue
+            # Reject articulation cells even outside the blueprint, e.g. a
+            # one-cell gap between a mine and a wall. Neighbours that connected
+            # through this square must remain connected when it is occupied.
+            turn.blocked |= {point}
+            adjacent = [p for p in neighbours(point) if turn.inside(p)
+                        and p not in turn.blocked and p not in ledger.reserved]
+            if adjacent:
+                probe = replace(hero, pos=adjacent[0])
+                if any(nav.search(probe, {p}, ledger.reserved) is None for p in adjacent[1:]):
+                    continue
+        finally:
+            turn.blocked = original
+        mem.pioneer_wait_post = point
+        if route[1] is None:
+            ledger.explain(hero.id, 'outside_daytime_standby', post=point)
+            return True
+        if ledger.add(hero.id, command('move', route[1])):
+            ledger.explain(hero.id, 'outside_daytime_standby', post=point,
+                           route_steps=route[0], return_steps=back[0])
+            return True
+    return False
 
 
 def finish_daytime_work(turn, cfg, mem, nav, ledger, returning):

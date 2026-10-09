@@ -301,7 +301,8 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
     sale_fits = False
     home, exact = return_destination(turn, nav, ledger, hero)
     if route:
-        trip = via(nav, hero, [[vendor], home], ledger.reserved, final_exact=exact) if home else route[0]
+        trip = via(nav, hero, [[vendor], home], ledger.reserved, final_exact=exact,
+                   future_return=turn.tick < cfg.economy_rounds) if home else route[0]
         sale_fits = trip is not None and trip + len(ores) + cfg.return_margin <= turn.day_left
         due = (deadline is not None and turn.tick <= deadline
                and deadline - turn.tick <= route[0] + len(ores)

@@ -22,7 +22,8 @@ def _fits_return(turn, cfg, nav, ledger, hero, target):
     home, exact = return_destination(turn, nav, ledger, hero)
     if not home:
         return False
-    trip = via(nav, hero, [[target], home], ledger.reserved, final_exact=exact)
+    trip = via(nav, hero, [[target], home], ledger.reserved, final_exact=exact,
+               future_return=turn.tick < cfg.economy_rounds)
     return trip is not None and trip + 1 + cfg.return_margin <= turn.day_left
 
 

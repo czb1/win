@@ -578,7 +578,8 @@ def batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
         # An adjacent sale has no outward journey to amortize.
         if route[0] == 0:
             return True
-        trip = via(nav, hero, [[vendor], home], ledger.reserved, final_exact=exact) if home else route[0]
+        trip = via(nav, hero, [[vendor], home], ledger.reserved, final_exact=exact,
+                   future_return=turn.tick < cfg.economy_rounds) if home else route[0]
         if trip is None or trip + len(counts) + cfg.return_margin > turn.day_left:
             continue
         phase_due = (hero.id not in mem.sold_workers

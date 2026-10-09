@@ -181,6 +181,8 @@ def finish(turn, mem, ledger, response, elapsed_ms, budget_reached=False, cached
                 "reason": reason, "selected_at": ledger.origins.get(int(uid)),
                 "conditions": note.get("conditions", {}), "weapon_operated": controllers.get(uid),
                 "planning": ledger.plans.get(int(uid), {}),
+                "night_role": ('gatling' if int(uid) == mem.gatling_operator_id else
+                               'wall_watch' if int(uid) == mem.wall_watch_id else None),
                 "navigation": navigation.diagnostics.get(int(uid), {}) if navigation else {},
                 "day_left": turn.day_left, "free_space": max(0, int(role.get("backPackCapability") or 0) - len(role.get("backpack") or [])),
                 "mine_target": mem.mine_targets.get(int(uid)), "build_target": mem.build_targets.get(int(uid)),
