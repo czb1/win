@@ -327,6 +327,8 @@ class Memory:
     return_posts: dict = field(default_factory=dict)
     movement: MovementMemory = field(default_factory=MovementMemory)
     sabotage: ImpMemory = field(default_factory=ImpMemory)
+    imp_catch_attempted: set = field(default_factory=set)
+    imp_catch_next_round: int = 0
     last_response: dict | None = None
     last_digest: str = ""
     wall_health: dict = field(default_factory=dict)
