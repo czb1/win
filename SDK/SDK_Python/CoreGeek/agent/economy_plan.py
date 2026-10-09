@@ -16,18 +16,22 @@ def planned_weapons(turn, cfg, mem, sites):
     return weapons
 
 
-def via(nav, hero, groups, reserved=(), final_exact=False):
+def via(nav, hero, groups, reserved=(), final_exact=False, future_return=False):
     """Shortest reachable first stop, then a feasible walk through later stops.
 
     The chosen endpoint matters: distances from the original actor to every
     stop independently would undercount the actual vendor/shop/base trip.
     final_exact treats the last group as standing cells, e.g. an operator post.
+    Early daytime return estimates may vacate friendly heroes on the last leg;
+    the outward leg and every submitted movement still use current occupancy.
     """
     original = nav.turn.blocked
     proxy, total = hero, 0
     try:
         nav.turn.blocked = original - {hero.pos}
         for index, targets in enumerate(groups):
+            if future_return and index > 0 and index == len(groups) - 1:
+                nav.turn.blocked -= {h.pos for h in nav.turn.heroes}
             targets = set(targets)
             goals = (targets if final_exact and index == len(groups) - 1
                      else {p for t in targets for p in neighbours(t)} - targets)

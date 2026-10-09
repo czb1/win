@@ -1,5 +1,6 @@
 """Fourth-night wall watch, subordinate to the existing gunner assignment."""
 from dataclasses import replace
+import logging
 from .commands import command
 from .model import neighbours, ORES
 from .mining import earn, sale_inventory
@@ -7,12 +8,17 @@ from .economy_plan import via
 from .wall_health import repair_risk
 
 
-def select_watch(turn, mem, pairs):
-    operators = {h.id for h, _ in pairs}
+def select_watch(turn, mem, pairs, fixed_operator=None):
+    previous = mem.wall_watch_id
+    operators = {fixed_operator} if fixed_operator is not None else {h.id for h, _ in pairs}
     eligible = [h for h in turn.workers if h.id not in operators]
     hero = min(eligible, key=lambda h: (h.id != mem.wall_watch_id,
                                        -h.inventory['WallFixer'], h.id), default=None)
     mem.wall_watch_id = hero.id if turn.day >= 4 and hero else None
+    if previous != mem.wall_watch_id:
+        logging.getLogger(__name__).info(
+            'round=%s night_watch_owner=%s->%s fixed_gatling=%s',
+            turn.round, previous, mem.wall_watch_id, fixed_operator)
     return hero if mem.wall_watch_id is not None else None
 
 
@@ -105,6 +111,19 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     if home is None:
         home = watch_route(turn, nav, ledger, mem, hero, sites)
     if home is None:
+        # A friendly body in the gate is not a daytime change of profession.
+        # Estimate the recall deadline with allies vacated, but never issue a
+        # movement using this optimistic route. Actual jobs still check occupancy.
+        original = turn.blocked
+        try:
+            turn.blocked = original - {h.pos for h in turn.heroes if h.id != hero.id}
+            future_home = watch_route(turn, nav, ledger, mem, hero, sites)
+        finally:
+            turn.blocked = original
+        if (future_home is not None and turn.tick < cfg.economy_rounds
+                and turn.day_left > future_home[0] + 2 * cfg.return_margin):
+            report('work', 'temporary_home_blocked', steps=future_home[0])
+            return False, 0
         report('wait', 'no_home_route')
         # Keep ownership of the watch assignment while another actor briefly
         # blocks the corridor. Releasing it to the ordinary worker planner

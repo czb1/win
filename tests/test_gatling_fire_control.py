@@ -190,6 +190,9 @@ class OperatorPostTests(unittest.TestCase):
         self.assertEqual(decision['reason'], 'operator_moving')
         self.assertEqual(decision['targeting']['in_range'], 12)
         self.assertEqual(decision['targeting']['blocker_counts']['character'], 1)
+        operator = next(r['data'] for r in records(stream)
+                        if r['event'] == 'unit_decision' and r['unit_id'] == 20012)
+        self.assertEqual(operator['night_role'], 'gatling')
 
     def test_missing_operator_is_reported(self):
         data = frames()[0]
