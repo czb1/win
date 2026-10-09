@@ -5,6 +5,30 @@ from collections import Counter
 import json
 import sys
 from log_records import events, ReadReport, LogDecryptor, LogCryptoError, load_log_key
+from extract_logs import compact_record
+
+
+def readable(record):
+    view = compact_record(record)
+    parts = []
+    if view.get("game_time"):
+        parts.append(view["game_time"])
+    elif view.get("day") is not None:
+        phase = {"day": "白天", "night": "黑夜"}.get(view.get("phase"), "")
+        parts.append(f"第{view['day']}天{phase}")
+    if view.get("round") is not None:
+        parts.append(f"round={view['round']}")
+    if view.get("category"):
+        parts.append(f"[{view['category']}]")
+    for key in ("team", "unit_id", "task_id", "task_type"):
+        if key in view:
+            parts.append(f"{key}={view[key]}")
+    for key in ("event", "message"):
+        if key in view:
+            parts.append(str(view[key]))
+    if "data" in view:
+        parts.append(json.dumps(view["data"], ensure_ascii=False, separators=(",", ":")))
+    return " ".join(parts)
 
 
 def matches(record, args):
@@ -53,13 +77,9 @@ def main(argv=None):
             groups[tuple(record.get(k) for k in ("day", "phase", "team", "session", "category", "task_id"))] += 1
             continue
         if args.json:
-            print(json.dumps(record, ensure_ascii=False))
+            print(json.dumps(compact_record(record), ensure_ascii=False, separators=(",", ":")))
         else:
-            phase = {"day": "白天", "night": "黑夜"}.get(record.get("phase"), "系统")
-            print(f"第{record.get('day')}天{phase} round={record.get('round')} "
-                  f"{record.get('level')} [{record.get('category')}] "
-                  f"team={record.get('team')} task_id={record.get('task_id')} "
-                  f"{record.get('message', '')}")
+            print(readable(record))
             if record.get("exception"):
                 print(record["exception"])
         count += 1

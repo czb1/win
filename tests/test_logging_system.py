@@ -69,7 +69,7 @@ class LoggingSystemTests(unittest.TestCase):
         self.assertEqual(outcome['task_id'], starts[0]['task_id'])
         self.assertNotEqual(starts[0]['task_id'], starts[1]['task_id'])
         self.assertEqual(starts[0]['task_type'], '自进化类1')
-        self.assertTrue(any(r['phase'] == 'night' and r['task_id'] == starts[0]['task_id'] for r in result))
+        self.assertTrue(any(r['phase'] == 'night' and r.get('task_id') == starts[0]['task_id'] for r in result))
 
     def test_treasure_chain_has_separate_category_and_session(self):
         agent = Agent(Config(layout_mode="explicit"))
@@ -139,7 +139,8 @@ class LoggingSystemTests(unittest.TestCase):
             process = subprocess.run(command + ['--day', '2', '--phase', 'night', '--category', 'evolution',
                                                 '--task-id', 'abc/r140', '--json'], capture_output=True, text=True)
             self.assertEqual(process.returncode, 0, process.stderr)
-            self.assertEqual(json.loads(process.stdout), data[0])
+            from agent.log_display import compact_record
+            self.assertEqual(json.loads(process.stdout), compact_record(data[0]))
             self.assertIn('跳过无效日志', process.stderr)
             listing = subprocess.run(command + ['--list'], capture_output=True, text=True)
             self.assertEqual(listing.returncode, 0)

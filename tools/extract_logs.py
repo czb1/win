@@ -395,9 +395,86 @@ class LogDecryptor:
 # END EMBEDDED LOG CRYPTO
 
 PREFIX = "FWLOG "
+# BEGIN EMBEDDED LOG DISPLAY
+"""Compact log views; transport metadata stays available to readers internally.
+
+This module is embedded in the standalone extractor by sync_log_crypto.py.
+"""
+
 TASK_CATEGORIES = {"evolution", "long_context", "reasoning"}
 TASK_ACTIONS = {"acceptTask", "submitAnswer", "summonTreasure"}
 TASK_PAYLOAD_EVENTS = {"sent_prompt", "sent_executeCmd", "received_llmResp", "received_lastCmdResult"}
+HIDDEN_FIELDS = {"run", "request_id", "level", "logger", "timestamp", "source", "session",
+                 "record_id", "sequence", "schema_version"}
+
+
+def is_task(record):
+    return record.get("category") in TASK_CATEGORIES or str(record.get("event", "")).startswith("task_")
+
+
+def task_category(record):
+    category = record.get("category")
+    if category in TASK_CATEGORIES:
+        return category
+    if str(record.get("event", "")).startswith("task_"):
+        return "evolution"
+    return None
+
+
+def task_related(record):
+    if task_category(record) or record.get("event") in TASK_PAYLOAD_EVENTS:
+        return True
+    data = record.get("data")
+    if not isinstance(data, dict):
+        return False
+    if record.get("event") == "unit_decision" and data.get("role_type") == "pioneer":
+        return True
+    commands = data.get("commands", data.get("roleCommandMap", {}))
+    if isinstance(commands, dict) and any(isinstance(command, dict) and command.get("action") in TASK_ACTIONS
+                                          for command in commands.values()):
+        return True
+    action = data.get("command")
+    if isinstance(action, dict) and action.get("action") in TASK_ACTIONS:
+        return True
+    if record.get("event") == "turn_response" and (data.get("prompt_chars") or data.get("execute_chars")):
+        return True
+    if record.get("event") == "previous_feedback":
+        if record.get("task_id") or data.get("lastSummonTreasureResult") not in (None, "", 0):
+            return True
+        actions = data.get("actions")
+        if isinstance(actions, list) and any(isinstance(item, dict) and isinstance(item.get("command"), dict)
+                                            and item["command"].get("action") in TASK_ACTIONS for item in actions):
+            return True
+    return False
+
+
+def compact_record(record):
+    """Keep useful fields without altering the source or application payloads."""
+    result = {key: value for key, value in record.items()
+              if key not in HIDDEN_FIELDS and value is not None and value != ""}
+    if not task_related(record):
+        result.pop("task_id", None)
+        result.pop("task_type", None)
+    for key in ("task_id", "task_type"):
+        if isinstance(result.get(key), str) and not result[key].strip():
+            result.pop(key)
+    if result.get("message") == result.get("event"):
+        result.pop("message", None)
+    data = result.get("data")
+    if isinstance(data, dict) and record.get("event") == "session_started":
+        # Full build/configuration details belong in meta.json and the archive.
+        data = {key: data[key] for key in ("version", "reason") if data.get(key) not in (None, "")}
+        result["data"] = data
+    if isinstance(data, dict) and record.get("event") == "previous_feedback":
+        data = {key: value for key, value in data.items() if key != "previous_request_id"}
+        result["data"] = data
+    if isinstance(data, dict) and record.get("event") in ("unit_decision", "task_state"):
+        data = {key: value for key, value in data.items() if value is not None and value not in ({}, [])}
+        result["data"] = data
+    if data in ({}, []):
+        result.pop("data", None)
+    return result
+# END EMBEDDED LOG DISPLAY
 
 
 @dataclass
@@ -445,6 +522,7 @@ def events(path, report=None, warn=True, decryptor=None):
             if not line:
                 continue
             encrypted_line = False
+            fragment_identity = None
             if line.startswith("{"):
                 raw = line
             elif ENCRYPTED_PREFIX in line and (PREFIX not in line or line.index(ENCRYPTED_PREFIX) < line.index(PREFIX)):
@@ -542,8 +620,10 @@ def events(path, report=None, warn=True, decryptor=None):
                     if sha256(encoded).hexdigest() != state["sha256"]:
                         raise ValueError("fragment checksum mismatch")
                     record = json.loads(encoded.decode("utf-8"))
-                    if not isinstance(record, dict) or (record.get("run"), record.get("record_id")) != identity:
+                    if not isinstance(record, dict) or (record.get("record_id") is not None
+                            and (record.get("run"), record.get("record_id")) != identity):
                         raise ValueError("restored record identity mismatch")
+                    fragment_identity = identity
                 for key in ("run", "request_id", "session", "team", "record_id", "task_id", "category", "event"):
                     if record.get(key) is not None and type(record[key]) not in (str, int):
                         raise ValueError("invalid scalar identity: " + key)
@@ -558,7 +638,7 @@ def events(path, report=None, warn=True, decryptor=None):
                 if warn and report.invalid_lines <= 5:
                     print(f"跳过无效日志：{path}:{line_no} ({error})", file=sys.stderr)
                 continue
-            identity = (record.get("run"), record.get("record_id"))
+            identity = fragment_identity or (record.get("run"), record.get("record_id"))
             if identity[1] is not None:
                 if identity in emitted:
                     report.duplicate_records += 1
@@ -587,46 +667,6 @@ def payload_key(record):
     if isinstance(data, dict) and isinstance(data.get("payload_id"), str):
         return (*scope(record), record.get("category"), data["payload_id"])
     return None
-
-
-def is_task(record):
-    return record.get("category") in TASK_CATEGORIES or str(record.get("event", "")).startswith("task_")
-
-
-def task_category(record):
-    category = record.get("category")
-    if category in TASK_CATEGORIES:
-        return category
-    if str(record.get("event", "")).startswith("task_"):
-        return "evolution"
-    return None
-
-
-def task_related(record):
-    if task_category(record) or record.get("event") in TASK_PAYLOAD_EVENTS:
-        return True
-    data = record.get("data")
-    if not isinstance(data, dict):
-        return False
-    if record.get("event") == "unit_decision" and data.get("role_type") == "pioneer":
-        return True
-    commands = data.get("commands", data.get("roleCommandMap", {}))
-    if isinstance(commands, dict) and any(isinstance(command, dict) and command.get("action") in TASK_ACTIONS
-                                          for command in commands.values()):
-        return True
-    action = data.get("command")
-    if isinstance(action, dict) and action.get("action") in TASK_ACTIONS:
-        return True
-    if record.get("event") == "turn_response" and (data.get("prompt_chars") or data.get("execute_chars")):
-        return True
-    if record.get("event") == "previous_feedback":
-        if record.get("task_id") or data.get("lastSummonTreasureResult") not in (None, "", 0):
-            return True
-        actions = data.get("actions")
-        if isinstance(actions, list) and any(isinstance(item, dict) and isinstance(item.get("command"), dict)
-                                            and item["command"].get("action") in TASK_ACTIONS for item in actions):
-            return True
-    return False
 
 
 def matches_mode(record, mode):
@@ -778,8 +818,7 @@ def main(argv=None):
                 "selected_records": selected_count, "read_report": report.summary(),
                 "missing_payloads": absent, "requests_without_response": [list(key) for key in unfinished],
                 "missing_session_metadata": [list(key) for key in bounds if key not in metadata]}
-        if args.mode != "all":
-            meta["session_metadata"] = [metadata[key] for key in bounds if key in metadata]
+        meta["session_metadata"] = [metadata[key] for key in bounds if key in metadata]
         files = {"issue": (args.out / "issue.txt").open("w", encoding="utf-8"),
                  "tasks": (args.out / "tasks.txt").open("w", encoding="utf-8")}
         if args.split:
@@ -787,7 +826,7 @@ def main(argv=None):
                           for name in ("turns", "decisions", "feedback", "errors")})
         counts = Counter(task_records=0)
         def write(record):
-            encoded = dumps(record)
+            encoded = dumps(compact_record(record))
             files["issue"].write("FWLOG " + encoded + "\n")
             request = (*scope(record), record.get("request_id"))
             task = is_task(record) and (args.task_id is None or record.get("task_id") == args.task_id)
@@ -801,15 +840,19 @@ def main(argv=None):
                 counts["task_records"] += 1
             for name, category in (("turns", "snapshot"), ("decisions", "decision"), ("feedback", "feedback")):
                 if name in files and record.get("category") == category:
-                    files[name].write(encoded + "\n")
+                    files[name].write(dumps(record) + "\n")
             if "errors" in files and (record.get("level") in ("WARNING", "ERROR", "CRITICAL")
                                        or record.get("event") in ("judger_errors", "log_integrity")):
-                files["errors"].write(encoded + "\n")
+                files["errors"].write(dumps(record) + "\n")
         try:
             if args.mode == "all":
-                write({"schema_version": 2, "event": "log_integrity", "category": "runtime",
-                       "level": "WARNING" if report.invalid_lines or report.incomplete_records or absent or unfinished else "INFO",
-                       "data": meta})
+                issues = {key: value for key, value in {
+                    "invalid_lines": report.invalid_lines, "incomplete_records": report.incomplete_records,
+                    "crypto_errors": report.crypto_errors, "missing_payloads": len(absent),
+                    "unfinished_requests": len(unfinished)}.items() if value}
+                if issues:
+                    write({"event": "log_integrity", "category": "runtime", "level": "WARNING",
+                           "data": {**issues, "details": "meta.json"}})
                 for identity in bounds:
                     if identity in metadata:
                         write({**metadata[identity], "included_as": "session_metadata"})

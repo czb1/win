@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
-"""Embed the canonical standard-library codec in the downloadable extractor."""
+"""Embed the canonical codec and compact log views in the standalone extractor."""
 import argparse
 from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-START = "# BEGIN EMBEDDED LOG CRYPTO\n"
-END = "# END EMBEDDED LOG CRYPTO\n"
+MODULES = {"LOG CRYPTO": "log_crypto.py", "LOG DISPLAY": "log_display.py"}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
-    source = (ROOT / "SDK/SDK_Python/CoreGeek/agent/log_crypto.py").read_text(encoding="utf-8").rstrip() + "\n"
     path = ROOT / "tools/extract_logs.py"
     content = path.read_text(encoding="utf-8")
-    before, rest = content.split(START, 1)
-    actual, after = rest.split(END, 1)
-    if args.check:
-        if actual != source:
-            print("Embedded crypto differs; run python tools/sync_log_crypto.py", file=sys.stderr)
+    for label, filename in MODULES.items():
+        source = (ROOT / "SDK/SDK_Python/CoreGeek/agent" / filename).read_text(encoding="utf-8").rstrip() + "\n"
+        start, end = f"# BEGIN EMBEDDED {label}\n", f"# END EMBEDDED {label}\n"
+        before, rest = content.split(start, 1)
+        actual, after = rest.split(end, 1)
+        if args.check and actual != source:
+            print(f"Embedded {label.lower()} differs; run python tools/sync_log_crypto.py", file=sys.stderr)
             return 1
-    else:
-        path.write_text(before + START + source + END + after, encoding="utf-8")
+        content = before + start + source + end + after
+    if not args.check:
+        path.write_text(content, encoding="utf-8")
     return 0
 
 

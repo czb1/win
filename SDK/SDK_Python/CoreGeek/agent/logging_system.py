@@ -15,6 +15,7 @@ import re
 import sys
 from uuid import uuid4
 from .log_crypto import LogEncryptor, load_log_key, packet_lines
+from .log_display import compact_record
 
 PREFIX = "FWLOG "
 SCHEMA_VERSION = 2
@@ -85,7 +86,7 @@ def logging_failure(error):
         record = {**context(), "run": RUN_ID, "schema_version": SCHEMA_VERSION,
                   "event": "logging_failed", "category": "runtime", "level": "ERROR",
                   "data": {"error": str(error)[:256], "records_may_be_missing": True}}
-        sys.stderr.write(PREFIX + json.dumps(record, ensure_ascii=False) + "\n")
+        sys.stderr.write(PREFIX + json.dumps(compact_record(record), ensure_ascii=False) + "\n")
     except Exception:
         pass
 
@@ -150,6 +151,10 @@ class ContextFilter(logging.Filter):
 
 
 class JsonFormatter(logging.Formatter):
+    def __init__(self, compact=False):
+        super().__init__()
+        self.compact = compact
+
     def format(self, record):
         result = {key: getattr(record, key, None) for key in FIELDS}
         result.update(schema_version=SCHEMA_VERSION, sequence=record.sequence, record_id=record.record_id,
@@ -158,6 +163,11 @@ class JsonFormatter(logging.Formatter):
                       message=record.getMessage(), data=record.data)
         if record.exc_info:
             result["exception"] = self.formatException(record.exc_info)
+        for key in ("task_id", "task_type"):
+            if result.get(key) in (None, ""):
+                result.pop(key, None)
+        if self.compact:
+            result = compact_record(result)
         return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -170,8 +180,8 @@ class WireFormatter(JsonFormatter):
             return PREFIX + raw
         pieces = [encoded[i:i + 4200] for i in range(0, len(encoded), 4200)]
         digest = sha256(encoded).hexdigest()
-        header = {key: getattr(record, key, None) for key in FIELDS}
-        header.update(schema_version=SCHEMA_VERSION, sequence=record.sequence, record_id=record.record_id)
+        # Fragment identity is only transport framing, never part of the compact view.
+        header = {"run": record.run, "record_id": record.record_id}
         return "\n".join(PREFIX + json.dumps({**header, "fragment": {
             "index": index, "total": len(pieces), "sha256": digest, "encoding": "base64",
             "content": base64.b64encode(piece).decode("ascii")}}, ensure_ascii=False, separators=(",", ":"))
@@ -222,12 +232,13 @@ def configure_logging(level="INFO", log_dir=None, log_public_key=None, plaintext
             if getattr(handler, "game_log_handler", False):
                 handler.close()
     root.setLevel(getattr(logging, level))
-    handlers = [(SafeStreamHandler(sys.stderr), EncryptedFormatter(encryptor) if encryptor else WireFormatter())]
+    handlers = [(SafeStreamHandler(sys.stderr), EncryptedFormatter(encryptor) if encryptor else WireFormatter(compact=True))]
     if log_dir:
         try:
             directory = Path(log_dir)
             directory.mkdir(parents=True, exist_ok=True)
-            for filename, formatter in (("game.log", WireFormatter()), ("events.jsonl", JsonFormatter())):
+            # events.jsonl retains internal identities for machine filters and recovery.
+            for filename, formatter in (("game.log", WireFormatter(compact=True)), ("events.jsonl", JsonFormatter())):
                 if encryptor:
                     formatter = EncryptedFormatter(encryptor, wire=filename == "game.log")
                 handlers.append((SafeRotatingHandler(directory / filename, maxBytes=50 * 1024 * 1024,
