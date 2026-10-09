@@ -106,6 +106,17 @@ python extract_logs.py match.log --task-id "场次/r领取回合" --context 0 --
 python extract_logs.py match.log --from-round 120 --to-round 140 --out issue --split
 ```
 
+四种常用筛选方式（天数以第2天为例，替换 `--day 2` 即可）：
+
+| 提取内容 | 命令 |
+|---|---|
+| 只提取自进化任务 | `python extract_logs.py match.log --mode evolution --out evolution` |
+| 只提取长上下文任务 | `python extract_logs.py match.log --mode long-context --out long_context` |
+| 第2天白天的普通日志 | `python extract_logs.py match.log --mode non-task --day 2 --phase day --out day2_day` |
+| 第2天黑夜的普通日志 | `python extract_logs.py match.log --mode non-task --day 2 --phase night --out day2_night` |
+
+筛选模式的 `issue.txt` 只包含目标记录；场次元数据和完整性报告保存在 `meta.json`。任务模式按日志类别区分自进化和长上下文，并自动补齐所引用的题目／传闻原文；明确标为长上下文的记录不会因事件名以 `task_` 开头而归入自进化。普通模式排除自进化、长上下文和推理类别、模型／沙盒原文、开拓者决策、带任务上下文／任务动作／宝藏结果的反馈，以及含任务指令／模型或沙盒调用的响应，保留同回合的工人、武器等普通记录。`--context` 不会将指定天数／昼夜外的普通记录带入输出。`--list` 同样遵守模式、天数、昼夜和身份筛选；不加 `--mode` 时使用 `all`，导出完整问题区间。
+
 默认输出 `issue/issue.txt`（全部相关诊断）、独立的 `issue/tasks.txt`（自进化、新闻推理、宝藏、相关开拓者动作与反馈）和 `issue/meta.json`（区间及完整性报告）。可以直接发送 `issue.txt`，任务问题可单独发送 `tasks.txt`。`--split` 额外输出 `turns.jsonl`、`decisions.jsonl`、`feedback.jsonl`、`errors.jsonl`。提取器分多遍流式读取，不将整份 `.log` 文件载入内存；自动补入所选场次的版本配置和区间外被引用的长文本，原始回合与任务编号不改写。`included_as` 标明补入的上下文；缺失数据明确报告，不据此补造执行成功。支持平台时间戳前缀、混杂启动信息、UTF-8／UTF-16 `.log` 和旧 JSONL，校验分段完整性及哈希。
 
 从 `--list` 复制任务编号后，可用 `--task-id "编号"` 查看同一次任务跨白天／黑夜的记录；自进化编号为 `session/r领取回合`（没有领取记录时用首次看到题目的回合），长上下文编号为 `session/long-context`，新闻推理为 `session/reasoning`。查询工具支持 `.log` 和 JSONL，可组合 `--from-round`、`--to-round`、`--unit-id`、`--event`、`--team`、`--session`、`--contains`、`--level` 和 `--limit`；`--json` 输出恢复后的 JSON Lines。白天70回合、黑夜60回合，阶段内回合从1计数；任务结束和 outcome 保留旧任务编号，新任务单独编号。领取失败、合法提交、任务结束和有证据的完成分别记录。

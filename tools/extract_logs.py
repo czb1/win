@@ -15,6 +15,8 @@ import sys
 
 PREFIX = "FWLOG "
 TASK_CATEGORIES = {"evolution", "long_context", "reasoning"}
+TASK_ACTIONS = {"acceptTask", "submitAnswer", "summonTreasure"}
+TASK_PAYLOAD_EVENTS = {"sent_prompt", "sent_executeCmd", "received_llmResp", "received_lastCmdResult"}
 
 
 @dataclass
@@ -154,9 +156,55 @@ def is_task(record):
     return record.get("category") in TASK_CATEGORIES or str(record.get("event", "")).startswith("task_")
 
 
+def task_category(record):
+    category = record.get("category")
+    if category in TASK_CATEGORIES:
+        return category
+    if str(record.get("event", "")).startswith("task_"):
+        return "evolution"
+    return None
+
+
+def task_related(record):
+    if task_category(record) or record.get("event") in TASK_PAYLOAD_EVENTS:
+        return True
+    data = record.get("data")
+    if not isinstance(data, dict):
+        return False
+    if record.get("event") == "unit_decision" and data.get("role_type") == "pioneer":
+        return True
+    commands = data.get("commands", data.get("roleCommandMap", {}))
+    if isinstance(commands, dict) and any(isinstance(command, dict) and command.get("action") in TASK_ACTIONS
+                                          for command in commands.values()):
+        return True
+    action = data.get("command")
+    if isinstance(action, dict) and action.get("action") in TASK_ACTIONS:
+        return True
+    if record.get("event") == "turn_response" and (data.get("prompt_chars") or data.get("execute_chars")):
+        return True
+    if record.get("event") == "previous_feedback":
+        if record.get("task_id") or data.get("lastSummonTreasureResult") not in (None, "", 0):
+            return True
+        actions = data.get("actions")
+        if isinstance(actions, list) and any(isinstance(item, dict) and isinstance(item.get("command"), dict)
+                                            and item["command"].get("action") in TASK_ACTIONS for item in actions):
+            return True
+    return False
+
+
+def matches_mode(record, mode):
+    if mode == "evolution":
+        return task_category(record) == "evolution"
+    if mode == "long-context":
+        return task_category(record) == "long_context"
+    if mode == "non-task":
+        return not task_related(record)
+    return True
+
+
 def anchors(record, args):
     number = record.get("round")
-    if type(number) is not int:
+    if type(number) is not int or not matches_mode(record, args.mode):
         return False
     for name in ("session", "team", "run", "day", "phase", "task_id"):
         expected = getattr(args, name)
@@ -171,6 +219,21 @@ def anchors(record, args):
     return True
 
 
+def selected_record(record, args, interval):
+    number = record.get("round")
+    if interval is None or type(number) is not int or not interval[0] - args.context <= number <= interval[1] + args.context:
+        return False
+    if not matches_mode(record, args.mode):
+        return False
+    if args.mode != "all":
+        # Context must not cross an explicit day/phase/task boundary in filtered modes.
+        for name in ("day", "phase", "task_id"):
+            expected = getattr(args, name)
+            if expected is not None and record.get(name) != expected:
+                return False
+    return True
+
+
 def dumps(record):
     return json.dumps(record, ensure_ascii=False, separators=(",", ":"))
 
@@ -178,6 +241,8 @@ def dumps(record):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path, help="Downloaded .log file or legacy events.jsonl")
+    parser.add_argument("--mode", choices=("all", "evolution", "long-context", "non-task"), default="all",
+                        help="all=全部；evolution=仅自进化；long-context=仅长上下文；non-task=仅普通日志")
     parser.add_argument("--out", type=Path, default=Path("issue"))
     parser.add_argument("--from-round", type=int)
     parser.add_argument("--to-round", type=int)
@@ -189,6 +254,8 @@ def main(argv=None):
     parser.add_argument("--split", action="store_true", help="Also write snapshots, decisions, feedback and errors JSONL")
     parser.add_argument("--list", action="store_true", help="List sessions and tasks without writing files")
     args = parser.parse_args(argv)
+    if args.day is not None and args.day < 1:
+        parser.error("--day must be at least 1")
     if args.context < 0 or (args.from_round is not None and args.to_round is not None and args.from_round > args.to_round):
         parser.error("invalid round range or negative context")
     report = ReadReport()
@@ -196,13 +263,13 @@ def main(argv=None):
     for record in events(args.log, report):
         identity = scope(record)
         number = record.get("round")
-        groups[(identity, record.get("task_id"))] += 1
         if record.get("event") == "session_started":
             metadata[identity] = record
         key = payload_key(record)
         if key and "content" in record.get("data", {}):
             definitions.setdefault(key, record.get("record_id"))
         if anchors(record, args):
+            groups[(identity, None if args.mode == "non-task" else record.get("task_id"))] += 1
             lower, upper = bounds.get(identity, (number, number))
             bounds[identity] = min(lower, number), max(upper, number)
     if args.list:
@@ -224,9 +291,9 @@ def main(argv=None):
     try:
         with temporary.open("w", encoding="utf-8") as target:
             for record in events(args.log, warn=False):
-                identity, number = scope(record), record.get("round")
+                identity = scope(record)
                 interval = bounds.get(identity)
-                if interval is None or type(number) is not int or not interval[0] - args.context <= number <= interval[1] + args.context:
+                if not selected_record(record, args, interval):
                     continue
                 if record.get("event") == "session_started":
                     continue
@@ -247,19 +314,21 @@ def main(argv=None):
         missing = requested - available
         absent = [list(key) for key in missing if key not in definitions]
         meta = {"source": str(args.log), "filters": {name: getattr(args, name) for name in
-                ("from_round", "to_round", "context", "team", "session", "run", "day", "phase", "task_id", "unit_id")},
+                ("mode", "from_round", "to_round", "context", "team", "session", "run", "day", "phase", "task_id", "unit_id")},
                 "windows": [{"run": key[0], "session": key[1], "team": key[2],
                              "from_round": value[0] - args.context, "to_round": value[1] + args.context}
                             for key, value in bounds.items()],
                 "selected_records": selected_count, "read_report": report.summary(),
                 "missing_payloads": absent, "requests_without_response": [list(key) for key in unfinished],
                 "missing_session_metadata": [list(key) for key in bounds if key not in metadata]}
+        if args.mode != "all":
+            meta["session_metadata"] = [metadata[key] for key in bounds if key in metadata]
         files = {"issue": (args.out / "issue.txt").open("w", encoding="utf-8"),
                  "tasks": (args.out / "tasks.txt").open("w", encoding="utf-8")}
         if args.split:
             files.update({name: (args.out / (name + ".jsonl")).open("w", encoding="utf-8")
                           for name in ("turns", "decisions", "feedback", "errors")})
-        counts = Counter()
+        counts = Counter(task_records=0)
         def write(record):
             encoded = dumps(record)
             files["issue"].write("FWLOG " + encoded + "\n")
@@ -270,7 +339,7 @@ def main(argv=None):
             task = task or request in task_requests and (record.get("event") in ("previous_feedback", "turn_response")
                      or record.get("event") == "unit_decision" and isinstance(record.get("data"), dict) and record["data"].get("role_type") == "pioneer"
                      or record.get("level") in ("WARNING", "ERROR", "CRITICAL"))
-            if task:
+            if task and args.mode != "non-task":
                 files["tasks"].write("FWLOG " + encoded + "\n")
                 counts["task_records"] += 1
             for name, category in (("turns", "snapshot"), ("decisions", "decision"), ("feedback", "feedback")):
@@ -280,12 +349,13 @@ def main(argv=None):
                                        or record.get("event") in ("judger_errors", "log_integrity")):
                 files["errors"].write(encoded + "\n")
         try:
-            write({"schema_version": 2, "event": "log_integrity", "category": "runtime",
-                   "level": "WARNING" if report.invalid_lines or report.incomplete_records or absent or unfinished else "INFO",
-                   "data": meta})
-            for identity in bounds:
-                if identity in metadata:
-                    write({**metadata[identity], "included_as": "session_metadata"})
+            if args.mode == "all":
+                write({"schema_version": 2, "event": "log_integrity", "category": "runtime",
+                       "level": "WARNING" if report.invalid_lines or report.incomplete_records or absent or unfinished else "INFO",
+                       "data": meta})
+                for identity in bounds:
+                    if identity in metadata:
+                        write({**metadata[identity], "included_as": "session_metadata"})
             supplied = set()
             for record in events(args.log, warn=False):
                 key = payload_key(record)
