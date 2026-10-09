@@ -164,6 +164,8 @@ def finish(turn, mem, ledger, response, elapsed_ms, budget_reached=False, cached
                 reason = "operating_weapon"
             elif int(role.get("health") or 0) <= 0:
                 reason = "not_alive"
+            elif int(uid) in turn.summon_robot_ids:
+                reason = note.get("reason", "no_eligible_robot_action")
             elif kind not in CHARACTERS and kind not in WEAPONS:
                 reason = "not_supported_by_current_strategy"
             elif ledger.daytime_waits.get(int(uid)):

@@ -2,6 +2,10 @@ from dataclasses import dataclass
 from collections import Counter
 
 WEAPONS = ("gatling", "railgun", "rocket")
+ROBOTS = ("smallRobot", "middleRobot", "largeRobot", "bossRobot")
+ROBOT_POWER = {"smallRobot": 5, "middleRobot": 10, "largeRobot": 20, "bossRobot": 40}
+SUMMON_ORDERS = ("SmallRobotSummonOrder", "MiddleRobotSummonOrder",
+                 "LargeRobotSummonOrder", "BossRobotSummonOrder")
 HEROES = ("worker", "pioneer")
 CHARACTERS = (*HEROES, "imp")
 ORES = ("stone", "iron", "copper")
@@ -45,9 +49,11 @@ class Unit:
 
     @classmethod
     def load(cls, r):
+        robot = r["roleType"] in ROBOTS
         return cls(int(r["id"]), pos(r["pos"]), r["roleType"], int(r["health"]),
                    max(1, min(3, int(r.get("level") or 1))),
-                   int(r.get("attackRange") or 0), int(r.get("attackPower") or 0),
+                   int(r.get("attackRange") or (3 if robot else 0)),
+                   int(r.get("attackPower") or ROBOT_POWER.get(r["roleType"], 0)),
                    int(r.get("cooldown") or 0), int(r.get("backPackCapability") or 0),
                    tuple(r.get("backpack") or ()), r.get("targetTeam", ""),
                    r.get("abnormalState", ""), r.get("isDriving") is True)
@@ -91,6 +97,11 @@ class Turn:
         self.ours = tuple(Unit.load(r) for r in team.get("roles", []) if int(r["health"]) > 0)
         self.enemies = tuple(Unit.load(r) for r in data.get("teamEnemy", {}).get("roles", []) if int(r["health"]) > 0)
         self.robots = tuple(Unit.load(r) for r in data.get("robot", {}).get("roles", []) if int(r["health"]) > 0)
+        # Only this authoritative list grants control. targetTeam describes a
+        # destination, not ownership; robot.roles may also repeat an ally.
+        self.summon_robots = tuple(Unit.load(r) for r in team.get("summonRobotList", [])
+                                   if r.get("roleType") in ROBOTS and int(r["health"]) > 0)
+        self.summon_robot_ids = {r.id for r in self.summon_robots}
         self.heroes = sorted((r for r in self.ours if r.kind in HEROES), key=lambda r: r.id)
         self.characters = sorted((r for r in self.ours if r.kind in CHARACTERS), key=lambda r: r.id)
         self.imps = [r for r in self.characters if r.kind == "imp"]
@@ -98,13 +109,13 @@ class Turn:
         self.pioneer = next((r for r in self.heroes if r.kind == "pioneer"), None)
         self.weapons = sorted((r for r in self.ours if r.kind in WEAPONS), key=lambda r: r.id)
         self.station = next((r for r in self.ours if r.kind == "station"), None)
-        self.units = {r.id: r for r in self.ours}
+        self.units = {r.id: r for r in (*self.ours, *self.summon_robots)}
         self.tasks = team.get("playerTasks", [])
         self.phase_task = str(data.get("phaseTask") or "")
         self.prices = {r["name"]: int(r["price"]) for r in data.get("vendorShopList", [])}
         self.shop = {r["name"]: int(r["price"]) for r in data.get("weaponShopList", [])}
         self.blocked = {p for p, k in self.zones.items() if k != "land"}
-        for r in (*self.ours, *self.enemies, *self.robots):
+        for r in (*self.ours, *self.enemies, *self.robots, *self.summon_robots):
             self.blocked.update(r.cells)
         # Task points may be missing from zones in minimal requests.
         self.blocked.update(pos(t["taskPosition"]) for t in self.tasks)
@@ -118,6 +129,25 @@ class Turn:
     def base_distance(self, p):
         return min(distance(p, q) for q in self.station.cells) if self.station else 999
 
+    def summon_position_legal(self, p):
+        """Static v2 summon restrictions; dynamic occupants may shift spawning.
+
+        The two construction rings follow the repository's inferred demo
+        geometry: the rulebook provides only a picture, no zone coordinates.
+        """
+        if not self.inside(p):
+            return False
+        bases = [u for u in (*self.ours, *self.enemies) if u.kind == "station"]
+        if any(min(distance(p, cell) for cell in base.cells) <= 2 for base in bases):
+            return False
+        kind = self.zones.get(p)
+        if kind and kind != "land" and kind not in ORES:
+            return False
+        if any(p in u.cells for u in (*self.ours, *self.enemies)
+               if u.kind in (*WEAPONS, "wall", "station")):
+            return False
+        return True
+
     def mine_half(self, p):
         """Signed side of the bottom-left/top-right diagonal; zero is ambiguous."""
         return p[1] * (self.width - 1) - p[0] * (self.height - 1)
@@ -130,6 +160,8 @@ class Turn:
         return home * self.mine_half(p) < 0
 
     def threatens_us(self, robot):
+        if robot.id in self.summon_robot_ids:
+            return False
         # The protocol field is authoritative; spawn side and current distance
         # must never override an explicit destination team.
         if robot.target_team in ("challenger", "defender"):

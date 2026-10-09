@@ -1,7 +1,7 @@
 """One per-turn ledger owns role locks, gold and destination reservations."""
 from collections import Counter
 import sys
-from .model import WEAPONS, CHARACTERS, ORES, dump, distance, pos
+from .model import WEAPONS, CHARACTERS, ORES, SUMMON_ORDERS, dump, distance, pos
 from .logging_system import logging_failure
 
 EMPTY = {"roleCommandMap": {}, "prompt": "", "executeCmd": ""}
@@ -24,6 +24,8 @@ class Ledger:
         # Claims are work destinations, not occupied movement cells.
         self.build_claims = {}
         self.purchases = set()
+        self.summon_pending_positions = set()
+        self.summon_daily_count = 0
         self.upgrade_claims = set()
         self.repair_claims = set()
         self.mine_claims = {}
@@ -116,7 +118,23 @@ class Ledger:
         name = cmd.get("name")
         cost = 0
         controller = None
-        if action == "attack":
+        if uid in self.turn.summon_robot_ids:
+            if self.turn.is_day or unit.abnormal_state == "dizzy":
+                return self._reject("robot_unavailable_by_phase_or_dizzy")
+            if "controllerId" in cmd or len(points) != 1:
+                return self._reject("robot_expected_one_target_without_controller")
+            if action == "move":
+                if (not self.turn.adjacent(unit.pos, target) or target in self.turn.blocked
+                        or target in self.reserved):
+                    return self._reject("move_not_adjacent_or_occupied")
+            elif action == "attack":
+                if (unit.attack_range <= 0 or distance(unit.pos, target) > unit.attack_range
+                        or not any(target in enemy.cells and enemy.kind in (*CHARACTERS, *WEAPONS, "wall", "station")
+                                   for enemy in self.turn.enemies)):
+                    return self._reject("robot_attack_requires_enemy_in_range")
+            else:
+                return self._reject("robot_action_unsupported")
+        elif action == "attack":
             try:
                 controller = self.turn.units[int(cmd.get("controllerId", ""))]
             except (ValueError, KeyError, TypeError):
@@ -203,7 +221,12 @@ class Ledger:
             elif action == "use":
                 if name not in unit.inventory:
                     return self._reject("item_not_in_inventory")
-                if name in ("Bomb", "DizzyWeapon", "WallFixer") or "UpgradeVoucher" in str(name):
+                if name in SUMMON_ORDERS:
+                    if (len(points) != 1 or not self.turn.summon_position_legal(target)
+                            or target in self.summon_pending_positions
+                            or self.summon_daily_count >= 10):
+                        return self._reject("summon_position_or_daily_limit")
+                elif name in ("Bomb", "DizzyWeapon", "WallFixer") or "UpgradeVoucher" in str(name):
                     if len(points) != 1:
                         return self._reject("item_expected_one_target")
                     if name not in ("Bomb", "DizzyWeapon"):
@@ -242,6 +265,9 @@ class Ledger:
             self.upgrade_claims.add(building.id)
         if action == "use" and name == "WallFixer":
             self.repair_claims.add(building.id)
+        if action == "use" and name in SUMMON_ORDERS:
+            self.summon_pending_positions.add(target)
+            self.summon_daily_count += 1
         self.commands[str(uid)] = cmd
         return True
 
