@@ -81,6 +81,7 @@ jobs:
           fi
 
           archive="CoreGeek-${RELEASE_TAG}.tar.gz"
+          python3 tools/check_log_key_packaging.py "$source_dir"
           tar --create --gzip --file "$archive" \
             --directory "SDK/SDK_Python" \
             "CoreGeek"
@@ -123,3 +124,4 @@ jobs:
               --title "$RELEASE_TAG" \
               --generate-notes "${release_flags[@]}"
           fi
+

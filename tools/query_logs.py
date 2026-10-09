@@ -4,7 +4,7 @@ import argparse
 from collections import Counter
 import json
 import sys
-from log_records import events
+from log_records import events, ReadReport, LogDecryptor, LogCryptoError, load_log_key
 
 
 def matches(record, args):
@@ -25,6 +25,7 @@ def matches(record, args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", help="Path to events.jsonl")
+    parser.add_argument("--private-key", action="append", default=[], help="Local FWLOG private key JSON; repeat for rotated keys")
     parser.add_argument("--day", type=int)
     parser.add_argument("--phase", choices=("day", "night"))
     parser.add_argument("--category")
@@ -43,7 +44,9 @@ def main(argv=None):
         parser.error("--limit must be non-negative")
     groups = Counter()
     count = 0
-    for record in events(args.log):
+    decryptor = LogDecryptor(load_log_key(path, private=True) for path in args.private_key)
+    report = ReadReport()
+    for record in events(args.log, report, decryptor=decryptor):
         if not matches(record, args):
             continue
         if args.list:
@@ -66,8 +69,13 @@ def main(argv=None):
         print("天数\t昼夜\t队伍\t场次\t类别\t任务编号\t日志数")
         for key, total in sorted(groups.items(), key=lambda item: (item[0][0] or 0, item[0][1] == "night", *(str(v or "") for v in item[0][2:]))):
             print("\t".join(str(v if v is not None else "-") for v in (*key, total)))
-    return 0
+    return 2 if report.crypto_errors else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (LogCryptoError, OSError) as error:
+        print(f"无法处理日志：{error}", file=sys.stderr)
+        sys.exit(2)
+

@@ -9,10 +9,12 @@ from itertools import count
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 from pathlib import Path
 import re
 import sys
 from uuid import uuid4
+from .log_crypto import LogEncryptor, load_log_key, packet_lines
 
 PREFIX = "FWLOG "
 SCHEMA_VERSION = 2
@@ -22,6 +24,7 @@ _context = ContextVar("game_log_context", default=None)
 _payloads = OrderedDict()
 TRACE = logging.getLogger("agent.trace")
 TRACE.setLevel(logging.INFO)
+_encrypted_logging = True
 FIELDS = ("run", "request_id", "source", "round", "day", "phase", "phase_round",
           "team", "side", "session", "category", "event", "unit_id", "task_id", "task_type")
 
@@ -75,6 +78,10 @@ def context():
 def logging_failure(error):
     """Best effort, non-recursive fallback: diagnostics cannot fail a turn."""
     try:
+        if _encrypted_logging:
+            # Errors can contain original data or keys: never fall back to plaintext.
+            sys.stderr.write("FWLOG-ERROR logging_failed; encrypted record unavailable\n")
+            return
         record = {**context(), "run": RUN_ID, "schema_version": SCHEMA_VERSION,
                   "event": "logging_failed", "category": "runtime", "level": "ERROR",
                   "data": {"error": str(error)[:256], "records_may_be_missing": True}}
@@ -181,20 +188,48 @@ class SafeRotatingHandler(RotatingFileHandler):
         logging_failure(sys.exc_info()[1])
 
 
-def configure_logging(level="INFO", log_dir=None):
-    """FWLOG JSON on stderr; core snapshots stay enabled at WARNING/ERROR."""
+class EncryptedFormatter(JsonFormatter):
+    def __init__(self, encryptor, wire=True):
+        super().__init__()
+        self.encryptor = encryptor
+        self.wire = wire
+
+    def format(self, record):
+        raw = super().format(record).encode("utf-8")
+        cached = getattr(record, "_encrypted_packet", None)
+        if cached is None or cached[0] is not self.encryptor or cached[1] != raw:
+            cached = (self.encryptor, raw, self.encryptor.seal(raw))
+            record._encrypted_packet = cached
+        # Encrypt once for all sinks; duplicate ciphertext is an identical packet,
+        # never nonce reuse with a different message.
+        return "\n".join(packet_lines(cached[2], self.wire))
+
+
+def configure_logging(level="INFO", log_dir=None, log_public_key=None, plaintext_logs=False):
+    """Encrypted stderr/files by default; plaintext requires an explicit opt-in."""
+    global _encrypted_logging
+    encryptor = None
+    if not plaintext_logs:
+        path = (log_public_key or os.environ.get("FUTURE_WAR_LOG_PUBLIC_KEY")
+                or Path(__file__).resolve().parents[1] / "log-public.json")
+        # Validate before replacing handlers or creating any output files.
+        encryptor = LogEncryptor(load_log_key(path))
+    _encrypted_logging = not plaintext_logs
     root = logging.getLogger()
     for handler in list(root.handlers):
-        if getattr(handler, "game_log_handler", False):
+        if encryptor is not None or getattr(handler, "game_log_handler", False):
             root.removeHandler(handler)
-            handler.close()
+            if getattr(handler, "game_log_handler", False):
+                handler.close()
     root.setLevel(getattr(logging, level))
-    handlers = [(SafeStreamHandler(sys.stderr), WireFormatter())]
+    handlers = [(SafeStreamHandler(sys.stderr), EncryptedFormatter(encryptor) if encryptor else WireFormatter())]
     if log_dir:
         try:
             directory = Path(log_dir)
             directory.mkdir(parents=True, exist_ok=True)
             for filename, formatter in (("game.log", WireFormatter()), ("events.jsonl", JsonFormatter())):
+                if encryptor:
+                    formatter = EncryptedFormatter(encryptor, wire=filename == "game.log")
                 handlers.append((SafeRotatingHandler(directory / filename, maxBytes=50 * 1024 * 1024,
                                                        backupCount=5, encoding="utf-8"), formatter))
         except OSError as error:
@@ -204,3 +239,4 @@ def configure_logging(level="INFO", log_dir=None):
         handler.addFilter(ContextFilter())
         handler.setFormatter(formatter)
         root.addHandler(handler)
+
