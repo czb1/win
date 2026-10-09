@@ -93,17 +93,17 @@ run.bat 8080
 .venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --category long_context
 ```
 
-下载 `.log` 文件后，在仓库根目录用本地 Python 执行（只用标准库，无需安装依赖）：
+下载 `.log` 文件后，只需下载 [extract_logs.py](tools/extract_logs.py)，放在日志文件旁，用本地 Python 3.11+ 执行（单文件、只用标准库，无需安装依赖）：
 
 ```bash
 # 同一 .log 文件有多个场次时先确认编号；也会列出任务编号
-python tools/extract_logs.py match.log --list
+python extract_logs.py match.log --list
 # 提取录像对应的120~140回合，并附带前后5回合
-python tools/extract_logs.py match.log --from-round 120 --to-round 140 --context 5 --out issue
+python extract_logs.py match.log --from-round 120 --to-round 140 --context 5 --out issue
 # 可附加 --session 场次编号、--team 队伍编号、--unit-id 人物编号
-python tools/extract_logs.py match.log --task-id "场次/r领取回合" --context 0 --out task_issue
+python extract_logs.py match.log --task-id "场次/r领取回合" --context 0 --out task_issue
 # 需要进一步分文件时使用 --split
-python tools/extract_logs.py match.log --from-round 120 --to-round 140 --out issue --split
+python extract_logs.py match.log --from-round 120 --to-round 140 --out issue --split
 ```
 
 默认输出 `issue/issue.txt`（全部相关诊断）、独立的 `issue/tasks.txt`（自进化、新闻推理、宝藏、相关开拓者动作与反馈）和 `issue/meta.json`（区间及完整性报告）。可以直接发送 `issue.txt`，任务问题可单独发送 `tasks.txt`。`--split` 额外输出 `turns.jsonl`、`decisions.jsonl`、`feedback.jsonl`、`errors.jsonl`。提取器分多遍流式读取，不将整份 `.log` 文件载入内存；自动补入所选场次的版本配置和区间外被引用的长文本，原始回合与任务编号不改写。`included_as` 标明补入的上下文；缺失数据明确报告，不据此补造执行成功。支持平台时间戳前缀、混杂启动信息、UTF-8／UTF-16 `.log` 和旧 JSONL，校验分段完整性及哈希。
@@ -188,8 +188,8 @@ curl -X POST http://127.0.0.1:8080/ -H 'Content-Type: application/json' --data-b
 | `examples/response.json` | 原 v1.0 样例回放得到的响应，保留为历史夹具 |
 | `tests/test_agent.py` | 标准库 unittest 自动化测试 |
 | `tools/replay.py` | 单回合及连续请求回放 |
-| `tools/extract_logs.py` | 从单个比赛 `.log` 文件提取问题区间和独立任务日志 |
-| `tools/log_records.py` | `.log`／JSONL流式解析、分段恢复与完整性校验 |
+| `tools/extract_logs.py` | 可单独下载运行，从比赛 `.log` 文件提取问题区间和独立任务日志，内置流式解析和分段校验 |
+| `tools/log_records.py` | 兼容查询工具的日志读取导入入口 |
 
 仅实现 Python 分支，不创建图片中的 C++、Java、Go、Rust 空壳工程。
 
