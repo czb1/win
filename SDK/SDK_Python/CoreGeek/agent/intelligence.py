@@ -20,6 +20,7 @@ from .task_inputs import input_context, preview_code, zero_without_coverage
 from .task_transform import transform_config, transform_method, transform_code, case_page_code
 from .task_runtime import runtime_code, runtime_result, command_output
 from .task_evidence import computed_answer, evidence_matches, parsing_rules
+from .task_log_repair import repair_context, merge_repair, validate_literal_regex
 from .task_sop import answer_contract, answer_error, engineering_code
 from .task_query import reference_paths, query_config, query_code
 from .market import observe_prices, merge_signals
@@ -300,6 +301,7 @@ class Memory:
     exploration: deque = field(default_factory=lambda: deque(maxlen=4))
     submitted: tuple | None = None
     running_python: str = ""
+    repair_python: str = ""
     successful_python: str = ""
     successful_output: str = ""
     running_tool: dict | None = None
@@ -571,6 +573,7 @@ class Memory:
             self.answer_python = self.submitted_python = self.submitted_output = ""
             self.submitted = None
             self.running_python = self.successful_python = self.successful_output = ""
+            self.repair_python = ""
             self.running_tool = None
             self.bootstrap_done = False
             self.last_attempt.clear()
@@ -635,6 +638,7 @@ class Memory:
                 self.trace_treasure(turn, "news_discarded", issued_round=issued, reason="skipped_round")
             LOG.info("round=%s task_result_discarded purpose=%s issued_round=%s reason=skipped_round",
                      turn.round, purpose, issued)
+            self.repair_python = ''
             self.running_python = ""
             self.running_tool = None
             return
@@ -808,6 +812,8 @@ class Memory:
                                 "根据 lastAttempt 的具体错误改变失败假设。")
                 else:
                     self.reject("沙盒未成功完成：" + status + "。根据输出修复；不要把报错当答案。")
+            self.repair_python = (self.running_python if status == 'input_failed' and not tool
+                                  and not self.running_parser else '')
             self.running_python = ""
             self.running_tool = None
             return
@@ -894,6 +900,16 @@ class Memory:
                 return
             if has_python or file_kinds:
                 code = code if file_kinds else unfence(parsed["python"])
+                if has_python and self.contract.get('input_kind') == 'logs':
+                    try:
+                        repair = (repair_context(self.repair_python, self.log_diagnostics)
+                                  if self.input_blocked and not self.running_parser else None)
+                        if repair:
+                            code = merge_repair(self.repair_python, code, repair)
+                        validate_literal_regex(code)
+                    except (SyntaxError, ValueError) as error:
+                        self.reject(str(error))
+                        return
                 if has_python and self.transform_config():
                     try:
                         code = transform_method(code)
@@ -1375,6 +1391,23 @@ class Intelligence:
                       "规则与格式变更必须依据本题文档，不复制旧答案、路径或数据。未知字段不得编造。\n"
                       "仅当本次成功执行且所有文件完整读取后才能提交，部分字段也必须有本次计算证据。\n"
                       "上下文：\n" + json.dumps(log_context, ensure_ascii=False))
+            repair = (repair_context(self.mem.repair_python, self.mem.log_diagnostics)
+                      if remaining > 2 and self.mem.input_blocked and not self.mem.running_parser else None)
+            if repair:
+                prompt = ("只修 repair.targets 中有失败证据的解析函数，保留签名、故障定义和返回结构。\n"
+                          "第一行 PYTHON，随后只写待替换函数的完整定义及必要标准库导入。"
+                          "不输出聚合、主程序或task_result；框架保留并执行原程序。\n"
+                          "直接写Python代码，不要JSON双重转义。样例中的空格原样保留，检查空白数量与正常行格式。\n"
+                          "正常行也返回system、timestamp、is_fault=False；无法识别才返回None。"
+                          "parse_*_log保留原返回结构；不得吞掉时间解析异常。\n"
+                          "未提供的辅助函数不可改；定义缺失不得猜故障关键词。全部输入读取及解析通过后才能提交。\n"
+                          "上下文：" + json.dumps({
+                              'remainingRounds': remaining, 'repair': repair,
+                              'currentParsingRules': context['currentParsingRules'],
+                              'verifiedParsingRules': context['verifiedParsingRules'],
+                              'lastRejection': next((item['error'][:1000] for item in reversed(self.mem.history)
+                                                     if 'error' in item), ''),
+                              'lastErrors': self.mem.task_feedback[:1000]}, ensure_ascii=False))
         if self.mem.task_failures >= 3:
             prompt = ("上次输出未能执行。现在只输出一个最小步骤；无需解释或编写skill。\n" + prompt)
         conversion = self.mem.transform_config()

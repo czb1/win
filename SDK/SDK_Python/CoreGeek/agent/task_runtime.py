@@ -71,6 +71,7 @@ def track_parser(function):
             line = kwargs.get('line') or next((x for x in reversed(args) if isinstance(x, str)), '')
             coverage['unmatched'].append(line[:240])
         return value
+    observed.__wrapped__ = function
     return observed
 
 def remember_call(method, url, headers=None, params=None):

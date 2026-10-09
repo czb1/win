@@ -100,6 +100,7 @@ LOG_AUDIT = r'''
 import builtins
 import io
 import functools
+import inspect
 from pathlib import Path
 
 log_report = report.setdefault('logs', {'files': {}, 'parsers': {}, 'events': {}, 'errors': []})
@@ -168,6 +169,7 @@ def audited_open(original):
 builtins.open, io.open = audited_open(old_open), audited_open(old_io_open)
 
 def audited_function(function):
+    signature = inspect.signature(function)
     @functools.wraps(function)
     def observed(*args, **kwargs):
         name = function.__name__
@@ -176,12 +178,16 @@ def audited_function(function):
         try:
             value = function(*args, **kwargs)
         except Exception as error:
+            entry['error'] = type(error).__name__ + ': ' + str(error)[:240]
             log_error('parser', type(error).__name__ + ': ' + str(error))
             raise
         if name == 'parse_line' or name.endswith('_line'):
-            system = (str(value.get('system', name)) if isinstance(value, dict) else
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            system = (str(value.get('system', 'unknown')) if isinstance(value, dict) else
+                      value[0] if isinstance(value, (tuple, list)) and value and isinstance(value[0], str) else
                       name[6:-5] if name != 'parse_line' else
-                      str(args[0] if len(args) > 1 else kwargs.get('system', 'unknown')))[:80]
+                      str(bound.arguments.get('system', 'unknown')))[:80]
             systems = report.setdefault('parse_systems', {})
             counts = systems.setdefault(system, {'total': 0, 'matched': 0, 'failures': 0,
                                                   'normal': 0, 'invalid': 0, 'unmatched': []})
@@ -200,8 +206,10 @@ def audited_function(function):
                 counts['failures' if fault else 'normal'] += 1
                 entry['returned_records'] += 1
             else:
-                line = str(args[-1] if args else kwargs.get('line', ''))[:240]
-                for counter in (counts, coverage):
+                line = str(bound.arguments.get('line', '<line argument unavailable>'))[:240]
+                entry['unmatched_count'] = entry.get('unmatched_count', 0) + 1
+                entry.setdefault('unmatched', [])
+                for counter in (counts, coverage, entry):
                     if len(counter['unmatched']) < 3:
                         counter['unmatched'].append(line)
                 if value is not None:
@@ -249,8 +257,16 @@ def task_parse(system, path, **parameters):
     line_function = learned_scope.get('parse_' + system + '_line')
     function = line_function or learned_scope.get('parse_line')
     if function:
+        def parse_current(line):
+            if line_function:
+                return function(line, **parameters)
+            signature = inspect.signature(function)
+            if all(key in signature.parameters and signature.parameters[key].kind != inspect.Parameter.POSITIONAL_ONLY
+                   for key in ('system', 'line')):
+                return function(system=system, line=line, **parameters)
+            return function(system, line, **parameters)
         with open(path, encoding='utf-8') as source:
             return [record for line in source if line.strip()
-                    for record in [function(line, **parameters) if line_function else function(system, line, **parameters)] if record is not None]
+                    for record in [parse_current(line)] if record is not None]
     raise ValueError('no verified parser for ' + system)
 '''
