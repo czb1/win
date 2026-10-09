@@ -9,6 +9,56 @@ from .projectiles import (line_cells, projectile_origin, projectile_obstacles,
                           trajectory_blockers, wall_gates)
 
 
+IMP_CATCH_INTERVAL = 5
+
+
+def catch_nearby_imp(turn, mem, ledger):
+    """Spend at most one ordinary action on a visible adjacent imp; never move.
+
+    Run after normal dispatch so urgent work wins. Only idle heroes and an
+    ordinary collection may yield; retain a paused miner's job for next turn.
+    One attempt per contact and a team-wide interval bound failed/baited grabs.
+    """
+    nearby = {enemy.id: enemy for enemy in turn.enemies if enemy.kind == "imp"
+              and any(turn.adjacent(hero.pos, enemy.pos) for hero in turn.heroes)}
+    mem.imp_catch_attempted.intersection_update(nearby)
+    if turn.round < mem.imp_catch_next_round:
+        return False
+    choices = []
+    for hero in turn.heroes:
+        if (hero.health <= 165 or hero.id in mem.return_targets
+                or ledger.plans.get(hero.id, {}).get("reason") == "defence_recall"
+                or hero.kind == "pioneer" and turn.phase_task):
+            continue
+        previous = ledger.commands.get(str(hero.id))
+        if previous is None:
+            if hero.id in ledger.used:
+                continue  # Task work and intentional tactical holds stay locked.
+        elif (previous["action"] != "collect"
+              or ledger.work_jobs.get(hero.id, {}).get("want_stone")):
+            continue
+        for enemy in nearby.values():
+            if enemy.id not in mem.imp_catch_attempted and turn.adjacent(hero.pos, enemy.pos):
+                choices.append((previous is not None, hero.kind != "worker", hero.id, enemy.id))
+    for paused_collection, _, uid, target_id in sorted(choices):
+        enemy = nearby[target_id]
+        if paused_collection:
+            ledger.used.discard(uid)
+        try:
+            accepted = ledger.add(uid, command("catch", enemy.pos))
+        finally:
+            if paused_collection:
+                ledger.used.add(uid)
+        if accepted:
+            mem.imp_catch_attempted.add(target_id)
+            mem.imp_catch_next_round = turn.round + IMP_CATCH_INTERVAL
+            ledger.explain(uid, "opportunistic_imp_catch", enemy_id=target_id,
+                           target=enemy.pos, paused_collection=paused_collection,
+                           next_attempt_round=mem.imp_catch_next_round, pursuit=False)
+            return True
+    return False
+
+
 def enemy_control_post(turn, nav, ledger, hero):
     """Select a reachable control cell, favoring sole and shared posts."""
     towers = dict(nav.memory.buildings) if nav.memory else {}

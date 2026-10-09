@@ -8,8 +8,8 @@ LOG = logging.getLogger(__name__)
 
 
 def save_daytime_jobs(turn, mem, ledger):
-    # Only work actually submitted this turn survives. An emergency, recall,
-    # failed continuation or night must not leave a stale ownership lock.
+    # Submitted work, including a collection paused by one bounded catch,
+    # survives. Emergencies, recall, failed continuation and night release it.
     mem.daytime_jobs = dict(ledger.work_jobs) if turn.is_day else {}
     # A remembered mining preference must not look like an active mine claim
     # after this worker actually starts shopping, delivering or returning.

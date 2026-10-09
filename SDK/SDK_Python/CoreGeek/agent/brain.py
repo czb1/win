@@ -13,7 +13,7 @@ from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger, command
 from .combat import (assignments, fixed_gatling_crew, operator_posts, return_plan, defend, emergency_items,
                      shared_crew, shared_defend, clear_gunner_route, yield_gate_operators,
-                     finish_weapon_reports)
+                     finish_weapon_reports, catch_nearby_imp)
 from .projectiles import wall_gates
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .economy import reserve_treasure_gold
@@ -571,6 +571,7 @@ class Agent:
         nav.gate_guard = None
         if gate_guard is not None:
             gate_guard.finish()
+        catch_nearby_imp(turn, mem, ledger)
         ledger.gold += robot_reserve
         save_daytime_jobs(turn, mem, ledger)
         response = ledger.response(prompt, execute)
