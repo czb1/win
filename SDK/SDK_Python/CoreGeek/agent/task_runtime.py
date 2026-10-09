@@ -212,8 +212,8 @@ def parser_exception():
 def instrument(tree):
     for node in tree.body:
         if isinstance(node, ast.FunctionDef):
-            is_parser = node.name == "parse_line" or (node.name.startswith("parse_") and node.name.endswith("_log"))
-            if node.name == "parse_line":
+            is_parser = node.name == "parse_line" or (node.name.startswith("parse_") and node.name.endswith(("_log", "_line")))
+            if node.name == "parse_line" or TASK_LOG and node.name.startswith("parse_") and node.name.endswith("_line"):
                 node.decorator_list.append(ast.Name(id="_task_track_parser", ctx=ast.Load()))
             if TASK_LOG and is_parser:
                 node.decorator_list.append(ast.Name(id="_task_audit_parser", ctx=ast.Load()))
@@ -249,6 +249,17 @@ with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
                 # Explicit same-format tasks reuse verified functions, not model rewrites.
                 tree.body = [n for n in tree.body if not (isinstance(n, ast.FunctionDef) and n.name in names)]
                 report['reused_parsers'] = names
+            if TASK_LOG:
+                # Reserve the helper: weak models often redefine it as print('RESULT', value).
+                tree.body = [n for n in tree.body if not (isinstance(n, ast.FunctionDef) and n.name == 'task_result')]
+                class ResultCalls(ast.NodeTransformer):
+                    def visit_Call(self, node):
+                        self.generic_visit(node)
+                        if isinstance(node.func, ast.Name) and node.func.id == 'task_result':
+                            node.func.id = '_task_emit_result'
+                        return node
+                scope['_task_emit_result'] = scope['task_result']
+                tree = ResultCalls().visit(tree)
             tree = instrument(tree)
             exec(compile(tree, '<task>', 'exec'), scope)
         except SystemExit as error:

@@ -34,7 +34,7 @@ def parser_method(code, used=None):
     try:
         tree = ast.parse(code)
         definitions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-        roots = [name for name in definitions if name == 'parse_line' or re.fullmatch(r'parse_[a-z][a-z0-9_]*_log', name)]
+        roots = [name for name in definitions if name == 'parse_line' or re.fullmatch(r'parse_[a-z][a-z0-9_]*_(?:log|line)', name)]
         if used is not None:
             roots = [name for name in roots if name in used]
         if not roots:
@@ -154,7 +154,7 @@ def output_supports(answer, output):
                                + output.splitlines())
 
 
-def learned_method(point, contract, recipe=None, calls=(), parser=None, rules=''):
+def learned_method(point, contract, recipe=None, calls=(), parser=None, rules='', transform=None):
     if recipe:
         recipe = {'parameters': dict(recipe['parameters']),
                   'python': ast.unparse(ast.parse(recipe['python']))}
@@ -168,6 +168,8 @@ def learned_method(point, contract, recipe=None, calls=(), parser=None, rules=''
                          'query_all_pages', 'validate_response', 'compute_current_answer']),
               'evidence': 'legal_submission_then_task_disappeared',
               'verified': False, 'successes': 1, 'failures': 0, 'disabled': False}
+    if transform:
+        method.update(transform=transform, family=contract.get('family'))
     if parser or rules:
         method.update(parser=parser, rules=rules, family=contract.get('family'))
     if contract.get('kind') == 'check_token' and not contract.get('repair_spec', True):
@@ -178,7 +180,7 @@ def learned_method(point, contract, recipe=None, calls=(), parser=None, rules=''
                            'check_parse_coverage', 'aggregate_current_requirements']
     signature = json.dumps({k: method.get(k) for k in
                            (('point', 'shape', 'workflow', 'recipe', 'interfaces', 'parser', 'family')
-                            + (('rules',) if rules else ()))},
+                            + (('rules',) if rules else ()) + (('transform',) if transform else ()))},
                            sort_keys=True, ensure_ascii=False)
     method['id'] = hashlib.sha256(signature.encode()).hexdigest()[:16]
     return method
