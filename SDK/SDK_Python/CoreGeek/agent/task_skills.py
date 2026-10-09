@@ -41,6 +41,10 @@ def parser_method(code, used=None, diagnostics=None):
         roots = [name for name in definitions if name == 'parse_line' or re.fullmatch(r'parse_[a-z][a-z0-9_]*_(?:log|line)', name)]
         if used is not None:
             roots = [name for name in roots if name in used]
+            if any(used[name].get('record_contract') != 'structured-v1'
+                   or any(used[name].get(key) for key in ('error', 'invalid_return', 'unmatched_count'))
+                   for name in roots):
+                return unavailable('parser lacks successful structured record evidence')
         if not roots:
             return unavailable('no reusable parser function observed')
         needed, pending = {}, roots[:]
@@ -53,6 +57,8 @@ def parser_method(code, used=None, diagnostics=None):
                            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
                            and n.id in definitions and n.id not in needed)
         functions = list(needed.values())
+        if any(isinstance(node, (ast.Global, ast.Nonlocal)) for fn in functions for node in ast.walk(fn)):
+            return unavailable('parser writes external state; use parameters and returned records')
         for function in functions:
             if function.decorator_list:
                 return unavailable('decorated parser cannot be safely retained')
@@ -158,7 +164,7 @@ def output_supports(answer, output):
                                + output.splitlines())
 
 
-def learned_method(point, contract, recipe=None, calls=(), parser=None, rules='', transform=None):
+def learned_method(point, contract, recipe=None, calls=(), parser=None, rules='', transform=None, parser_evidence=None):
     if recipe:
         recipe = {'parameters': dict(recipe['parameters']),
                   'python': ast.unparse(ast.parse(recipe['python']))}
@@ -176,6 +182,8 @@ def learned_method(point, contract, recipe=None, calls=(), parser=None, rules=''
         method.update(transform=transform, family=contract.get('family'))
     if parser or rules:
         method.update(parser=parser, rules=rules, family=contract.get('family'))
+    if parser and parser_evidence and parser_method(parser, parser_evidence):
+        method['parser_contract'] = 'structured-v1'
     if contract.get('kind') == 'check_token' and not contract.get('repair_spec', True):
         method['steps'] = ['inspect_current_cases_and_input', 'transform_current_records',
                            'write_current_result', 'run_current_checker', 'submit_checked_token']

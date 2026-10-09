@@ -22,8 +22,7 @@ def parse_monitor_log(path):
     result = []
     with open(path) as source:
         for line in source:
-            if '] ERROR ' in line:
-                result.append(datetime.strptime(line[1:20], '%Y-%m-%d %H:%M:%S'))
+            result.append(('monitor', datetime.strptime(line[1:20], '%Y-%m-%d %H:%M:%S'), '] ERROR ' in line))
     return result
 
 def parse_gateway_log(path):
@@ -31,16 +30,14 @@ def parse_gateway_log(path):
     with open(path) as source:
         for line in source:
             status = int(line.rsplit(' ', 1)[1])
-            if 500 <= status < 600:
-                result.append(datetime.strptime(line.split('[')[1].split(' ')[0], '%d/%b/%Y:%H:%M:%S'))
+            result.append(('gateway', datetime.strptime(line.split('[')[1].split(' ')[0], '%d/%b/%Y:%H:%M:%S'), 500 <= status < 600))
     return result
 
 def parse_logistics_log(path):
     result = []
     with open(path) as source:
         for line in source:
-            if any(signal in line for signal in FAULTS):
-                result.append(datetime.strptime(line[:15], '%b %d %H:%M:%S'))
+            result.append(('logistics', datetime.strptime(line[:15], '%b %d %H:%M:%S'), any(signal in line for signal in FAULTS)))
     return result
 '''
 CONTRACT = {'input_kind':'logs', 'family':'logs/task_l#.md',
@@ -92,7 +89,7 @@ class LogEvidenceTests(unittest.TestCase):
         self.assertNotIn('999',parser)
         rules='故障定义：monitor ERROR；gateway 5xx；logistics OOM-killer/disk-full/net-down'
         first={'input_kind':'logs','family':CONTRACT['family'],'example':{'failures':0}}
-        skill=learned_method((6,5),first,parser=parser,rules=rules)
+        skill=learned_method((6,5),first,parser=parser,rules=rules, parser_evidence={name: {'record_contract':'structured-v1'} for name in ('parse_monitor_log','parse_gateway_log','parse_logistics_log')})
         mem=Memory(task_point=(6,5),contract=CONTRACT.copy(),skills=[skill],
                    documents=[{'output':'请使用与上一题完全相同的日志格式和解析方法'}])
         self.assertEqual(mem.reusable_parser(),skill)
@@ -105,7 +102,7 @@ class LogEvidenceTests(unittest.TestCase):
             (root/'logistics.log').write_text('Oct 09 00:01:00 host daemon: OOM-killer killed\nOct 09 00:06:00 host daemon: disk-full full\nOct 09 00:12:00 host daemon: net-down restarted\nOct 09 00:40:00 host daemon: process restarted successfully\n')
             # Weak model attempts to redefine a verified parser; the current paths still bind fresh data.
             code="def parse_logistics_log(path):\n    return []\nall_events=[]\n"
-            code+="for system in ('monitor','gateway','logistics'):\n    ts=task_parse(system,system+'.log')\n    for start,end in task_events(system,ts):\n        all_events.append((system,(end-start).total_seconds()/60+1))\n"
+            code+="for system in ('monitor','gateway','logistics'):\n    ts=[row[1] for row in task_parse(system,system+'.log') if row[2]]\n    for start,end in task_events(system,ts):\n        all_events.append((system,(end-start).total_seconds()/60+1))\n"
             code+="longest=max(all_events,key=lambda x:x[1])\ntask_result({'total_events':len(all_events),'avg_duration_minutes':round(sum(x[1] for x in all_events)/len(all_events)), 'longest_event':{'system':longest[0],'duration_minutes':longest[1]}})"
             _, result, report=execute(code,directory,parser)
             self.assertEqual(result[0],'ok')
@@ -113,7 +110,7 @@ class LogEvidenceTests(unittest.TestCase):
             self.assertEqual(answer['total_events'],4)
             self.assertEqual(report['logs']['events']['monitor']['samples'][0],['2025-10-09 00:12:00','2025-10-09 00:17:00'])
             self.assertEqual(report['logs']['events']['logistics']['count'],2)
-            self.assertEqual(report['logs']['parsers']['parse_logistics_log']['returned_records'],3)
+            self.assertEqual(report['logs']['parsers']['parse_logistics_log']['returned_records'],4)
             self.assertEqual(len(report['logs']['files']),3)
         skill['disabled']=True
         self.assertIsNone(mem.reusable_parser())
@@ -182,7 +179,7 @@ class LogEvidenceTests(unittest.TestCase):
             payload.update(roundNo=7,lastCmdResult=v2_result(response,'/'))
             response=agent.decide(payload)
             self.assertIn('verifiedParsingRules',response['prompt'])
-            code="def parse_monitor_log(path):\n    return []\ntask_result({'events':len(task_events('monitor',parse_monitor_log('two.log')))})"
+            code="def parse_monitor_log(path):\n    return []\ntask_result({'events':len(task_events('monitor',[r[1] for r in parse_monitor_log('two.log') if r[2]]))})"
             payload.update(roundNo=8,lastCmdResult='',llmResp='PYTHON\n'+code)
             response=agent.decide(payload)
             payload.update(roundNo=9,llmResp='',lastCmdResult=v2_result(response,'/'))

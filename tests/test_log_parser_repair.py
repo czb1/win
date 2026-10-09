@@ -30,6 +30,76 @@ GOOD_FUNCTION = r'''def parse_line(line, system):
 
 
 class LogParserRepairTests(unittest.TestCase):
+    def test_legacy_parser_is_reference_only_and_dependencies_are_rechecked(self):
+        from agent.task_skills import learned_method
+        contract = {'input_kind':'logs', 'family':'sample/task#.md', 'example':{'count':0}}
+        parser = "def parse_sample_log(path):\n return 1"
+        skill = learned_method((6,5), contract, parser=parser)
+        mem = Memory(task_point=(6,5), contract=contract, skills=[skill],
+                     documents=[{'output':'与上一题完全相同的日志格式'}])
+        self.assertIsNone(mem.reusable_parser())
+        skill['parser_contract'] = 'structured-v1'
+        skill['parser'] = "def parse_sample_log(path):\n return missing_global[path]"
+        self.assertIsNone(mem.reusable_parser())
+        self.assertFalse(skill['disabled'])
+
+    def test_file_parser_scalar_and_swallowed_name_error_are_attributed(self):
+        from agent.task_skills import parser_method
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, 'sample.log').write_text('bad\nnormal\n')
+            code = """def parse_sample_log(path):
+    count = 0
+    try:
+        with open(path) as source:
+            for line in source:
+                count += 1
+                missing_counter += 1
+    except Exception:
+        pass
+    return count
+rows = parse_sample_log('sample.log')
+list(rows)
+"""
+            raw, result, report = execute(code, directory)
+            self.assertNotEqual(result[0], 'ok')
+            entry = report['logs']['parsers']['parse_sample_log']
+            self.assertEqual(entry['invalid_return'], 'int')
+            self.assertIn('UnboundLocalError', entry['error'])
+            self.assertEqual(report['logs']['files'][str(Path(directory,'sample.log'))]['read_lines'], 1)
+            self.assertIsNone(parser_method(code, report['logs']['parsers']))
+            from agent.intelligence import compact_attempt
+            compact = compact_attempt({'status':'input_failed','sandbox':raw,'http':report})
+            self.assertIn('TypeError', compact['runtimeError'])
+            self.assertEqual(repair_context(code, {'logs':report['logs']})['targets'], ['parse_sample_log'])
+
+    def test_failed_reused_version_allows_local_repair_without_changing_aggregate(self):
+        from agent.task_skills import learned_method, parser_method
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, 'sensor.log').write_text('1 BAD module=alpha\n2 OK  module=alpha\n')
+            old = parser_method(BAD)
+            contract = {'input_kind':'logs','family':'sample/task#.md','example':{'count':0}}
+            skill = learned_method((6,5), contract, parser=old,
+                                   parser_evidence={'parse_line':{'record_contract':'structured-v1'}})
+            raw, _, _ = execute(BAD, directory, old)
+            mem = Memory(task_text='query',task_point=(6,5),task_started=1,bootstrap_done=True,
+                         pending=('cmd',1),running_python=BAD,running_parser=old,running_parser_id=skill['id'],
+                         skills=[skill],contract=contract,
+                         documents=[{'output':'与上一题完全相同的日志格式'}],
+                         inputs={'directory':directory,'files':[{'path':'sensor.log'}]})
+            prompt, _, _ = step(mem,2,lastCmdResult=raw)
+            self.assertIn('repair.targets', prompt)
+            self.assertIsNone(mem.reusable_parser())
+            self.assertFalse(skill['disabled'])
+            self.assertEqual(mem.log_diagnostics['failed_parser'], skill['id'])
+            _, command, _ = step(mem,3,llmResp='PYTHON\n'+GOOD_FUNCTION)
+            self.assertTrue(command)
+            self.assertIsNone(mem.running_parser)
+            raw, _, report = execute(mem.running_python, directory)
+            self.assertNotIn('reused_parsers', report)
+            self.assertEqual(report['parse_lines']['matched'], 2)
+            _, _, ledger = step(mem,4,lastCmdResult=raw)
+            self.assertEqual(json.loads(ledger.commands['11']['taskAnswer']), {'count':1})
+
     def test_signature_binding_both_orders_keywords_and_unknown(self):
         for signature, call in [('line, system', "parse_line(raw, 'sensor')"),
                                 ('system, line', "parse_line('sensor', raw)"),

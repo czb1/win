@@ -168,6 +168,13 @@ def audited_open(original):
     return opened
 builtins.open, io.open = audited_open(old_open), audited_open(old_io_open)
 
+def valid_record(value):
+    return (isinstance(value, dict) and isinstance(value.get('system'), str)
+            and value.get('timestamp') is not None and type(value.get('is_fault')) is bool
+            or isinstance(value, (tuple, list)) and len(value) >= 3
+            and isinstance(value[0], str) and type(value[2]) is bool
+            and (value[1] is not None or value[2] is False))
+
 def audited_function(function):
     signature = inspect.signature(function)
     @functools.wraps(function)
@@ -205,6 +212,7 @@ def audited_function(function):
                 coverage['matched'] += 1
                 counts['failures' if fault else 'normal'] += 1
                 entry['returned_records'] += 1
+                entry['record_contract'] = 'structured-v1'
             else:
                 line = str(bound.arguments.get('line', '<line argument unavailable>'))[:240]
                 entry['unmatched_count'] = entry.get('unmatched_count', 0) + 1
@@ -219,8 +227,15 @@ def audited_function(function):
                         entry['invalid_return'] = type(value).__name__
                         log_error('parser_contract', name + ': returned ' + type(value).__name__
                                   + '; return {system, timestamp, is_fault: bool} for BOTH normal and fault lines; None only for unknown format')
-        elif isinstance(value, (list, tuple)):
-            entry['returned_records'] += len(value)
+        else:
+            if isinstance(value, (list, tuple)):
+                entry['returned_records'] += len(value)
+            if isinstance(value, (list, tuple)) and all(valid_record(row) for row in value):
+                if value:
+                    entry['record_contract'] = 'structured-v1'
+            else:
+                entry['invalid_return'] = type(value).__name__
+                log_error('parser_contract', name + ': expected structured record list; got ' + type(value).__name__)
         return value
     return observed
 

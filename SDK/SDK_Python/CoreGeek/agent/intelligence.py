@@ -82,6 +82,7 @@ def compact_attempt(attempt):
         return {'status': 'ok', 'result': '已保存到 documents/inputPreview'}
     result = {k: v for k, v in attempt.items() if k not in ('http', 'sandbox')}
     if attempt.get('http', {}).get('logs'):
+        result['runtimeError'] = (attempt.get('runtimeError') or tail_excerpt(attempt.get('sandbox', ''))) if attempt.get('status') != 'ok' else ''
         result['result'] = '执行和解析证据见 logDiagnostics；只修失败解析函数，保留聚合代码。'
     else:
         return dict(attempt)
@@ -316,6 +317,7 @@ class Memory:
     parser_candidate: str | None = None
     running_parser: str | None = None
     running_parser_id: str | None = None
+    blocked_parsers: set = field(default_factory=set)
     parse_rules: str = ""
     log_diagnostics: dict = field(default_factory=dict)
     contract: dict = field(default_factory=dict)
@@ -587,6 +589,7 @@ class Memory:
             self.input_blocked = self.diagnostic_pending = False
             self.inputs.clear()
             self.parser_candidate = self.running_parser = self.running_parser_id = None
+            self.blocked_parsers.clear()
             self.parse_rules = ""
             self.log_diagnostics.clear()
             self.contract.clear()
@@ -662,11 +665,9 @@ class Memory:
                     report['logs']['errors'].append({'kind': 'unmatched_lines', 'detail': coverage.get('unmatched', [])})
                 self.log_diagnostics = {'logs': report['logs'], 'systems': report.get('parse_systems', {})}
                 if self.running_parser_id and any(e.get('kind') in ('parser', 'caught_parser_error', 'unmatched_lines', 'parser_contract') for e in report['logs'].get('errors', [])):
-                    for skill in self.skills:
-                        if skill['id'] == self.running_parser_id:
-                            skill['disabled'] = True
-                            skill['failures'] += 1
-                    LOG.info('round=%s task_parser=disabled id=%s reason=parse_error', turn.round, self.running_parser_id)
+                    self.blocked_parsers.add(digest_text(self.running_parser))
+                    self.log_diagnostics['failed_parser'] = self.running_parser_id
+                    LOG.info('round=%s task_parser=blocked id=%s reason=parse_error', turn.round, self.running_parser_id)
                 if report['logs'].get('errors') or any(not f.get('complete') for f in report['logs'].get('files', {}).values()):
                     self.input_blocked = self.diagnostic_pending = True
                     status, answer = 'input_failed', None
@@ -691,7 +692,8 @@ class Memory:
             self.cmd_result = excerpt(str(raw), 12000)
             self.history.append({"sandbox": self.cmd_result})
             self.last_attempt = {"python": excerpt(self.running_python, 5000),
-                                 "sandbox": excerpt(str(raw), 7000), "status": status}
+                                 "sandbox": excerpt(str(raw), 7000), "status": status,
+                                 "runtimeError": tail_excerpt(raw) if status != "ok" else ""}
             if report:
                 self.last_attempt["http"] = report
                 if report.get('parse_lines'):
@@ -797,7 +799,7 @@ class Memory:
                 shapes = self.last_attempt.get("jsonShapes") or []
                 repeats = self.last_attempt.get("failureRepeatCount", 0)
                 if status == 'input_failed' and report.get('logs'):
-                    self.reject('解析校验失败：' + json.dumps(report['logs'].get('errors', []), ensure_ascii=False)[:1800]
+                    self.reject(('同类失败重复，按具名函数诊断局部修复；不要重写聚合。' if repeats >= 2 else '') + '解析校验失败：' + json.dumps(report['logs'].get('errors', []), ensure_ascii=False)[:1800]
                                 + '。只修失败的解析函数，保留聚合逻辑。正常行也返回 {system,timestamp,is_fault:false}；'
                                   '故障行标记true，None只表示未知格式；禁止吞掉时间解析异常。')
                 elif report.get("http_successes", 0) and shapes:
@@ -812,6 +814,9 @@ class Memory:
                                 "根据 lastAttempt 的具体错误改变失败假设。")
                 else:
                     self.reject("沙盒未成功完成：" + status + "。根据输出修复；不要把报错当答案。")
+            if self.running_parser and digest_text(self.running_parser) in self.blocked_parsers:
+                # Keep model definitions available for narrow repair; never reinject this version.
+                self.running_parser = self.running_parser_id = None
             self.repair_python = (self.running_python if status == 'input_failed' and not tool
                                   and not self.running_parser else '')
             self.running_python = ""
@@ -1091,10 +1096,13 @@ class Memory:
             phrase in text for phrase in ('完全相同', '格式与上一题相同', '格式与前两题', '复用解析', '复用你的解析'))
 
     def reusable_parser(self):
-        if not self.same_log_format():
+        if self.repair_python or not self.same_log_format():
             return None
         return next((skill for skill in reversed(self.skills)
-                     if skill.get('parser') and skill.get('family') == self.contract.get('family')
+                     if skill.get('parser') and skill.get('parser_contract') == 'structured-v1'
+                     and digest_text(skill['parser']) not in self.blocked_parsers
+                     and parser_method(skill['parser'])
+                     and skill.get('family') == self.contract.get('family')
                      and compatible(skill, self.task_point, self.contract, for_hint=True)), None)
 
     def document_base(self):
@@ -1152,6 +1160,7 @@ class Intelligence:
             self.mem.submitted_method = (learned_method(
                 self.mem.task_point, self.mem.contract, self.mem.recipe_candidate,
                 self.mem.method_calls, self.mem.parser_candidate, self.mem.parse_rules,
+                parser_evidence=self.mem.log_diagnostics.get('logs', {}).get('parsers'),
                 transform=self.mem.answer_python if self.mem.last_attempt.get('tool') == 'transform' else None) if supported else None)
             self.mem.submitted = (self.turn.round, self.mem.answer)
             self.mem.submitted_python = self.mem.answer_python
@@ -1337,9 +1346,9 @@ class Intelligence:
             formats = "第一行必须写 PYTHON，后面只写必要代码，最后调用 task_result(result)；若只能 ANSWER，必须逐值照抄本题沙盒计算结果。\n"
             log_guidance = ("日志任务：task_result(result)由程序提供，自动输出最终协议；无需自己打印标记。\n"
                             "verifiedParsingRules为同格式前题保存的定义；currentParsingRules明确更新时以本题为准，不得自行增加/遗漏故障关键词。\n"
-                            "同格式且有learnedSkills解析器时，同名函数由框架复用；用当前路径调用原函数，或task_parse(system,path,**当前参数)。日期等参数从本题读取。"
+                            "只有parserAvailable=true时，同名函数由框架复用；否则旧解析器仅供参考，必须定义可执行解析函数；用当前路径调用原函数，或task_parse(system,path,**当前参数)。日期等参数从本题读取。"
                             "parse_line对正常行和故障行都返回字典：system字符串、timestamp解析后的时间、is_fault布尔值、module模块；正常行is_fault=False。"
-                            "仅无法识别的行返回None；禁止用None/False过滤正常行，禁止只返回时间。兼容(系统,时间,是否故障,模块)；parse_*_log保持保存函数原返回结构。\n"
+                            "仅无法识别的行返回None；禁止用None/False过滤正常行，禁止只返回时间。兼容(系统,时间,是否故障,模块)；parse_*_log返回结构化记录列表，正常行也保留。\n"
                             "用task_events(system,故障时间列表,gap_minutes=题目阈值)获得(start,end)事件列表，程序自动排序、按相邻间隔合并并记录各系统事件数。\n"
                             "文件不存在/时间解析失败必须修正，不能except后pass；不要输出调试文字，只调用task_result(result)。\n")
         prompt = (log_guidance + "本轮只做一步：" + step + "\n" + formats
@@ -1383,7 +1392,7 @@ class Intelligence:
             log_context.pop('previousSolutions', None)
             log_context.pop('exploration', None)
             log_context['parserAvailable'] = bool(self.mem.reusable_parser())
-            log_context['learnedSkills'] = [{k: v for k, v in h.items() if k in ('id', 'parser', 'family')} for h in hints]
+            log_context['learnedSkills'] = [{k: v for k, v in h.items() if k in ('id', 'parser', 'family', 'parser_contract')} for h in hints]
             prompt = (log_guidance + "本轮只做一步：" + step + "\n" + formats
                       + "所有代码在官方沙盒执行，15秒内结束；使用当前inputPreview文件路径。\n"
                       "输入样例不能代替故障定义；缺少定义时检查已保存规则和当前文档，不得猜关键词。\n"
@@ -1394,12 +1403,12 @@ class Intelligence:
             repair = (repair_context(self.mem.repair_python, self.mem.log_diagnostics)
                       if remaining > 2 and self.mem.input_blocked and not self.mem.running_parser else None)
             if repair:
-                prompt = ("只修 repair.targets 中有失败证据的解析函数，保留签名、故障定义和返回结构。\n"
+                prompt = ("只修 repair.targets 中有失败证据的解析函数，保留签名、故障定义；返回值遵循记录契约。\n"
                           "第一行 PYTHON，随后只写待替换函数的完整定义及必要标准库导入。"
                           "不输出聚合、主程序或task_result；框架保留并执行原程序。\n"
                           "直接写Python代码，不要JSON双重转义。样例中的空格原样保留，检查空白数量与正常行格式。\n"
                           "正常行也返回system、timestamp、is_fault=False；无法识别才返回None。"
-                          "parse_*_log保留原返回结构；不得吞掉时间解析异常。\n"
+                          "parse_*_log返回结构化记录列表；修复非法返回类型，不得吞掉解析异常。\n"
                           "未提供的辅助函数不可改；定义缺失不得猜故障关键词。全部输入读取及解析通过后才能提交。\n"
                           "上下文：" + json.dumps({
                               'remainingRounds': remaining, 'repair': repair,
