@@ -7,6 +7,7 @@ from .logging_system import turn_context, update_context, request_context, emit_
 from . import diagnostics
 from .config import Config
 from .daytime import finish_daytime_work
+from .worker_jobs import resume_daytime_jobs, save_daytime_jobs
 from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger, command
@@ -490,6 +491,7 @@ class Agent:
                 if watch_locked:
                     returning.add(watcher.id)
                 ledger.gold -= min(watch_gold, ledger.gold)
+                resume_daytime_jobs(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
                 summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
                                   excluded=returning)
                 robot_reserve = reserve_robot_gold(turn, self.cfg, mem, ledger, towers, walls)
@@ -535,6 +537,7 @@ class Agent:
             emit_event("budget_reached", {"validated_actions": len(ledger.commands)}, "runtime", level=logging.WARNING)
             LOG.warning("round=%s budget reached; returning %s validated actions", turn.round, len(ledger.commands))
         ledger.gold += robot_reserve
+        save_daytime_jobs(turn, mem, ledger)
         response = ledger.response(prompt, execute)
         if mem.news or mem.treasure:
             hero = turn.pioneer

@@ -45,6 +45,7 @@ class MovementMemory:
                 # Release a repeatedly unproductive destination for this actor.
                 for p in (mem.mine_targets.get(hero.id), mem.build_targets.get(hero.id),
                           mem.sale_targets.get(hero.id), mem.upgrade_targets.get(hero.id),
+                          mem.daytime_jobs.get(hero.id, {}).get('target'),
                           mem.sabotage.targets.get(hero.id, (None, None))[0]):
                     if p is not None:
                         self.targets[hero.id, p] = turn.round + 8
