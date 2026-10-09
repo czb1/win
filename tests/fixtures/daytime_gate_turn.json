@@ -1,0 +1,998 @@
+{
+  "mapInfo": {
+    "width": 41,
+    "height": 32,
+    "zones": [
+      {
+        "neutralType": "iron",
+        "pos": {
+          "x": 0,
+          "y": 2
+        },
+        "remain": 10
+      },
+      {
+        "neutralType": "stone",
+        "pos": {
+          "x": 25,
+          "y": 30
+        },
+        "remain": 10
+      },
+      {
+        "neutralType": "defenderTaskPoint2",
+        "pos": {
+          "x": 26,
+          "y": 17
+        },
+        "remain": null
+      },
+      {
+        "neutralType": "iron",
+        "pos": {
+          "x": 26,
+          "y": 31
+        },
+        "remain": 10
+      },
+      {
+        "neutralType": "defenderTaskPoint2",
+        "pos": {
+          "x": 27,
+          "y": 17
+        },
+        "remain": null
+      },
+      {
+        "neutralType": "copper",
+        "pos": {
+          "x": 28,
+          "y": 1
+        },
+        "remain": 10
+      },
+      {
+        "neutralType": "iron",
+        "pos": {
+          "x": 28,
+          "y": 16
+        },
+        "remain": 10
+      },
+      {
+        "neutralType": "iron",
+        "pos": {
+          "x": 3,
+          "y": 0
+        },
+        "remain": 10
+      },
+      {
+        "neutralType": "copper",
+        "pos": {
+          "x": 33,
+          "y": 31
+        },
+        "remain": 5
+      },
+      {
+        "neutralType": "stone",
+        "pos": {
+          "x": 37,
+          "y": 4
+        },
+        "remain": 7
+      },
+      {
+        "neutralType": "stone",
+        "pos": {
+          "x": 39,
+          "y": 22
+        },
+        "remain": 9
+      },
+      {
+        "neutralType": "copper",
+        "pos": {
+          "x": 14,
+          "y": 2
+        },
+        "remain": 10
+      },
+      {
+        "neutralType": "challengerTaskPoint1",
+        "pos": {
+          "x": 14,
+          "y": 14
+        },
+        "remain": null
+      },
+      {
+        "neutralType": "challengerTaskPoint2",
+        "pos": {
+          "x": 16,
+          "y": 17
+        },
+        "remain": null
+      },
+      {
+        "neutralType": "stone",
+        "pos": {
+          "x": 17,
+          "y": 3
+        },
+        "remain": 10
+      },
+      {
+        "neutralType": "challengerTaskPoint2",
+        "pos": {
+          "x": 17,
+          "y": 17
+        },
+        "remain": null
+      },
+      {
+        "neutralType": "stone",
+        "pos": {
+          "x": 17,
+          "y": 20
+        },
+        "remain": 8
+      },
+      {
+        "neutralType": "copper",
+        "pos": {
+          "x": 18,
+          "y": 30
+        },
+        "remain": 6
+      },
+      {
+        "neutralType": "vendor",
+        "pos": {
+          "x": 20,
+          "y": 16
+        },
+        "remain": null
+      },
+      {
+        "neutralType": "defenderTaskPoint1",
+        "pos": {
+          "x": 23,
+          "y": 14
+        },
+        "remain": null
+      },
+      {
+        "neutralType": "stone",
+        "pos": {
+          "x": 24,
+          "y": 20
+        },
+        "remain": 10
+      },
+      {
+        "neutralType": "weaponShop",
+        "pos": {
+          "x": 25,
+          "y": 20
+        },
+        "remain": null
+      }
+    ]
+  },
+  "teamOur": {
+    "type": "defender",
+    "teamId": "gate-regression",
+    "goldNum": 1268,
+    "totalScore": 1288,
+    "playerTasks": [
+      {
+        "taskType": "自进化类1",
+        "taskPosition": {
+          "x": 23,
+          "y": 14
+        },
+        "coldDownRounds": 0,
+        "scoreReward": 0,
+        "goldReward": 0,
+        "isValid": false,
+        "timeoutRounds": 0
+      },
+      {
+        "taskType": "自进化类2",
+        "taskPosition": {
+          "x": 26,
+          "y": 17
+        },
+        "coldDownRounds": 0,
+        "scoreReward": 0,
+        "goldReward": 0,
+        "isValid": false,
+        "timeoutRounds": 0
+      }
+    ],
+    "roles": [
+      {
+        "id": 20010,
+        "pos": {
+          "x": 29,
+          "y": 9
+        },
+        "roleType": "worker",
+        "health": 500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 100,
+        "backpack": [
+          "WallFixer"
+        ],
+        "isDriving": false
+      },
+      {
+        "id": 20011,
+        "pos": {
+          "x": 32,
+          "y": 9
+        },
+        "roleType": "pioneer",
+        "health": 500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 40,
+        "backpack": [],
+        "isDriving": false
+      },
+      {
+        "id": 20012,
+        "pos": {
+          "x": 32,
+          "y": 30
+        },
+        "roleType": "worker",
+        "health": 490,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 100,
+        "backpack": [
+          "copper",
+          "copper",
+          "copper",
+          "copper",
+          "copper",
+          "copper",
+          "copper",
+          "copper",
+          "copper",
+          "copper",
+          "copper",
+          "copper"
+        ],
+        "isDriving": false
+      },
+      {
+        "id": 20013,
+        "pos": {
+          "x": 30,
+          "y": 10
+        },
+        "roleType": "station",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 1,
+        "isDriving": false
+      },
+      {
+        "id": 20040,
+        "pos": {
+          "x": 31,
+          "y": 8
+        },
+        "roleType": "rocket",
+        "health": 2000,
+        "attackPower": 20,
+        "attackRange": 2147483647,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 3,
+        "cooldown": 1,
+        "isDriving": false
+      },
+      {
+        "id": 20041,
+        "pos": {
+          "x": 32,
+          "y": 8
+        },
+        "roleType": "rocket",
+        "health": 2000,
+        "attackPower": 20,
+        "attackRange": 2147483647,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 3,
+        "cooldown": 3,
+        "isDriving": false
+      },
+      {
+        "id": 20042,
+        "pos": {
+          "x": 32,
+          "y": 10
+        },
+        "roleType": "rocket",
+        "health": 2000,
+        "attackPower": 20,
+        "attackRange": 2147483647,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 3,
+        "cooldown": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41001,
+        "pos": {
+          "x": 28,
+          "y": 8
+        },
+        "roleType": "wall",
+        "health": 1250,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41003,
+        "pos": {
+          "x": 28,
+          "y": 10
+        },
+        "roleType": "wall",
+        "health": 600,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41004,
+        "pos": {
+          "x": 28,
+          "y": 11
+        },
+        "roleType": "wall",
+        "health": 1170,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41005,
+        "pos": {
+          "x": 28,
+          "y": 12
+        },
+        "roleType": "wall",
+        "health": 900,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41006,
+        "pos": {
+          "x": 30,
+          "y": 12
+        },
+        "roleType": "wall",
+        "health": 755,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41007,
+        "pos": {
+          "x": 29,
+          "y": 12
+        },
+        "roleType": "wall",
+        "health": 1340,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41008,
+        "pos": {
+          "x": 31,
+          "y": 12
+        },
+        "roleType": "wall",
+        "health": 1235,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41009,
+        "pos": {
+          "x": 32,
+          "y": 12
+        },
+        "roleType": "wall",
+        "health": 1490,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41010,
+        "pos": {
+          "x": 29,
+          "y": 7
+        },
+        "roleType": "wall",
+        "health": 1015,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41011,
+        "pos": {
+          "x": 30,
+          "y": 7
+        },
+        "roleType": "wall",
+        "health": 1100,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41012,
+        "pos": {
+          "x": 33,
+          "y": 12
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41013,
+        "pos": {
+          "x": 33,
+          "y": 11
+        },
+        "roleType": "wall",
+        "health": 1320,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41014,
+        "pos": {
+          "x": 31,
+          "y": 7
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41015,
+        "pos": {
+          "x": 28,
+          "y": 9
+        },
+        "roleType": "wall",
+        "health": 230,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41016,
+        "pos": {
+          "x": 32,
+          "y": 7
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41017,
+        "pos": {
+          "x": 33,
+          "y": 7
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41018,
+        "pos": {
+          "x": 33,
+          "y": 8
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 2,
+        "isDriving": false
+      },
+      {
+        "id": 41019,
+        "pos": {
+          "x": 33,
+          "y": 9
+        },
+        "roleType": "wall",
+        "health": 1000,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 1,
+        "isDriving": false
+      },
+      {
+        "id": 20014,
+        "pos": {
+          "x": 33,
+          "y": 10
+        },
+        "roleType": "imp",
+        "health": 500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "isDriving": false
+      },
+      {
+        "id": 41020,
+        "pos": {
+          "x": 28,
+          "y": 7
+        },
+        "roleType": "wall",
+        "health": 770,
+        "attackPower": 0,
+        "attackRange": 0,
+        "backPackCapability": 0,
+        "backpack": [],
+        "level": 1,
+        "isDriving": false
+      }
+    ],
+    "summonRobotList": []
+  },
+  "teamEnemy": {
+    "roles": [
+      {
+        "id": 10012,
+        "pos": {
+          "x": 32,
+          "y": 31
+        },
+        "roleType": "worker",
+        "health": 500,
+        "attackPower": 0,
+        "attackRange": 0
+      },
+      {
+        "id": 10013,
+        "pos": {
+          "x": 9,
+          "y": 22
+        },
+        "roleType": "station",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 1
+      },
+      {
+        "id": 40000,
+        "pos": {
+          "x": 10,
+          "y": 19
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40001,
+        "pos": {
+          "x": 11,
+          "y": 19
+        },
+        "roleType": "wall",
+        "health": 820,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40005,
+        "pos": {
+          "x": 12,
+          "y": 22
+        },
+        "roleType": "wall",
+        "health": 1820,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 3
+      },
+      {
+        "id": 40006,
+        "pos": {
+          "x": 12,
+          "y": 23
+        },
+        "roleType": "wall",
+        "health": 635,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 3
+      },
+      {
+        "id": 40007,
+        "pos": {
+          "x": 12,
+          "y": 24
+        },
+        "roleType": "wall",
+        "health": 835,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40008,
+        "pos": {
+          "x": 11,
+          "y": 24
+        },
+        "roleType": "wall",
+        "health": 1340,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40009,
+        "pos": {
+          "x": 10,
+          "y": 24
+        },
+        "roleType": "wall",
+        "health": 1150,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40010,
+        "pos": {
+          "x": 9,
+          "y": 19
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40011,
+        "pos": {
+          "x": 9,
+          "y": 24
+        },
+        "roleType": "wall",
+        "health": 1250,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40012,
+        "pos": {
+          "x": 7,
+          "y": 21
+        },
+        "roleType": "wall",
+        "health": 2000,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 3
+      },
+      {
+        "id": 40013,
+        "pos": {
+          "x": 7,
+          "y": 22
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40014,
+        "pos": {
+          "x": 7,
+          "y": 19
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40015,
+        "pos": {
+          "x": 8,
+          "y": 19
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40016,
+        "pos": {
+          "x": 7,
+          "y": 23
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40017,
+        "pos": {
+          "x": 7,
+          "y": 24
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40018,
+        "pos": {
+          "x": 8,
+          "y": 24
+        },
+        "roleType": "wall",
+        "health": 1500,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 2
+      },
+      {
+        "id": 40019,
+        "pos": {
+          "x": 12,
+          "y": 20
+        },
+        "roleType": "wall",
+        "health": 845,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 3
+      },
+      {
+        "id": 40020,
+        "pos": {
+          "x": 12,
+          "y": 21
+        },
+        "roleType": "wall",
+        "health": 600,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 3
+      },
+      {
+        "id": 40024,
+        "pos": {
+          "x": 12,
+          "y": 19
+        },
+        "roleType": "wall",
+        "health": 825,
+        "attackPower": 0,
+        "attackRange": 0,
+        "level": 1
+      }
+    ]
+  },
+  "robot": {
+    "roles": []
+  },
+  "vendorShopList": [
+    {
+      "name": "stone",
+      "price": 2
+    },
+    {
+      "name": "iron",
+      "price": 5
+    },
+    {
+      "name": "copper",
+      "price": 8
+    }
+  ],
+  "weaponShopList": [
+    {
+      "name": "WeaponUpgradeVoucher1",
+      "price": 100
+    },
+    {
+      "name": "WeaponUpgradeVoucher2",
+      "price": 150
+    },
+    {
+      "name": "WallUpgradeVoucher1",
+      "price": 20
+    },
+    {
+      "name": "WallUpgradeVoucher2",
+      "price": 30
+    },
+    {
+      "name": "StationUpgradeVoucher1",
+      "price": 100
+    },
+    {
+      "name": "StationUpgradeVoucher2",
+      "price": 150
+    },
+    {
+      "name": "WallFixer",
+      "price": 15
+    },
+    {
+      "name": "Medicine",
+      "price": 10
+    },
+    {
+      "name": "DizzyWeapon",
+      "price": 50
+    },
+    {
+      "name": "Bomb",
+      "price": 50
+    },
+    {
+      "name": "SmallRobotSummonOrder",
+      "price": 15
+    },
+    {
+      "name": "MiddleRobotSummonOrder",
+      "price": 20
+    },
+    {
+      "name": "LargeRobotSummonOrder",
+      "price": 70
+    },
+    {
+      "name": "BossRobotSummonOrder",
+      "price": 120
+    },
+    {
+      "name": "AcientTablet",
+      "price": 10
+    },
+    {
+      "name": "StarSand",
+      "price": 10
+    },
+    {
+      "name": "FlameBreath",
+      "price": 10
+    },
+    {
+      "name": "FrostPotion",
+      "price": 10
+    },
+    {
+      "name": "ThornAmulet",
+      "price": 10
+    },
+    {
+      "name": "IronWhistle",
+      "price": 10
+    }
+  ],
+  "roundNo": 780,
+  "phaseTask": "",
+  "worldNews": {},
+  "llmResp": "",
+  "lastCmdResult": "",
+  "errors": []
+}

@@ -1,4 +1,5 @@
 """Focused gate traffic, dusk/night boundaries and three-rocket dispatch."""
+import json
 from time import monotonic
 import unittest
 
@@ -16,6 +17,10 @@ from agent.sabotage import act_imps
 
 
 GATE, POSTS, TOWERS = (3, 10), {(2, 9), (2, 11)}, [(4, 12), (5, 12), (4, 10)]
+
+
+def logged_morning_case():
+    return json.loads((ROOT / 'tests/fixtures/daytime_gate_turn.json').read_text(encoding='utf-8'))
 
 
 def gate_case(round_no=70, imp=GATE, worker=(11, 2), pioneer=(4, 11)):
@@ -107,6 +112,73 @@ class ThreeRocketTests(unittest.TestCase):
 
 
 class GateGuardTests(unittest.TestCase):
+    def test_early_day_at_gate_does_not_recall_or_clear_sabotage(self):
+        for point in ((33, 10), (34, 9)):
+            with self.subTest(point=point):
+                data = logged_morning_case()
+                next(u for u in data['teamOur']['roles'] if u['id'] == 20014)['pos'] = dict(zip(('x', 'y'), point))
+                turn, cfg, nav, ledger = setup_case(data, llm_enabled=False)
+                mem = Memory()
+                mem.observe(turn, cfg)
+                mem.sabotage.targets[20014] = (24, 20), 'stone'
+                mem.sabotage.progress[20014] = 2
+                towers, walls = layout(turn, cfg)
+                self.assertIsNone(prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls))
+                self.assertNotIn(20014, ledger.used)
+                self.assertEqual(mem.sabotage.targets[20014], ((24, 20), 'stone'))
+                self.assertEqual(mem.sabotage.progress[20014], 2)
+
+    def test_logged_morning_imp_leaves_gate_without_two_cell_loop(self):
+        data, agent = logged_morning_case(), Agent(Config(llm_enabled=False))
+        imp = next(u for u in data['teamOur']['roles'] if u['id'] == 20014)
+        positions = [pos(imp['pos'])]
+        for _ in range(3):
+            commands = agent.decide(data)['roleCommandMap']
+            self.assertEqual(commands['20014']['action'], 'move')
+            self.assertEqual(next(iter(agent.sessions.values())).sabotage.gate_states, {})
+            advance(data, commands)
+            positions.append(pos(imp['pos']))
+        self.assertEqual(len(set(positions)), 4, positions)
+
+    def test_logged_morning_workers_resume_after_imp_leaves(self):
+        data, agent = logged_morning_case(), Agent(Config(llm_enabled=False))
+        commands = agent.decide(data)['roleCommandMap']
+        self.assertEqual(commands['20014'], command('move', (34, 11)))
+        self.assertEqual(commands['20010']['action'], 'use')
+        advance(data, commands)
+        # The supplied feedback confirms the pack was consumed and this wall repaired.
+        next(u for u in data['teamOur']['roles'] if u['id'] == 20010)['backpack'] = []
+        next(u for u in data['teamOur']['roles'] if u['id'] == 41015)['health'] = 1500
+        commands = agent.decide(data)['roleCommandMap']
+        self.assertEqual(commands['20010']['action'], 'move')
+        self.assertIn(commands['20012']['action'], ('move', 'collect'))
+        self.assertNotEqual(pos(commands['20014']['targetPos'][0]), (33, 10))
+
+    def test_daytime_yield_window_keeps_gate_free_and_retains_mine_target(self):
+        data = logged_morning_case()
+        data['roundNo'] = 781
+        next(u for u in data['teamOur']['roles'] if u['id'] == 20014)['pos'] = dict(x=34, y=9)
+        turn, cfg, nav, ledger = setup_case(data, llm_enabled=False)
+        mem = Memory()
+        mem.observe(turn, cfg)
+        mem.sabotage.targets[20014] = (24, 20), 'stone'
+        mem.sabotage.progress[20014] = 2
+        mem.sabotage.gate_states[20014] = dict(day=turn.day, recalling=False, yield_until=783, post=(34, 9))
+        towers, walls = layout(turn, cfg)
+        guard = prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls)
+        self.assertIsNotNone(guard)
+        act_imps(turn, mem.sabotage, nav, ledger)
+        guard.finish()
+        self.assertNotIn('20014', ledger.commands)
+        self.assertEqual(ledger.notes[20014]['reason'], 'imp_daytime_gate_yield')
+        self.assertEqual(mem.sabotage.targets[20014], ((24, 20), 'stone'))
+        self.assertNotIn(20014, mem.sabotage.progress)
+        data['roundNo'] = 784
+        turn, cfg, nav, ledger = setup_case(data, llm_enabled=False)
+        mem.observe(turn, cfg)
+        self.assertIsNone(prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls))
+        self.assertNotIn(20014, ledger.used)
+
     def test_last_day_turn_stages_beside_gap_and_first_night_enters(self):
         data, agent = gate_case(69), Agent(Config(llm_enabled=False))
         commands = agent.decide(data)['roleCommandMap']
@@ -294,3 +366,4 @@ class GateGuardTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

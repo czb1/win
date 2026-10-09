@@ -105,7 +105,8 @@ class GateGuard:
             self.state['yield_until'] = self.turn.round + 2
         yielding = (bool(traffic) or self.state.get('yield_until', -1) >= self.turn.round
                     or self.gate in self.ledger.reserved)
-        reason = ('imp_dusk_staging' if self.turn.is_day else
+        reason = ('imp_daytime_gate_yield' if self.turn.is_day and not self.state.get('recalling') else
+                  'imp_dusk_staging' if self.turn.is_day else
                   'imp_yielding_gate' if yielding else 'imp_guarding_gate')
         try:
             route = (self._stage(traffic) if self.turn.is_day or yielding else
@@ -162,7 +163,8 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     hero = turn.imps[0]
     state = mem.sabotage.gate_states.get(hero.id, {})
     returning = state.get('day') == turn.day and state.get('recalling', False)
-    if turn.is_day and not returning and hero.pos != gate:
+    yielding = state.get('day') == turn.day and state.get('yield_until', -1) >= turn.round
+    if turn.is_day and not returning and not yielding:
         original = turn.blocked
         try:
             # Estimate future friendly congestion only. Actual moves below
@@ -171,6 +173,8 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
             route = nav.search(hero, set(posts), ledger.tower_cells | ledger.wall_cells)
         finally:
             turn.blocked = original
+        # Standing in the gate is still daytime work, not an implicit recall.
+        # Otherwise staging and the mine route can alternate across the gap.
         if turn.day_left > (route[0] if route is not None else 0) + cfg.return_margin:
             return None
         returning = True
@@ -185,7 +189,9 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     state.update(day=turn.day, gate=gate, recalling=returning,
                  yield_until=state.get('yield_until', -1))
     mem.sabotage.gate_states[hero.id] = state
-    mem.sabotage.targets.pop(hero.id, None)
+    if returning or not turn.is_day:
+        mem.sabotage.targets.pop(hero.id, None)
     mem.sabotage.progress.pop(hero.id, None)
     ledger.used.add(hero.id)  # Suppress the daytime sabotage action for this imp.
     return GateGuard(turn, nav, ledger, hero, gate, inward, posts, state)
+
