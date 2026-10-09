@@ -1138,6 +1138,18 @@ def treasure_preparation_plan(turn, cfg, mem, nav, ledger, hero):
 
 
 def reserve_treasure_gold(turn, cfg, mem, nav, ledger, hero):
+    t = mem.treasure
+    if (hero and turn.is_day and not turn.phase_task and t
+            and not mem.treasure_done and not mem.treasure_attempted
+            and turn.round <= t["endRound"]):
+        missing = Counter(t["items"]) - hero.inventory
+        route = nav.approach(hero, [tuple(t["position"])], ledger.reserved)
+        if (route and turn.round + route[0] <= t["endRound"]
+                and hero.space >= sum(missing.values()) and all(k in turn.shop for k in missing)):
+            amount = min(max(0, ledger.gold), sum(turn.shop[k] * n for k, n in missing.items()))
+            mem.trace_treasure(turn, "treasure_reserve", dedupe=True,
+                               reason="complete_plan", reserved=amount, missing=dict(missing))
+            return amount
     plan = treasure_preparation_plan(turn, cfg, mem, nav, ledger, hero)
     if not plan:
         return 0
@@ -1184,6 +1196,22 @@ def pioneer_task_options(turn, cfg, mem, nav, ledger, hero):
         if observed:
             duration = min(duration, max(observed[-3:]) + 2)
         work = cfg.task_min_rounds
+        t = mem.treasure
+        if (route and t and not mem.treasure_done and not mem.treasure_attempted
+                and turn.round <= t["endRound"] and t["startRound"] < turn.round + turn.day_left):
+            altar = nav.approach(hero, [tuple(t["position"])], ledger.reserved)
+            if altar and turn.round + altar[0] <= t["endRound"]:
+                distances = nav.distances_to([tuple(t["position"])], {hero.pos}, ledger.reserved)
+                onward = max((distances[q] for p in cells for q in neighbours(p)
+                              if q not in cells and q in distances), default=None)
+                # Use the timeout, not past best-case completion, to protect the opening.
+                timeout = min(int(task.get("timeoutRounds", cfg.task_max_rounds)), cfg.task_max_rounds)
+                if (Counter(t["items"]) - hero.inventory or onward is None
+                        or turn.round + route[0] + timeout + onward + 2 + cfg.return_margin >= t["startRound"]):
+                    mem.trace_treasure(turn, "treasure_task_gate", dedupe=True,
+                                       reason="opening_priority", task=pos(task["taskPosition"]),
+                                       start=t["startRound"], timeout=timeout)
+                    continue
         if route and turn.day_left > route[0] + work + return_estimate + cfg.return_margin:
             value = (int(task.get("scoreReward", 0)) + .5*int(task.get("goldReward", 0))) / max(1, route[0]+duration)
             options.append((-value, route[0], pos(task["taskPosition"]), task, route))
@@ -1231,7 +1259,7 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
                 if name in turn.shop and hero.space >= num and ledger.gold >= turn.shop[name]*num:
                     if visit(turn, nav, ledger, hero, "weaponShop", command("buy", name=name, num=num)):
                         return
-            elif turn.round + route[0] >= t["startRound"]:
+            elif turn.round + route[0] + cfg.return_margin >= t["startRound"]:
                 if route[1] is not None:
                     ledger.add(hero.id, command("move", route[1]))
                 elif turn.round >= t["startRound"]:
@@ -1239,6 +1267,9 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
                         mem.treasure_attempted = True
                         mem.trace_treasure(turn, "treasure_summon", actor=hero.id,
                                            position=hero.pos, target=t["position"], items=t["items"])
+                if hero.id not in ledger.used:
+                    ledger.used.add(hero.id)
+                    ledger.explain(hero.id, "treasure_wait_opening", start=t["startRound"])
                 return
     elif t:
         mem.trace_treasure(turn, "treasure_progress", dedupe=True,
@@ -1251,6 +1282,11 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
         _, _, point, task, route = min(options, key=lambda x: x[:3])
         if route[1] is not None:
             ledger.add(hero.id, command("move", route[1]))
+        elif (cfg.llm_enabled and mem.news and
+              ((mem.pending and mem.pending[0] == "news")
+               or (mem.news_dirty and mem.calls < cfg.daily_llm_limit))):
+            ledger.used.add(hero.id)
+            ledger.explain(hero.id, "news_before_evolution", pending=mem.pending)
         elif ledger.add(hero.id, command("acceptTask")):
             mem.task_point = point
             mem.task_timeout = int(task.get("timeoutRounds", cfg.task_max_rounds))
