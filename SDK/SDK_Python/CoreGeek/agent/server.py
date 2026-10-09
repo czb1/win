@@ -24,6 +24,10 @@ class Server(ThreadingHTTPServer):
         self.lock = threading.Lock()
         super().__init__(address, Handler)
 
+    def handle_error(self, request, client_address):
+        # socketserver's default handler prints a plaintext traceback to stderr.
+        LOG.exception("HTTP handler failed")
+
 
 class Handler(BaseHTTPRequestHandler):
     def setup(self):
@@ -106,3 +110,4 @@ def serve(port, config=None, host="0.0.0.0"):
     with Server((host, port), config) as server:
         LOG.info("listening on %s:%s", host, server.server_port)
         server.serve_forever()
+

@@ -118,7 +118,7 @@ class LoggingSystemTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             process = subprocess.run([sys.executable, str(ROOT / 'tools/replay.py'),
                                       str(ROOT / 'examples/request.json'), '--log-level', 'INFO',
-                                      '--log-dir', directory], capture_output=True, text=True)
+                                      '--log-dir', directory, '--plaintext-logs'], capture_output=True, text=True)
             self.assertEqual(process.returncode, 0, process.stderr)
             self.assertIn('roleCommandMap', json.loads(process.stdout))
             text = Path(directory, 'game.log').read_text(encoding='utf-8')
@@ -145,3 +145,4 @@ class LoggingSystemTests(unittest.TestCase):
             self.assertEqual(listing.returncode, 0)
             self.assertIn('abc/r140\t1', listing.stdout)
             self.assertIn('abc/long-context\t1', listing.stdout)
+

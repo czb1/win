@@ -188,7 +188,7 @@ class TxtDiagnosticsTests(unittest.TestCase):
         stream = io.StringIO()
         try:
             with patch("sys.stderr", stream):
-                configure_logging("WARNING")
+                configure_logging("WARNING", plaintext_logs=True)
                 Agent(Config(layout_mode="explicit", llm_enabled=False)).decide(payload(1))
             self.assertIn('"event":"turn_snapshot"', stream.getvalue())
             class BrokenStream:
@@ -267,3 +267,4 @@ class TxtDiagnosticsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -49,6 +49,20 @@ Python 参赛实现提供 HTTP 回合决策服务，已逐项适配部分 v2.0 �
 
 推荐与比赛一致的 **Python 3.11.10**，仅使用标准库，无需安装第三方包。交付环境实际测试版本见 `1.0版本设计文档/测试报告.md`。
 
+日志默认加密，仓库已配置正式公钥 `SDK/SDK_Python/CoreGeek/log-public.json`。**自动发布的 Release 包会携带公钥，可以直接上传比赛平台**，不需要每次生成密钥或重新打包。
+
+对应私钥通过独立文件交付，仅在本地保存和备份，不进入 Git 或比赛包。可将交付文件在自己的电脑上保存为 `keys/log-private.json`，供下面的本地解密命令使用。私钥丢失后已有日志无法恢复；发布工作流会拒绝打包包含 FWLOG 私钥 JSON 的目录。
+
+仅在主动更换密钥时生成新的一对密钥（默认 RSA 3072 位）：
+
+```bash
+python tools/extract_logs.py --generate-keys keys/log-private-new.json --public-key-out keys/log-public-new.json
+```
+
+保留并备份新的私钥，将新的公钥替换 `SDK/SDK_Python/CoreGeek/log-public.json` 并提交仓库，之后的发布包会使用新公钥；旧日志仍需对应旧私钥。密钥生成不会覆盖已有文件，私钥默认使用权限 `0600`；Windows 请通过文件权限限制访问。`keys/` 和私钥文件默认不进入 Git。
+
+也可通过 `--log-public-key /path/to/log-public.json` 或环境变量 `FUTURE_WAR_LOG_PUBLIC_KEY` 指定公钥。缺失或无效时启动失败，不自动退回明文；仅本地调试可以显式传 `--plaintext-logs`。加密运行及密钥生成都只用 Python 标准库，不需要系统 OpenSSL、第三方包或网络。
+
 在项目根目录运行：
 
 ```bash
@@ -71,55 +85,57 @@ run.bat 8080
 
 ### 按天数、昼夜和任务查日志
 
-日志面向“看录像找到回合 → 下载一个 `.log` 文件 → 提取问题区间 → 交给智能体分析修改”的流程。比赛端统一向 stderr 输出 `FWLOG {JSON}`，无需 HTML 或平台支持多个文件。每条记录带格式版本、运行编号、请求编号、队伍、场次、全局回合、天数／昼夜及任务／单位编号；时间戳为 UTC，游戏时间按 `round_origin` 计算。回合倒退会新建场次，相同请求的缓存命中也单独记录。
+日志面向“看录像找到回合 → 下载一个 `.log` 文件 → 本地解密并提取问题区间 → 交给智能体分析修改”的流程。比赛端统一向 stderr 输出 `FWENC {JSON}` 加密封装，无需 HTML 或平台支持多个文件。解密后的记录仍带格式版本、运行编号、请求编号、队伍、场次、全局回合、天数／昼夜及任务／单位编号；时间戳为 UTC，游戏时间按 `round_origin` 计算。回合倒退会新建场次，相同请求的缓存命中也单独记录。
+
+自行实现 RFC 8439 的 ChaCha20-Poly1305 和 RFC 8017 的 RSA-OAEP／SHA-256。每次日志配置生成随机 256 位运行密钥，用公钥封装；每条记录压缩后完整加密，计数 nonce 在该运行密钥下不重复。外层只含协议、密钥指纹、封装密钥、nonce、密文及可选分段信息，地图、题目、回复、异常和业务身份均在密文内。每条／每段携带恢复所需的封装密钥，截取文件不依赖文件头。同一条密文可复制到 stderr 和本地文件，切换进程／重新配置会更换运行密钥。认证校验保护记录内容与外层协议字段，但公钥加密不证明日志发送者身份，也不能证明整份文件未被删除尾部；缺段与序号缺口仍按输入文件报告。
 
 每回合的 `turn_snapshot` 保留原始地图、所有下发单位、背包、金币、积分、任务点、价格，以及 v2.0 的矿石 `remain`、驾驶状态、小车和 `summonRobotList`。敌方单位仅记录实际收到的观测；`enemy_last_seen` 是历史位置，不是当前真实位置。机器人攻击目标不代表归属。快照包含完整当前状态，不依赖之前回合的地图增量。
 
 `unit_decision` 记录最终动作／未行动原因、决策代码位置、采矿候选淘汰汇总、路程、时间预算、回防条件、资源和校验拒绝原因。`previous_feedback` 同时记录前一回合指令、合法性与实际位置／血量／背包／金币／积分变化；合法不等于生效，跳过回合时不关联旧指令。`turn_response` 与 HTTP 日志记录预算耗尽、缓存、空响应降级、锁竞争、断开及耗时。
 
-长题目、prompt、模型回复和执行结果完整保存，重复内容通过 `payload_id` 引用。大记录按编号拆成可校验的 base64 分段，通常物理行小于8KB；分段只影响日志传输，不改 HTTP 响应。日志失败会尽力标记 `logging_failed`，不使已校验动作失败。核心快照、原因、反馈及任务原文在 WARNING／ERROR 下仍保存，`--log-level` 主要控制既有普通／DEBUG 诊断。
+长题目、prompt、模型回复和执行结果完整保存，重复内容通过 `payload_id` 引用。大记录加密后按编号拆成可校验的 base64 分段，物理行小于8KB；分段只影响日志传输，不改 HTTP 响应。单条解密记录上限16MiB，分段缓存上限32MiB。日志失败只输出固定的 `FWLOG-ERROR logging_failed` 提示，不打印原文、异常值或密钥，也不使已校验动作失败。核心快照、原因、反馈及任务原文在 WARNING／ERROR 下仍保存，`--log-level` 主要控制既有普通／DEBUG 诊断。
 
-`--log-dir` 是可选的本地副本，仍保存兼容的 `game.log` 与 `events.jsonl`，每文件50MB轮转并保留5份备份；下载的单个 `.log` 文件已包含分析所需记录。轮转删除的旧副本、平台截断或手工剪切造成的缺失不能恢复，提取结果会报告缺少元数据、分段、引用或中间序号。
+`--log-dir` 是可选的本地副本，保存同样加密的 `game.log` 与 `events.jsonl`，每文件50MB轮转并保留5份备份；下载的单个 `.log` 文件已包含分析所需记录。轮转删除的旧副本、平台截断或手工剪切造成的缺失不能恢复，提取结果会报告缺少元数据、分段、引用或中间序号。
 
 ```bash
 .venv/bin/python SDK/SDK_Python/CoreGeek/main3.py 8080 --log-level INFO --log-dir artifacts/game
 # 离线回放同样支持；响应 JSON 仍单独输出
 .venv/bin/python tools/replay.py examples/request.json --log-level INFO --log-dir artifacts/replay
 # 先看天数、昼夜、任务编号及日志数量目录
-.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --list
+.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --private-key keys/log-private.json --list
 # 第2天黑夜；phase=day 表示白天
-.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --day 2 --phase night
+.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --private-key keys/log-private.json --day 2 --phase night
 # 自进化：领取、题目、模型回复、沙盒执行、提交、结束及结果
-.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --category evolution
+.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --private-key keys/log-private.json --category evolution
 # 长上下文：累计新闻、民间传闻、线索分析、用品准备与宝藏召唤
-.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --category long_context
+.venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --private-key keys/log-private.json --category long_context
 ```
 
-下载 `.log` 文件后，只需下载 [extract_logs.py](tools/extract_logs.py)，放在日志文件旁，用本地 Python 3.11+ 执行（单文件、只用标准库，无需安装依赖）：
+下载 `.log` 文件后，只需下载 [extract_logs.py](tools/extract_logs.py)，准备对应的本地私钥，用 Python 3.11+ 执行（单文件、只用标准库，无需安装依赖）。以下 `keys/log-private.json` 请替换为自己的私钥路径：
 
 ```bash
 # 同一 .log 文件有多个场次时先确认编号；也会列出任务编号
-python extract_logs.py match.log --list
+python extract_logs.py match.log --private-key keys/log-private.json --list
 # 提取录像对应的120~140回合，并附带前后5回合
-python extract_logs.py match.log --from-round 120 --to-round 140 --context 5 --out issue
+python extract_logs.py match.log --private-key keys/log-private.json --from-round 120 --to-round 140 --context 5 --out issue
 # 可附加 --session 场次编号、--team 队伍编号、--unit-id 人物编号
-python extract_logs.py match.log --task-id "场次/r领取回合" --context 0 --out task_issue
+python extract_logs.py match.log --private-key keys/log-private.json --task-id "场次/r领取回合" --context 0 --out task_issue
 # 需要进一步分文件时使用 --split
-python extract_logs.py match.log --from-round 120 --to-round 140 --out issue --split
+python extract_logs.py match.log --private-key keys/log-private.json --from-round 120 --to-round 140 --out issue --split
 ```
 
 四种常用筛选方式（天数以第2天为例，替换 `--day 2` 即可）：
 
 | 提取内容 | 命令 |
 |---|---|
-| 只提取自进化任务 | `python extract_logs.py match.log --mode evolution --out evolution` |
-| 只提取长上下文任务 | `python extract_logs.py match.log --mode long-context --out long_context` |
-| 第2天白天的普通日志 | `python extract_logs.py match.log --mode non-task --day 2 --phase day --out day2_day` |
-| 第2天黑夜的普通日志 | `python extract_logs.py match.log --mode non-task --day 2 --phase night --out day2_night` |
+| 只提取自进化任务 | `python extract_logs.py match.log --private-key keys/log-private.json --mode evolution --out evolution` |
+| 只提取长上下文任务 | `python extract_logs.py match.log --private-key keys/log-private.json --mode long-context --out long_context` |
+| 第2天白天的普通日志 | `python extract_logs.py match.log --private-key keys/log-private.json --mode non-task --day 2 --phase day --out day2_day` |
+| 第2天黑夜的普通日志 | `python extract_logs.py match.log --private-key keys/log-private.json --mode non-task --day 2 --phase night --out day2_night` |
 
 筛选模式的 `issue.txt` 只包含目标记录；场次元数据和完整性报告保存在 `meta.json`。任务模式按日志类别区分自进化和长上下文，并自动补齐所引用的题目／传闻原文；明确标为长上下文的记录不会因事件名以 `task_` 开头而归入自进化。普通模式排除自进化、长上下文和推理类别、模型／沙盒原文、开拓者决策、带任务上下文／任务动作／宝藏结果的反馈，以及含任务指令／模型或沙盒调用的响应，保留同回合的工人、武器等普通记录。`--context` 不会将指定天数／昼夜外的普通记录带入输出。`--list` 同样遵守模式、天数、昼夜和身份筛选；不加 `--mode` 时使用 `all`，导出完整问题区间。
 
-默认输出 `issue/issue.txt`（全部相关诊断）、独立的 `issue/tasks.txt`（自进化、新闻推理、宝藏、相关开拓者动作与反馈）和 `issue/meta.json`（区间及完整性报告）。可以直接发送 `issue.txt`，任务问题可单独发送 `tasks.txt`。`--split` 额外输出 `turns.jsonl`、`decisions.jsonl`、`feedback.jsonl`、`errors.jsonl`。提取器分多遍流式读取，不将整份 `.log` 文件载入内存；自动补入所选场次的版本配置和区间外被引用的长文本，原始回合与任务编号不改写。`included_as` 标明补入的上下文；缺失数据明确报告，不据此补造执行成功。支持平台时间戳前缀、混杂启动信息、UTF-8／UTF-16 `.log` 和旧 JSONL，校验分段完整性及哈希。
+解密、校验后默认输出明文 `issue/issue.txt`（全部相关诊断）、独立的 `issue/tasks.txt`（自进化、新闻推理、宝藏、相关开拓者动作与反馈）和 `issue/meta.json`（区间及完整性报告）。可以直接发送 `issue.txt`，任务问题可单独发送 `tasks.txt`。`--split` 额外输出 `turns.jsonl`、`decisions.jsonl`、`feedback.jsonl`、`errors.jsonl`。提取器分多遍流式读取，不将整份 `.log` 文件载入内存；自动补入所选场次的版本配置和区间外被引用的长文本，原始回合与任务编号不改写。`included_as` 标明补入的上下文；缺失数据明确报告，不据此补造执行成功。支持平台时间戳前缀、混杂启动信息、UTF-8／UTF-16 `.log` 和旧 JSONL，校验分段完整性、哈希及加密认证。错误／缺失私钥退出码为2且不会开始导出；损坏密文会跳过、记录 `read_report.crypto_errors` 并以退出码2导出可恢复部分。缺段记录进入 `incomplete_records`。历史明文日志无需私钥，同文件可混合旧／新格式；公钥轮换后可以重复传入 `--private-key` 指定多个旧私钥。导出的明文文件与临时提取文件也需要按本地敏感文件保存。
 
 从 `--list` 复制任务编号后，可用 `--task-id "编号"` 查看同一次任务跨白天／黑夜的记录；自进化编号为 `session/r领取回合`（没有领取记录时用首次看到题目的回合），长上下文编号为 `session/long-context`，新闻推理为 `session/reasoning`。查询工具支持 `.log` 和 JSONL，可组合 `--from-round`、`--to-round`、`--unit-id`、`--event`、`--team`、`--session`、`--contains`、`--level` 和 `--limit`；`--json` 输出恢复后的 JSON Lines。白天70回合、黑夜60回合，阶段内回合从1计数；任务结束和 outcome 保留旧任务编号，新任务单独编号。领取失败、合法提交、任务结束和有证据的完成分别记录。
 
@@ -201,7 +217,7 @@ curl -X POST http://127.0.0.1:8080/ -H 'Content-Type: application/json' --data-b
 | `examples/response.json` | 原 v1.0 样例回放得到的响应，保留为历史夹具 |
 | `tests/test_agent.py` | 标准库 unittest 自动化测试 |
 | `tools/replay.py` | 单回合及连续请求回放 |
-| `tools/extract_logs.py` | 可单独下载运行，从比赛 `.log` 文件提取问题区间和独立任务日志，内置流式解析和分段校验 |
+| `tools/extract_logs.py` | 可单独下载运行，从比赛 `.log` 文件提取问题区间和独立任务日志，内置零依赖密钥生成、解密、流式解析和分段校验 |
 | `tools/log_records.py` | 兼容查询工具的日志读取导入入口 |
 
 仅实现 Python 分支，不创建图片中的 C++、Java、Go、Rust 空壳工程。
@@ -259,3 +275,4 @@ LLM 由判题器通过响应中的 `prompt` 调用，程序本身不需要 API K
 - GitHub 发布由上述打包工作流执行；比赛平台的上传和部署需按平台流程另行完成。
 
 
+日志加密实现没有独立安全审计，Python 整数运算不保证恒定时间；私钥解密仅用于本地离线工具，不作为对外网络服务。加密核心修改后运行 `python tools/sync_log_crypto.py` 同步单文件提取器，快速测试会核对内嵌代码与核心完全一致。
