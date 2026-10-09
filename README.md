@@ -97,6 +97,10 @@ run.bat 8080
 
 `--log-dir` 是可选的本地副本，保存同样加密的 `game.log` 与 `events.jsonl`，每文件50MB轮转并保留5份备份；下载的单个 `.log` 文件已包含分析所需记录。轮转删除的旧副本、平台截断或手工剪切造成的缺失不能恢复，提取结果会报告缺少元数据、分段、引用或中间序号。
 
+日常输出只保留回合、事件、人物、业务数据和异常内容。`issue.txt`、`tasks.txt` 及查询输出省略 `run`、`request_id`、`level`、`logger`、`timestamp`、`source`、`session`、`record_id`、`sequence` 和 `schema_version`；`task_id`、`task_type` 仅在与任务相关且有值时显示。重复的事件消息、空字段和决策中未使用的目标也会省略，业务数据中的 `0`、`false`、时间戳及单位等级仍保留。
+
+关联编号、日志级别和完整性信息继续保存在原始加密记录中；`meta.json` 保存场次配置与完整性报告，`--split` 的 JSONL 保留完整记录供机器分析。使用 `--plaintext-logs` 调试时，stderr 和 `game.log` 同样精简，`events.jsonl` 保留可筛选的完整记录。按场次、运行编号或日志级别查询时使用原始加密日志或 `events.jsonl`，精简文本用于阅读。
+
 ```bash
 .venv/bin/python SDK/SDK_Python/CoreGeek/main3.py 8080 --log-level INFO --log-dir artifacts/game
 # 离线回放同样支持；响应 JSON 仍单独输出
@@ -135,9 +139,9 @@ python extract_logs.py match.log --private-key keys/log-private.json --from-roun
 
 筛选模式的 `issue.txt` 只包含目标记录；场次元数据和完整性报告保存在 `meta.json`。任务模式按日志类别区分自进化和长上下文，并自动补齐所引用的题目／传闻原文；明确标为长上下文的记录不会因事件名以 `task_` 开头而归入自进化。普通模式排除自进化、长上下文和推理类别、模型／沙盒原文、开拓者决策、带任务上下文／任务动作／宝藏结果的反馈，以及含任务指令／模型或沙盒调用的响应，保留同回合的工人、武器等普通记录。`--context` 不会将指定天数／昼夜外的普通记录带入输出。`--list` 同样遵守模式、天数、昼夜和身份筛选；不加 `--mode` 时使用 `all`，导出完整问题区间。
 
-解密、校验后默认输出明文 `issue/issue.txt`（全部相关诊断）、独立的 `issue/tasks.txt`（自进化、新闻推理、宝藏、相关开拓者动作与反馈）和 `issue/meta.json`（区间及完整性报告）。可以直接发送 `issue.txt`，任务问题可单独发送 `tasks.txt`。`--split` 额外输出 `turns.jsonl`、`decisions.jsonl`、`feedback.jsonl`、`errors.jsonl`。提取器分多遍流式读取，不将整份 `.log` 文件载入内存；自动补入所选场次的版本配置和区间外被引用的长文本，原始回合与任务编号不改写。`included_as` 标明补入的上下文；缺失数据明确报告，不据此补造执行成功。支持平台时间戳前缀、混杂启动信息、UTF-8／UTF-16 `.log` 和旧 JSONL，校验分段完整性、哈希及加密认证。错误／缺失私钥退出码为2且不会开始导出；损坏密文会跳过、记录 `read_report.crypto_errors` 并以退出码2导出可恢复部分。缺段记录进入 `incomplete_records`。历史明文日志无需私钥，同文件可混合旧／新格式；公钥轮换后可以重复传入 `--private-key` 指定多个旧私钥。导出的明文文件与临时提取文件也需要按本地敏感文件保存。
+解密、校验后默认输出明文 `issue/issue.txt`（全部相关诊断）、独立的 `issue/tasks.txt`（自进化、新闻推理、宝藏、相关开拓者动作与反馈）和 `issue/meta.json`（区间及完整性报告）。可以直接发送 `issue.txt`，任务问题可单独发送 `tasks.txt`。`--split` 额外输出 `turns.jsonl`、`decisions.jsonl`、`feedback.jsonl`、`errors.jsonl`。提取器分多遍流式读取，不将整份 `.log` 文件载入内存；所选场次的版本配置保存在 `meta.json`，区间外被引用的长文本会自动补齐，原始回合与任务编号不改写。`included_as` 标明补入的上下文；缺失数据明确报告，不据此补造执行成功。支持平台时间戳前缀、混杂启动信息、UTF-8／UTF-16 `.log` 和旧 JSONL，校验分段完整性、哈希及加密认证。错误／缺失私钥退出码为2且不会开始导出；损坏密文会跳过、记录 `read_report.crypto_errors` 并以退出码2导出可恢复部分。缺段记录进入 `incomplete_records`。历史明文日志无需私钥，同文件可混合旧／新格式；公钥轮换后可以重复传入 `--private-key` 指定多个旧私钥。导出的明文文件与临时提取文件也需要按本地敏感文件保存。
 
-从 `--list` 复制任务编号后，可用 `--task-id "编号"` 查看同一次任务跨白天／黑夜的记录；自进化编号为 `session/r领取回合`（没有领取记录时用首次看到题目的回合），长上下文编号为 `session/long-context`，新闻推理为 `session/reasoning`。查询工具支持 `.log` 和 JSONL，可组合 `--from-round`、`--to-round`、`--unit-id`、`--event`、`--team`、`--session`、`--contains`、`--level` 和 `--limit`；`--json` 输出恢复后的 JSON Lines。白天70回合、黑夜60回合，阶段内回合从1计数；任务结束和 outcome 保留旧任务编号，新任务单独编号。领取失败、合法提交、任务结束和有证据的完成分别记录。
+从 `--list` 复制任务编号后，可用 `--task-id "编号"` 查看同一次任务跨白天／黑夜的记录；自进化编号为 `session/r领取回合`（没有领取记录时用首次看到题目的回合），长上下文编号为 `session/long-context`，新闻推理为 `session/reasoning`。查询工具支持 `.log` 和 JSONL，可组合 `--from-round`、`--to-round`、`--unit-id`、`--event`、`--team`、`--session`、`--contains`、`--level` 和 `--limit`；筛选在精简前执行，`--json` 输出精简后的 JSON Lines，默认文本输出也包含业务数据和完整异常。白天70回合、黑夜60回合，阶段内回合从1计数；任务结束和 outcome 保留旧任务编号，新任务单独编号。领取失败、合法提交、任务结束和有证据的完成分别记录。
 
 工具不能给历史无结构的纯文本日志补充地图和任务编号。使用 `callback()` 的外部宿主需调用 `agent.logging_system.configure_logging("INFO")` 启用同样的 stderr 输出，也可传入日志目录。场次编号基于代理内存生命周期，不代表官方比赛 ID。运行配置和源码指纹可用于核对程序版本；打包方可通过 `FUTURE_WAR_VERSION` 附加包版本。
 

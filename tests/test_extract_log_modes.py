@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def record(identity, number, day, phase):
-    return dict(run="R", session="S", team="A", record_id=identity, round=number,
+    return dict(run="R", session="S", team="A", record_id=identity, message=identity, round=number,
                 day=day, phase=phase, event="diagnostic", category="general", data={})
 
 
@@ -107,7 +107,7 @@ class ExtractionModeTests(unittest.TestCase):
 
     def test_evolution_only_and_payload_dependency(self):
         rows, meta, output = self.extract("--mode", "evolution", "--from-round", "132", "--to-round", "132", "--context", "0")
-        self.assertEqual({row["record_id"] for row in rows}, {"evo-ref", "legacy-evo", "evo-definition"})
+        self.assertEqual({row["message"] for row in rows}, {"evo-ref", "legacy-evo", "evo-definition"})
         self.assertEqual(meta["selected_records"], 2)
         self.assertEqual(meta["filters"]["mode"], "evolution")
         self.assertEqual(meta["session_metadata"][0]["record_id"], "session")
@@ -117,14 +117,14 @@ class ExtractionModeTests(unittest.TestCase):
 
     def test_long_context_only_uses_explicit_category(self):
         rows, meta, output = self.extract("--mode", "long-context", "--from-round", "132", "--to-round", "132", "--context", "0")
-        self.assertEqual({row["record_id"] for row in rows}, {"long-ref", "long-task-event", "long-definition"})
+        self.assertEqual({row["message"] for row in rows}, {"long-ref", "long-task-event", "long-definition"})
         self.assertEqual({row["category"] for row in rows}, {"long_context"})
         self.assertEqual(meta["missing_payloads"], [])
         self.assertIn("SECRET_LONG_CONTEXT", (output / "tasks.txt").read_text(encoding="utf-8"))
 
     def test_non_task_day_has_strict_boundaries(self):
         rows, meta, output = self.extract("--mode", "non-task", "--day", "2", "--phase", "day", "--split")
-        self.assertEqual({row["record_id"] for row in rows},
+        self.assertEqual({row["message"] for row in rows},
                          {"day-worker-start", "ordinary-response", "ordinary-feedback", "day-worker-end", "day-snapshot"})
         self.assertTrue(all(row["day"] == 2 and row["phase"] == "day" for row in rows))
         self.assertNotIn("SECRET_", (output / "issue.txt").read_text(encoding="utf-8"))
@@ -134,7 +134,7 @@ class ExtractionModeTests(unittest.TestCase):
 
     def test_non_task_night_has_strict_boundaries(self):
         rows, meta, output = self.extract("--mode", "non-task", "--day", "2", "--phase", "night")
-        self.assertEqual({row["record_id"] for row in rows},
+        self.assertEqual({row["message"] for row in rows},
                          {"night-battle-start", "night-response", "night-battle-end", "night-feedback"})
         self.assertTrue(all(row["day"] == 2 and row["phase"] == "night" for row in rows))
         self.assertEqual(meta["selected_records"], 4)
@@ -149,7 +149,7 @@ class ExtractionModeTests(unittest.TestCase):
     def test_task_id_stays_strict_with_neighbor_context(self):
         rows, _, _ = self.extract("--mode", "evolution", "--task-id", "E", "--day", "2", "--phase", "day",
                                   "--from-round", "132", "--to-round", "132")
-        self.assertEqual({row["record_id"] for row in rows}, {"evo-ref", "legacy-evo", "evo-definition"})
+        self.assertEqual({row["message"] for row in rows}, {"evo-ref", "legacy-evo", "evo-definition"})
 
     def test_empty_selection_does_not_create_output(self):
         result = self.invoke("--mode", "evolution", "--day", "3", "--phase", "night", "--out", "empty", expected_code=1)
