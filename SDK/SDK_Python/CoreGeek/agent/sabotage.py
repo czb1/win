@@ -15,9 +15,12 @@ class ImpMemory:
     progress: dict = field(default_factory=dict)
     positions: dict = field(default_factory=dict)
     enemies: dict = field(default_factory=dict)
+    gate_states: dict = field(default_factory=dict)
 
     def observe(self, turn, mem):
         alive = {h.id for h in turn.imps}
+        self.gate_states = {uid: state for uid, state in self.gate_states.items()
+                            if uid in alive and state['day'] == turn.day}
         self.targets = {uid: target for uid, target in self.targets.items()
                         if uid in alive and turn.enemy_mine(target[0])
                         and turn.zones.get(target[0]) == target[1]}

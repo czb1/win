@@ -5,7 +5,7 @@
   "wall_stones": 1,
   "weapon_cells": [],
   "wall_cells": [],
-  "loadout": ["rocket", "rocket", "gatling"],
+  "loadout": ["rocket", "rocket", "rocket"],
   "projectile_origin": "weapon",
   "projectile_characters_block": true,
   "stone_batch": 10,

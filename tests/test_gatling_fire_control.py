@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from test_agent import payload, unit
+from test_mixed_battery import mixed_config
 from test_logging_system import capture, records
 from agent.brain import Agent
 from agent.combat import (operator_posts, select_targets, yield_gate_operators,
@@ -28,7 +29,7 @@ def frames():
 
 
 def setup(data, **options):
-    cfg = Config(llm_enabled=False, **options)
+    cfg = mixed_config(llm_enabled=False, **options)
     turn = Turn(data, cfg)
     nav = Navigator(turn, monotonic() + 3)
     sites, walls = layout(turn, cfg)
@@ -144,7 +145,7 @@ class OperatorPostTests(unittest.TestCase):
         self.assertIs(turn.blocked, original)
 
     def test_real_match_repositions_in_three_bounded_requests_then_fires(self):
-        agent = Agent(Config(llm_enabled=False))
+        agent = Agent(mixed_config(llm_enabled=False))
         for index, data in enumerate(frames()):
             hero = next(u for u in data['teamOur']['roles'] if u['id'] == 20012)
             if index:
@@ -166,7 +167,7 @@ class OperatorPostTests(unittest.TestCase):
         for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
             with self.subTest(flip_x=flip_x, flip_y=flip_y):
                 data = mirror(frames()[0], flip_x, flip_y)
-                agent = Agent(Config(llm_enabled=False))
+                agent = Agent(mixed_config(llm_enabled=False))
                 result = agent.decide(data)['roleCommandMap']
                 self.assertEqual(result['20012']['action'], 'move')
                 memory = next(iter(agent.sessions.values()))
@@ -175,7 +176,7 @@ class OperatorPostTests(unittest.TestCase):
                 self.assertEqual(memory.return_posts[20012], gate)
 
     def test_nonclustered_explicit_layout_also_repositions(self):
-        agent = Agent(Config(llm_enabled=False, layout_mode='explicit',
+        agent = Agent(mixed_config(llm_enabled=False, layout_mode='explicit',
                              weapon_cells=[[32, 8], [35, 8], [32, 10]], wall_cells=[]))
         result = agent.decide(frames()[0])['roleCommandMap']
         self.assertEqual(result['20012']['action'], 'move')
@@ -184,7 +185,7 @@ class OperatorPostTests(unittest.TestCase):
 
     def test_diagnostics_explain_repositioning_with_original_blockers(self):
         with capture() as stream:
-            Agent(Config(llm_enabled=False)).decide(frames()[0])
+            Agent(mixed_config(llm_enabled=False)).decide(frames()[0])
         decision = next(r['data'] for r in records(stream)
                         if r['event'] == 'unit_decision' and r['unit_id'] == 20020)
         self.assertEqual(decision['reason'], 'operator_moving')
@@ -198,7 +199,7 @@ class OperatorPostTests(unittest.TestCase):
         data = frames()[0]
         data['teamOur']['roles'] = [u for u in data['teamOur']['roles'] if u['roleType'] not in ('worker', 'pioneer')]
         with capture() as stream:
-            Agent(Config(llm_enabled=False)).decide(data)
+            Agent(mixed_config(llm_enabled=False)).decide(data)
         decision = next(r['data'] for r in records(stream)
                         if r['event'] == 'unit_decision' and r['unit_id'] == 20020)
         self.assertEqual(decision['reason'], 'no_operator')
@@ -239,7 +240,7 @@ class GateAndLayoutTests(unittest.TestCase):
         self.assertEqual(posts, {})
 
     def test_gate_passage_keeps_operator_identity_when_wave_clears(self):
-        agent = Agent(Config(llm_enabled=False))
+        agent = Agent(mixed_config(llm_enabled=False))
         agent.decide(frames()[0])
         memory = next(iter(agent.sessions.values()))
         memory.mine_targets[20010] = (38, 15)

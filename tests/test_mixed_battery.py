@@ -12,6 +12,10 @@ from agent.model import Turn, pos
 from agent.navigation import layout
 
 
+def mixed_config(**options):
+    return Config(loadout=['rocket', 'rocket', 'gatling'], **options)
+
+
 def mixed_case(round_no=80, walls=False):
     data = payload(round_no, [unit(13, 'station', 5, 11, health=1500),
         unit(1, 'worker', 4, 9, health=500), unit(2, 'worker', 11, 2, health=500),
@@ -25,7 +29,7 @@ def mixed_case(round_no=80, walls=False):
     data['robot']['roles'] = [unit(90, 'largeRobot', 2, 10, health=500,
                                   attackRange=1, targetTeam='challenger')]
     if walls:
-        sites = layout(Turn(data, Config()), Config())[1]
+        sites = layout(Turn(data, mixed_config()), mixed_config())[1]
         data['teamOur']['roles'] += [unit(100+i, 'wall', *p) for i, p in enumerate(sites)]
     return data
 
@@ -36,8 +40,8 @@ def enemy_walls(data, count=6):
 
 
 class MixedBatteryTests(unittest.TestCase):
-    def test_both_default_configurations_build_two_rockets_and_one_gatling(self):
-        for cfg in (Config(), Config.load(ROOT / 'config/default.json')):
+    def test_explicit_mixed_configuration_builds_two_rockets_and_one_gatling(self):
+        for cfg in (mixed_config(),):
             self.assertEqual(cfg.loadout, ['rocket', 'rocket', 'gatling'])
             data = payload(10, [unit(13, 'station', 5, 11), unit(1, 'worker', 4, 11)])
             sites = layout(Turn(data, cfg), cfg)[0]
@@ -56,7 +60,7 @@ class MixedBatteryTests(unittest.TestCase):
     def test_pioneer_and_worker_fire_separate_weapons_on_every_night(self):
         for round_no in (80, 210, 340, 470):
             data = mixed_case(round_no)
-            commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
+            commands = Agent(mixed_config(llm_enabled=False)).decide(data)['roleCommandMap']
             self.assertEqual(commands['22']['controllerId'], '1')
             rockets = [c for uid, c in commands.items() if uid in ('20', '21')]
             self.assertEqual(len(rockets), 1)
@@ -67,7 +71,7 @@ class MixedBatteryTests(unittest.TestCase):
                 self.assertEqual(commands['2']['action'], 'collect')
 
     def test_two_rocket_rotation_preserves_controller_and_real_cooldown(self):
-        data, agent = mixed_case(), Agent(Config(llm_enabled=False))
+        data, agent = mixed_case(), Agent(mixed_config(llm_enabled=False))
         for offset, expected in enumerate(('20', '21', '20', '21')):
             data['roundNo'] = 80 + offset
             commands = agent.decide(data)['roleCommandMap']
@@ -89,7 +93,7 @@ class MixedBatteryTests(unittest.TestCase):
         data = mixed_case()
         data['robot']['roles'] = []
         enemy_walls(data)
-        commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
+        commands = Agent(mixed_config(llm_enabled=False)).decide(data)['roleCommandMap']
         self.assertEqual(commands['20']['controllerId'], '11')
         self.assertEqual(len(commands['20']['targetPos']), 3)
         self.assertTrue(all(p['x'] == 8 for p in commands['20']['targetPos']))
@@ -101,14 +105,14 @@ class MixedBatteryTests(unittest.TestCase):
         data = mixed_case(470, walls=True)
         data['robot']['roles'] = []
         enemy_walls(data)
-        agent = Agent(Config(llm_enabled=False))
+        agent = Agent(mixed_config(llm_enabled=False))
         commands = agent.decide(data)['roleCommandMap']
         self.assertIn(commands['1']['action'], ('move', 'collect'))
         self.assertEqual(next(iter(agent.sessions.values())).wall_watch_id, 2)
         self.assertEqual(commands['20']['controllerId'], '11')
 
     def test_worker_returns_when_enemy_reappears_after_mining_move(self):
-        data, agent = mixed_case(), Agent(Config(llm_enabled=False))
+        data, agent = mixed_case(), Agent(mixed_config(llm_enabled=False))
         self.assertEqual(agent.decide(data)['roleCommandMap']['22']['controllerId'], '1')
         robot = data['robot']['roles'][0]
         data['roundNo'] += 1
@@ -126,7 +130,7 @@ class MixedBatteryTests(unittest.TestCase):
         self.assertEqual(agent.decide(data)['roleCommandMap']['22']['controllerId'], '1')
 
     def test_dead_gatling_worker_is_replaced_without_taking_pioneer(self):
-        data, agent = mixed_case(), Agent(Config(llm_enabled=False))
+        data, agent = mixed_case(), Agent(mixed_config(llm_enabled=False))
         agent.decide(data)
         data['roundNo'] += 1
         data['teamOur']['roles'][1]['health'] = 0
@@ -136,7 +140,7 @@ class MixedBatteryTests(unittest.TestCase):
         self.assertEqual(commands['21']['controllerId'], '11')
 
     def test_healing_gatling_worker_does_not_recall_other_miner(self):
-        data, agent = mixed_case(), Agent(Config(llm_enabled=False))
+        data, agent = mixed_case(), Agent(mixed_config(llm_enabled=False))
         agent.decide(data)
         data['roundNo'] += 1
         data['teamOur']['roles'][1].update(health=50, backpack=['Medicine'])
@@ -149,7 +153,7 @@ class MixedBatteryTests(unittest.TestCase):
     def test_dead_pioneer_never_makes_gatling_worker_control_a_rocket(self):
         data = mixed_case()
         data['teamOur']['roles'][3]['health'] = 0
-        commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
+        commands = Agent(mixed_config(llm_enabled=False)).decide(data)['roleCommandMap']
         self.assertEqual(commands['22']['controllerId'], '1')
         self.assertFalse(any(uid in commands for uid in ('20', '21')))
 
@@ -158,7 +162,7 @@ class MixedBatteryTests(unittest.TestCase):
         data['teamOur']['roles'][3]['pos'] = dict(x=8, y=5)
         data['teamEnemy']['roles'] = [unit(50, 'rocket', 10, 5)]
         data['phaseTask'] = 'unfinished task'
-        agent = Agent(Config(llm_enabled=False))
+        agent = Agent(mixed_config(llm_enabled=False))
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['11']['action'], 'move')
         self.assertLess(commands['11']['targetPos'][0]['x'], 8)
@@ -177,7 +181,7 @@ class MixedBatteryTests(unittest.TestCase):
                         point['x'] = (13 if role.get('roleType') == 'station' else 14) - point['x']
                     if flip_y:
                         point['y'] = (15 if role.get('roleType') == 'station' else 14) - point['y']
-            commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
+            commands = Agent(mixed_config(llm_enabled=False)).decide(data)['roleCommandMap']
             self.assertEqual(commands['22']['controllerId'], '1')
             self.assertEqual(commands['20']['controllerId'], '11')
             self.assertNotIn('1', commands)
@@ -187,18 +191,18 @@ class MixedBatteryTests(unittest.TestCase):
         data = mixed_case()
         data['robot']['roles'] = []
         enemy_walls(data, count=1)
-        commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
+        commands = Agent(mixed_config(llm_enabled=False)).decide(data)['roleCommandMap']
         self.assertEqual(commands['20']['targetPos'], [dict(x=8, y=0)] * 3)
 
     def test_local_enemy_prevents_wall_siege(self):
         data = mixed_case()
         enemy_walls(data)
-        commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
+        commands = Agent(mixed_config(llm_enabled=False)).decide(data)['roleCommandMap']
         self.assertTrue(all(p == dict(x=2, y=10) for p in commands['20']['targetPos']))
         self.assertNotIn('1', commands)
 
     def test_day_never_fires_gatling_or_rockets(self):
-        commands = Agent(Config(llm_enabled=False)).decide(mixed_case(69))['roleCommandMap']
+        commands = Agent(mixed_config(llm_enabled=False)).decide(mixed_case(69))['roleCommandMap']
         self.assertFalse(any(c['action'] == 'attack' for c in commands.values()))
 
     def test_remote_opponent_wave_does_not_keep_gatling_worker_on_post(self):
@@ -207,7 +211,7 @@ class MixedBatteryTests(unittest.TestCase):
         data['robot']['roles'] = [unit(90, 'bossRobot', 35, 25, health=800,
                                       attackRange=3, targetTeam='defender')]
         enemy_walls(data)
-        cfg = Config(llm_enabled=False, layout_mode='explicit',
+        cfg = mixed_config(llm_enabled=False, layout_mode='explicit',
                      weapon_cells=[[4, 12], [5, 12], [4, 10]])
         commands = Agent(cfg).decide(data)['roleCommandMap']
         self.assertIn(commands['1']['action'], ('move', 'collect'))

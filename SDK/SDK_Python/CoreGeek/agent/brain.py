@@ -22,6 +22,7 @@ from .intelligence import Memory, Intelligence
 from .mining import night_mine
 from .wall_watch import select_watch, prepare_watch, repair_watch
 from .sabotage import act_imps
+from .gate_guard import prepare_gate_guard
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position
 
 LOG = logging.getLogger(__name__)
@@ -297,7 +298,10 @@ class Agent:
         gatling_pairs = []
         budget_reached = False
         robot_reserve = 0
+        gate_guard = None
         try:
+            gate_guard = prepare_gate_guard(turn, self.cfg, mem, nav, ledger, towers, walls)
+            nav.gate_guard = gate_guard
             act_imps(turn, mem.sabotage, nav, ledger)
             if not hasattr(mem, "robot_assault"):
                 mem.robot_assault = RobotAssaultMemory()
@@ -562,6 +566,11 @@ class Agent:
             budget_reached = True
             emit_event("budget_reached", {"validated_actions": len(ledger.commands)}, "runtime", level=logging.WARNING)
             LOG.warning("round=%s budget reached; returning %s validated actions", turn.round, len(ledger.commands))
+        # Workers plan first. Their failed gate routes and accepted movements
+        # decide whether the imp holds, yields, or returns to the opening.
+        nav.gate_guard = None
+        if gate_guard is not None:
+            gate_guard.finish()
         ledger.gold += robot_reserve
         save_daytime_jobs(turn, mem, ledger)
         response = ledger.response(prompt, execute)

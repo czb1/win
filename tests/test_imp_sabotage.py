@@ -397,7 +397,9 @@ class ImpIntegrationTests(unittest.TestCase):
         data["teamOur"]["roles"] += [unit(10, "worker", 3, 26), unit(11, "pioneer", 9, 22),
                                        unit(12, "worker", 3, 25), unit(20, "rocket", 3, 27)]
         data["robot"]["roles"] = [unit(90, "smallRobot", 9, 27, targetTeam="challenger", attackRange=3)]
-        cfg = Config(llm_enabled=False)
+        # This checks independent sabotage in an explicit layout with no gate.
+        # The default perimeter now recalls the imp to guard its sole opening.
+        cfg = Config(llm_enabled=False, layout_mode='explicit', weapon_cells=[[3, 27]])
         result = Agent(cfg).decide(data)["roleCommandMap"]
         original = copy.deepcopy(data)
         original["teamOur"]["roles"] = [r for r in original["teamOur"]["roles"] if r["roleType"] != "imp"]

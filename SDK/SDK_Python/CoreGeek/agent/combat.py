@@ -737,7 +737,7 @@ def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
 
 
 def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6, corridor=()):
-    """A worker fires the gatling; the pioneer rotates the ready rockets."""
+    """One pioneer rotates ready rockets; explicit mixed crews remain supported."""
     damage = {}
     protected = set(corridor) - ledger.reserved
     ledger.reserved.update(protected)
