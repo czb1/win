@@ -174,33 +174,53 @@ class BestRobotSummoningTests(unittest.TestCase):
                          {"action": "buy", "name": "BossRobotSummonOrder", "num": 1})
         self.assertEqual(ledger.gold, 0)
 
-    def test_save_gold_when_boss_is_unaffordable_without_lower_tier_fallback(self):
+    def test_buy_large_robot_when_boss_is_unaffordable(self):
         result, _, _, ledger = self.summon(self.shop_data(gold=119))
-        self.assertFalse(result)
-        self.assertFalse(ledger.commands)
-        self.assertEqual(ledger.gold, 119)
+        self.assertTrue(result)
+        self.assertEqual(ledger.commands['1'], command('buy', name='LargeRobotSummonOrder', num=1))
+        self.assertEqual(ledger.gold, 49)
 
-    def test_missing_boss_shop_listing_does_not_buy_lower_tier(self):
+    def test_all_tier_price_boundaries_and_insufficient_money(self):
+        for gold,name,price in ((120,'BossRobotSummonOrder',120),
+                                (70,'LargeRobotSummonOrder',70),
+                                (69,'MiddleRobotSummonOrder',20),
+                                (20,'MiddleRobotSummonOrder',20),
+                                (19,'SmallRobotSummonOrder',15),
+                                (15,'SmallRobotSummonOrder',15),
+                                (14,None,0)):
+            with self.subTest(gold=gold):
+                result,_,_,ledger=self.summon(self.shop_data(gold=gold))
+                if name:
+                    self.assertTrue(result)
+                    self.assertEqual(ledger.commands['1'],command('buy',name=name,num=1))
+                else:
+                    self.assertFalse(result)
+                    self.assertFalse(ledger.commands)
+                self.assertEqual(ledger.gold,gold-price)
+
+    def test_missing_boss_shop_listing_falls_back_to_large_robot(self):
         data = self.shop_data()
         data["weaponShopList"] = [r for r in data["weaponShopList"]
                                   if r["name"] != "BossRobotSummonOrder"]
         result, _, _, ledger = self.summon(data)
-        self.assertFalse(result)
-        self.assertFalse(ledger.commands)
+        self.assertTrue(result)
+        self.assertEqual(ledger.commands['1']['name'], 'LargeRobotSummonOrder')
 
     def test_critical_hero_medical_budget_precedes_boss_purchase(self):
         data = self.shop_data()
         next(r for r in data["teamOur"]["roles"] if r["id"] == 1)["health"] = 50
         data["weaponShopList"].append({"name": "Medicine", "price": 10})
         result, _, _, ledger = self.summon(data)
-        self.assertFalse(result)
-        self.assertFalse(ledger.commands)
-        self.assertEqual(ledger.gold, 120)
+        self.assertTrue(result)
+        self.assertNotIn('1', ledger.commands)
+        self.assertEqual(ledger.notes[2]['conditions']['item'], 'LargeRobotSummonOrder')
+        self.assertGreaterEqual(ledger.gold, 10)
 
     def test_purchase_respects_gold_already_reserved_by_defense(self):
         result, _, _, ledger = self.summon(self.shop_data(gold=200), gold=119)
-        self.assertFalse(result)
-        self.assertFalse(ledger.commands)
+        self.assertTrue(result)
+        self.assertEqual(ledger.commands['1']['name'], 'LargeRobotSummonOrder')
+        self.assertEqual(ledger.gold, 49)
 
     def test_use_existing_boss_before_buying_or_using_lower_tier(self):
         data = self.shop_data(backpack=["SmallRobotSummonOrder", "BossRobotSummonOrder"])
@@ -214,7 +234,7 @@ class BestRobotSummoningTests(unittest.TestCase):
 
     def test_unfinished_defense_prevents_using_owned_boss(self):
         data = self.shop_data(backpack=["BossRobotSummonOrder"])
-        next(r for r in data["teamOur"]["roles"] if r["id"] == 30)["level"] = 2
+        next(r for r in data["teamOur"]["roles"] if r["id"] == 32)["level"] = 2
         result, _, _, ledger = self.summon(data)
         self.assertFalse(result)
         self.assertFalse(ledger.commands)
@@ -499,3 +519,4 @@ class RobotCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

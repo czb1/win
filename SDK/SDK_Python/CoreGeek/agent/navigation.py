@@ -29,15 +29,16 @@ class Navigator:
         if outcome not in ("route_found", "at_goal"):
             record["last_failure"] = {"reason": outcome, **facts}
 
-    def distances_to(self, targets, vacated=(), reserved=()):
+    def distances_to(self, targets, vacated=(), reserved=(), exact=False):
         """One reverse BFS serves every mine; no BFS per deposit endpoint."""
         check_time(self.deadline)
         targets = frozenset(targets)
         blocked = frozenset((self.turn.blocked - set(vacated)) | set(reserved))
-        key = targets, blocked
+        key = targets, blocked, exact
         if key not in self._distances:
-            goals = {p for t in targets for p in neighbours(t)
-                     if self.turn.inside(p) and p not in blocked and p not in targets}
+            goals = ({p for p in targets if self.turn.inside(p) and p not in blocked} if exact else
+                     {p for t in targets for p in neighbours(t)
+                      if self.turn.inside(p) and p not in blocked and p not in targets})
             distances = dict.fromkeys(goals, 0)
             queue = deque(sorted(goals))
             visited = 0
@@ -182,3 +183,4 @@ def wall_priority(turn, cfg, sites, index, hits=None):
     # first, while neighbouring expansion keeps its normal front/breach order.
     urgent = turn.day >= 2 and x != front_x and hits.get(target, 0)
     return (int(not urgent), int(x != front_x), int(not breach), index)
+

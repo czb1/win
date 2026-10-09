@@ -8,7 +8,7 @@ from . import diagnostics
 from .config import Config
 from .daytime import finish_daytime_work, park_idle_pioneer
 from .worker_jobs import resume_daytime_jobs, save_daytime_jobs
-from .model import Turn, distance
+from .model import Turn, distance, SUMMON_ORDERS
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger, command
 from .combat import (assignments, fixed_gatling_crew, operator_posts, return_plan, defend, emergency_items,
@@ -24,15 +24,15 @@ from .wall_watch import select_watch, prepare_watch, repair_watch
 from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position
+from .spending import defenses_ready, plan_day_spending, robot_purchase_plan
 
 LOG = logging.getLogger(__name__)
 
-BOSS_SUMMON_ORDER = "BossRobotSummonOrder"
 DAILY_SUMMON_LIMIT = 10
 
 
 def defenses_maxed(turn, cfg, towers, walls):
-    """Only observed complete level-three defenses unlock offensive spending."""
+    """Report strict observed completion independently of surplus readiness."""
     built_walls = [unit for unit in turn.ours if unit.kind == "wall"]
     return bool(turn.station and built_walls and turn.weapons
                 and set(walls) <= {wall.pos for wall in built_walls}
@@ -70,21 +70,26 @@ def _robot_medical_gold(turn, ledger):
     return sum(medicine for hero in turn.heroes
                if hero.health <= 110 and not hero.inventory["Medicine"]
                and not (ledger.commands.get(str(hero.id), {}).get("action") in ("buy", "use")
-                        and ledger.commands[str(hero.id)].get("name") == "Medicine"))
+                        and ledger.commands[str(hero.id)].get("name") == "Medicine")
+               and not (ledger.work_jobs.get(hero.id, {}).get('kind') == 'buy'
+                        and ledger.work_jobs[hero.id].get('name') == 'Medicine'))
 
 
-def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=()):
-    """Prepare BOSS orders in daylight without taking a defence/task action."""
+def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), reserve=0,
+                      item_only=None, shop_only=None):
+    """Use carried orders or prepare the strongest affordable surplus order."""
     state = observe_robot_summons(turn, mem)
-    if (not turn.is_day or not defenses_maxed(turn, cfg, towers, walls)
+    if (not turn.is_day or not defenses_ready(turn, cfg, towers, walls, mem, ledger)
             or state["count"] >= DAILY_SUMMON_LIMIT
             or state["pending"] and state["pending"][0] == turn.round):
+        ledger.spending_plan['robot_blocked'] = 'defense_stock_phase_or_daily_limit'
         return False
     ledger.summon_pending_positions = state["positions"].copy()
     ledger.summon_daily_count = state["count"]
     position = choose_summon_position(turn, ledger, nav.deadline)
     ledger.robot_summon_target = position
     if position is None:
+        ledger.spending_plan['robot_blocked'] = 'no_legal_summon_position'
         return False
     excluded = set(excluded)
     if turn.phase_task and turn.pioneer:
@@ -93,74 +98,59 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=()):
             if hero.id not in ledger.used and hero.id not in excluded
             and hero.health > 110
             and not (hero.health <= 165 and hero.inventory["Medicine"])]
-    carriers = sorted((hero for hero in free if hero.inventory[BOSS_SUMMON_ORDER]),
-                      key=lambda hero: (hero.kind != "worker", hero.id))
-    for hero in carriers:
-        if ledger.add(hero.id, command("use", position, name=BOSS_SUMMON_ORDER)):
+    carriers = sorted(((-rank, hero.kind != 'worker', hero.id, hero, name)
+                       for hero in free for rank, name in enumerate(SUMMON_ORDERS)
+                       if hero.inventory[name]), key=lambda row: row[:3])
+    for _, _, _, hero, name in carriers:
+        if ledger.add(hero.id, command("use", position, name=name)):
             state["count"] += 1
             state["positions"].add(position)
             state["pending"] = turn.round, hero.id, position
             state["buyer"] = None
-            ledger.explain(hero.id, "summon_highest_robot", summon_position=position,
+            ledger.explain(hero.id, "summon_highest_robot", item=name, summon_position=position,
                            daily_reserved_uses=state["count"], daily_limit=DAILY_SUMMON_LIMIT)
             return True
-    price = turn.shop.get(BOSS_SUMMON_ORDER)
-    held = sum(hero.inventory[BOSS_SUMMON_ORDER] for hero in turn.heroes)
-    if (price is None or price < 0
-            or max(0, ledger.gold - _robot_medical_gold(turn, ledger)) < price
-            or held >= DAILY_SUMMON_LIMIT - state["count"]
-            or BOSS_SUMMON_ORDER in ledger.purchases):
+    medical_covered = min(reserve, ledger.spending_plan.get('medical_gold_reserved', 0))
+    available = max(0, ledger.gold - reserve
+                    - max(0, _robot_medical_gold(turn, ledger) - medical_covered))
+    names = [name for name in reversed(SUMMON_ORDERS)
+             if (item_only is None or name == item_only)
+             and name in turn.shop and 0 <= turn.shop[name] <= available]
+    if not names:
+        ledger.spending_plan['robot_blocked'] = 'insufficient_surplus'
         return False
-    shops = [point for point, kind in turn.zones.items() if kind == "weaponShop"]
+    held = sum(hero.inventory[item] for hero in turn.heroes for item in SUMMON_ORDERS)
+    if held or any(item in ledger.purchases for item in SUMMON_ORDERS):
+        ledger.spending_plan['robot_blocked'] = 'carried_or_planned_order'
+        return False
     buyers = []
-    for hero in free:
-        if (not hero.space or hero.inventory[BOSS_SUMMON_ORDER]
-                or (hero.id, BOSS_SUMMON_ORDER) in mem.buy_failures):
-            continue
-        route = nav.approach(hero, shops, ledger.reserved)
-        if route is None or route[0] + 2 > turn.day_left:
-            continue
-        # Leave enough time to buy, use the order and reach this actor's
-        # assigned post. A global summon position needs no delivery trip.
-        if hero.id in ledger.operator_posts:
-            back = via(nav, hero, [shops, {ledger.operator_posts[hero.id]}],
-                       ledger.reserved, final_exact=True)
-            if back is None or back + 2 + cfg.return_margin > turn.day_left:
-                continue
-        buyers.append((hero.id != state["buyer"], route[0], hero.kind != "worker",
-                       hero.id, hero, route))
+    for name in names:
+        for hero in free:
+            plan = robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only)
+            if plan:
+                _, shop, route = plan
+                buyers.append((hero.id != state["buyer"], route[0], hero.kind != "worker",
+                               hero.id, hero, route, shop))
+        if buyers:
+            break
     if not buyers:
+        ledger.spending_plan['robot_blocked'] = 'no_free_buyer_or_return_deadline'
         return False
-    _, _, _, _, hero, route = min(buyers)
+    _, _, _, _, hero, route, shop = min(buyers)
+    price = turn.shop[name]
     if route[1] is None:
-        accepted = ledger.add(hero.id, command("buy", name=BOSS_SUMMON_ORDER, num=1))
+        accepted = ledger.add(hero.id, command("buy", name=name, num=1))
     else:
         accepted = ledger.add(hero.id, command("move", route[1]))
         if accepted:
             ledger.gold -= price
-            ledger.purchases.add(BOSS_SUMMON_ORDER)
+            ledger.purchases.add(name)
+            ledger.remember_work(hero, 'robot_buy', shop, name=name, quantity=1)
     if accepted:
         state["buyer"] = hero.id
-        ledger.explain(hero.id, "prepare_highest_robot", item=BOSS_SUMMON_ORDER,
+        ledger.explain(hero.id, "prepare_highest_robot", item=name,
                        price=price, route_steps=route[0])
     return accepted
-
-
-def reserve_robot_gold(turn, cfg, mem, ledger, towers, walls):
-    """Keep the next BOSS affordable before ordinary base/treasure purchases."""
-    state = observe_robot_summons(turn, mem)
-    price = turn.shop.get(BOSS_SUMMON_ORDER)
-    if (not turn.is_day or not defenses_maxed(turn, cfg, towers, walls)
-            or state["count"] >= DAILY_SUMMON_LIMIT or price is None or price < 0
-            or getattr(ledger, "robot_summon_target", None) is None
-            or any(hero.inventory[BOSS_SUMMON_ORDER] for hero in turn.heroes)
-            or BOSS_SUMMON_ORDER in ledger.purchases):
-        return 0
-    # Repair couriers and injured heroes retain emergency purchase funds.
-    medical_reserve = _robot_medical_gold(turn, ledger)
-    amount = min(price, max(0, ledger.gold - medical_reserve))
-    ledger.gold -= amount
-    return amount
 
 
 def battle_diagnostics(turn, mem, pairs, response):
@@ -297,7 +287,6 @@ class Agent:
         shared = None
         gatling_pairs = []
         budget_reached = False
-        robot_reserve = 0
         gate_guard = None
         try:
             gate_guard = prepare_gate_guard(turn, self.cfg, mem, nav, ledger, towers, walls)
@@ -523,9 +512,10 @@ class Agent:
                     returning.add(watcher.id)
                 ledger.gold -= min(watch_gold, ledger.gold)
                 resume_daytime_jobs(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
+                priority_actors, priority_gold = plan_day_spending(
+                    turn, self.cfg, mem, nav, ledger, towers, returning)
                 summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
-                                  excluded=returning)
-                robot_reserve = reserve_robot_gold(turn, self.cfg, mem, ledger, towers, walls)
+                                  excluded=returning | priority_actors, reserve=priority_gold)
                 dusk_resources(turn, self.cfg, mem, nav, ledger, towers)
                 for hero, tower in pairs:
                     if hero.id in returning and hero.id not in ledger.used:
@@ -558,6 +548,9 @@ class Agent:
                         if h.id not in ledger.used:
                             park_idle_pioneer(turn, self.cfg, mem, nav, ledger, h)
                 finish_daytime_work(turn, self.cfg, mem, nav, ledger, returning)
+                emit_event('spending_plan', dict(ledger.spending_plan,
+                           gold_after_reservations=ledger.gold,
+                           purchased_items=sorted(ledger.purchases), supply_reports=ledger.supply_reports), 'economy')
                 if not prompt and not execute:
                     prompt = intel.news()
                     if not prompt:
@@ -572,7 +565,6 @@ class Agent:
         if gate_guard is not None:
             gate_guard.finish()
         catch_nearby_imp(turn, mem, ledger)
-        ledger.gold += robot_reserve
         save_daytime_jobs(turn, mem, ledger)
         response = ledger.response(prompt, execute)
         finish_weapon_reports(turn, ledger)
@@ -612,3 +604,4 @@ class Agent:
         LOG.debug("round=%s day=%s phase=%s commands=%s latency_ms=%.2f", turn.round, turn.day,
                  "day" if turn.is_day else "night", len(ledger.commands), (monotonic()-started)*1000)
         return json.loads(json.dumps(response))
+
