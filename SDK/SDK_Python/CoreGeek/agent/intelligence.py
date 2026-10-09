@@ -66,9 +66,42 @@ def tail_excerpt(text, limit=SANDBOX_ERROR_EXCERPT):
     return text if len(text) <= limit else "[tail omitted]" + text[-limit:]
 
 
+def python_identity(code, parser=None, inputs=None):
+    try:
+        code = ast.dump(ast.parse(code), include_attributes=False)
+    except (SyntaxError, ValueError):
+        pass
+    return digest_text(json.dumps([code, parser, inputs], sort_keys=True, ensure_ascii=False))
+
+
+def compact_attempt(attempt):
+    """Prompt view only; full source/output remain in trace and task memory."""
+    if (attempt.get('status') == 'ok' and command_output(attempt.get('sandbox', '')).startswith(
+            ('[exitCode:0]\nDOCUMENT', '[exitCode:0]\nRESOLVED_DOCUMENT'))):
+        return {'status': 'ok', 'result': '已保存到 documents/inputPreview'}
+    result = {k: v for k, v in attempt.items() if k not in ('http', 'sandbox')}
+    if attempt.get('http', {}).get('logs'):
+        result['result'] = '执行和解析证据见 logDiagnostics；只修失败解析函数，保留聚合代码。'
+    else:
+        return dict(attempt)
+    return result
+
+
 def sandbox_failure_fingerprint(text, report=None):
     """Group semantically identical runtime failures across slightly different code."""
     text = str(text)
+    errors = (report or {}).get('logs', {}).get('errors', [])
+    if errors:
+        return digest_text(json.dumps({'stage': 'logs', 'errors': errors}, sort_keys=True, ensure_ascii=False))
+    for line in text.splitlines():
+        if line.startswith('TRANSFORM_DIAGNOSTIC {'):
+            try:
+                detail = json.loads(line.partition(' ')[2])
+                return digest_text(json.dumps({'stage': detail.get('stage'),
+                    'differences': [f.get('difference') for f in detail.get('failures', [])],
+                    'checker': detail.get('checker_feedback')}, sort_keys=True, ensure_ascii=False))
+            except ValueError:
+                pass
     matches = re.findall(r"(?m)^([A-Za-z_][\w.]*(?:Error|Exception)):\s*(.+)$", text)
     if matches:
         kind, message = matches[-1]
@@ -259,6 +292,7 @@ class Memory:
     task_feedback: str = ""
     task_failures: int = 0
     proposal_counts: dict = field(default_factory=dict)
+    failed_python: set = field(default_factory=set)
     failure_fingerprints: dict = field(default_factory=dict)
     output_fingerprints: dict = field(default_factory=dict)
     diagnosed_outputs: set = field(default_factory=set)
@@ -564,6 +598,7 @@ class Memory:
             self.history.clear()
             self.task_failures = 0
             self.proposal_counts.clear()
+            self.failed_python.clear()
             self.failure_fingerprints.clear()
             self.output_fingerprints.clear()
             self.diagnosed_outputs.clear()
@@ -622,7 +657,7 @@ class Memory:
                 if coverage.get('total', 0) > coverage.get('matched', 0):
                     report['logs']['errors'].append({'kind': 'unmatched_lines', 'detail': coverage.get('unmatched', [])})
                 self.log_diagnostics = {'logs': report['logs'], 'systems': report.get('parse_systems', {})}
-                if self.running_parser_id and any(e.get('kind') in ('parser', 'caught_parser_error', 'unmatched_lines') for e in report['logs'].get('errors', [])):
+                if self.running_parser_id and any(e.get('kind') in ('parser', 'caught_parser_error', 'unmatched_lines', 'parser_contract') for e in report['logs'].get('errors', [])):
                     for skill in self.skills:
                         if skill['id'] == self.running_parser_id:
                             skill['disabled'] = True
@@ -660,6 +695,8 @@ class Memory:
                 if report.get("json_shapes"):
                     self.last_attempt["jsonShapes"] = report["json_shapes"]
             if status != "ok":
+                if status == 'input_failed' or (tool.get('kind') == 'transform' and 'TRANSFORM_DIAGNOSTIC {' in raw):
+                    self.failed_python.add(python_identity(self.running_python, self.running_parser, self.inputs))
                 fingerprint = sandbox_failure_fingerprint(raw, report)
                 repeats = self.failure_fingerprints.get(fingerprint, 0) + 1
                 self.failure_fingerprints[fingerprint] = repeats
@@ -678,7 +715,9 @@ class Memory:
                 if tool.get('kind') in ('discover', 'read', 'inspect'):
                     self.inputs = input_context(body) or self.inputs
                 if not tool:
-                    self.parser_candidate = self.running_parser or parser_method(self.running_python, report.get('logs', {}).get('parsers'))
+                    self.parser_candidate = self.running_parser or parser_method(self.running_python, report.get('logs', {}).get('parsers'), self.log_diagnostics)
+                    if self.contract.get('input_kind') == 'logs' and not self.parser_candidate:
+                        LOG.info('round=%s task_parser_unavailable=%s', turn.round, self.log_diagnostics.get('parser_unavailable'))
                     observed_answer = answer
                     if report.get('parse_lines', {}).get('matched', 0):
                         self.input_blocked = False
@@ -753,7 +792,11 @@ class Memory:
                 self.fail_skill("execution_failed")
                 shapes = self.last_attempt.get("jsonShapes") or []
                 repeats = self.last_attempt.get("failureRepeatCount", 0)
-                if report.get("http_successes", 0) and shapes:
+                if status == 'input_failed' and report.get('logs'):
+                    self.reject('解析校验失败：' + json.dumps(report['logs'].get('errors', []), ensure_ascii=False)[:1800]
+                                + '。只修失败的解析函数，保留聚合逻辑。正常行也返回 {system,timestamp,is_fault:false}；'
+                                  '故障行标记true，None只表示未知格式；禁止吞掉时间解析异常。')
+                elif report.get("http_successes", 0) and shapes:
                     if repeats >= 2:
                         self.reject("同类解析失败已重复；HTTP 已成功且 lastAttempt.jsonShapes 已记录真实 JSON 结构。"
                                     "禁止继续猜 data/results 包装或重复同类大脚本；按结构定位记录列表并增加类型守卫。")
@@ -907,6 +950,10 @@ class Memory:
                     self.reject('统计答案必须与本题成功沙盒结果一致；禁止改数字。请修复解析/聚合后调用 task_result(result)。')
                     return
                 proposal = "answer:" + answer
+            learned = self.reusable_parser() if has_python and not self.transform_config() else None
+            if has_python and python_identity(code, learned.get('parser') if learned else None, self.inputs) in self.failed_python:
+                self.reject('当前任务同一AST代码已验证失败，不再执行；依据具体诊断修改失败规则或解析返回结构，保留已通过部分。')
+                return
             signature = hashlib.sha256(proposal.encode()).hexdigest()
             attempts = self.proposal_counts.get(signature, 0) + 1
             self.proposal_counts[signature] = attempts
@@ -1017,6 +1064,13 @@ class Memory:
 
     def same_log_format(self):
         text = '\n'.join(d.get('output', '') for d in self.documents)
+        definitions = re.findall(r'(?:故障|异常|失败)(?:信号)?(?:定义|判定|规则|标记)[^\n]*(?:\n(?!\s*#|\s*$)[^\n]+)*', text)
+        if definitions:
+            saved = [skill.get('rules', '') for skill in self.skills
+                     if skill.get('family') == self.contract.get('family')
+                     and compatible(skill, self.task_point, self.contract, for_hint=True)]
+            if not saved or any(rule.strip() not in saved[-1] for rule in definitions):
+                return False  # An explicit new definition supersedes historical parser code.
         return self.contract.get('input_kind') == 'logs' and any(
             phrase in text for phrase in ('完全相同', '格式与上一题相同', '格式与前两题', '复用解析', '复用你的解析'))
 
@@ -1204,11 +1258,7 @@ class Intelligence:
         # lastAttempt pins the code/output pair; avoid duplicating it in history.
         history = [{k: excerpt(str(v), 1800) for k, v in item.items() if k not in ("python", "sandbox")}
                    for item in list(self.mem.history)[-2:]]
-        attempt = self.mem.last_attempt
-        if (self.mem.documents and attempt.get("status") == "ok"
-                and attempt.get("sandbox", "").startswith(
-                    ("[exitCode:0]\nDOCUMENT", "[exitCode:0]\nRESOLVED_DOCUMENT"))):
-            attempt = {"status": "ok", "result": "已保存到 documents"}
+        attempt = compact_attempt(self.mem.last_attempt)
         context = {"task": excerpt(self.turn.phase_task, 32000), "remainingRounds": remaining,
                    "history": history, "lastErrors": self.mem.task_feedback[:2000],
                    "lastAttempt": attempt,
@@ -1265,13 +1315,15 @@ class Intelligence:
                        "还需查询：第一行 PYTHON，第二行起写完整Python3代码，不用JSON转义代码。\n")
         log_guidance = ""
         if self.mem.contract.get('input_kind') == 'logs' and remaining > 2:
-            step = ("根据 logDiagnostics/submissionFeedback 定点修正故障筛选或事件合并；不要改算出的数字。"
+            step = ("只修 logDiagnostics 指出的解析函数：正常行也返回结构化记录，is_fault=false；保留聚合逻辑。"
+                    if self.mem.input_blocked else "根据 logDiagnostics/submissionFeedback 定点修正故障筛选或事件合并；不要改算出的数字。"
                     if self.mem.submission_feedback else "按已验证故障定义解析当前文件，再做本题聚合。")
             formats = "第一行必须写 PYTHON，后面只写必要代码，最后调用 task_result(result)；若只能 ANSWER，必须逐值照抄本题沙盒计算结果。\n"
             log_guidance = ("日志任务：task_result(result)由程序提供，自动输出最终协议；无需自己打印标记。\n"
-                            "verifiedParsingRules为前题成功后保存的定义；不得自行增加/遗漏故障关键词。\n"
-                            "同格式且有learnedSkills解析器时，同名函数由框架复用；用当前路径调用原函数，或task_parse(system,path)。"
-                            "parse_line返回每条记录(系统,时间,是否故障,模块)；parse_*_log保持保存函数原返回结构。\n"
+                            "verifiedParsingRules为同格式前题保存的定义；currentParsingRules明确更新时以本题为准，不得自行增加/遗漏故障关键词。\n"
+                            "同格式且有learnedSkills解析器时，同名函数由框架复用；用当前路径调用原函数，或task_parse(system,path,**当前参数)。日期等参数从本题读取。"
+                            "parse_line对正常行和故障行都返回字典：system字符串、timestamp解析后的时间、is_fault布尔值、module模块；正常行is_fault=False。"
+                            "仅无法识别的行返回None；禁止用None/False过滤正常行，禁止只返回时间。兼容(系统,时间,是否故障,模块)；parse_*_log保持保存函数原返回结构。\n"
                             "用task_events(system,故障时间列表,gap_minutes=题目阈值)获得(start,end)事件列表，程序自动排序、按相邻间隔合并并记录各系统事件数。\n"
                             "文件不存在/时间解析失败必须修正，不能except后pass；不要输出调试文字，只调用task_result(result)。\n")
         prompt = (log_guidance + "本轮只做一步：" + step + "\n" + formats
@@ -1313,6 +1365,9 @@ class Intelligence:
             # Small models need the current parsing/aggregation evidence, not unrelated HTTP/repair formats.
             log_context = dict(context)
             log_context.pop('previousSolutions', None)
+            log_context.pop('exploration', None)
+            log_context['parserAvailable'] = bool(self.mem.reusable_parser())
+            log_context['learnedSkills'] = [{k: v for k, v in h.items() if k in ('id', 'parser', 'family')} for h in hints]
             prompt = (log_guidance + "本轮只做一步：" + step + "\n" + formats
                       + "所有代码在官方沙盒执行，15秒内结束；使用当前inputPreview文件路径。\n"
                       "输入样例不能代替故障定义；缺少定义时检查已保存规则和当前文档，不得猜关键词。\n"
@@ -1333,8 +1388,10 @@ class Intelligence:
                       "按完整样例推断规则，逐项检查过滤、排序、相同键顺序、分组及输出字段。保留排序字段到最后再裁剪。\n"
                       "样例有next_case且剩余回合>4时，可单独输出READ 样例路径 next_case（此处偏移为样例编号），按NEXT_CASE翻页。\n"
                       "优先修复lastAttempt的具体反例；旧方法只能参考，必须通过当前全部样例。\n"
+                      "本轮唯一动作：根据difference/record_evidence修改一个有证据支持的规则，保留已通过逻辑。\n"
+                      "样例通过不代表规则唯一；checker失败时比较expected_kept/dropped与input_summary的边界，检查等值排除是否误代范围条件。字段和阈值必须来自题目证据，不按差额改答案。无法关联记录时不得猜测过滤条件。\n"
                       "上下文：" + json.dumps({'documents': self.mem.documents, 'inputPreview': self.mem.inputs,
-                          'lastAttempt': self.mem.last_attempt, 'lastErrors': self.mem.task_feedback,
+                          'lastAttempt': attempt, 'lastErrors': self.mem.task_feedback,
                           'rejections': [item['error'] for item in list(self.mem.history)[-3:] if 'error' in item],
                           'remainingRounds': remaining, 'verifiedMethods': methods}, ensure_ascii=False))
         LOG.info("round=%s task_request task_started=%s point=%s remaining=%s timeout=%s "

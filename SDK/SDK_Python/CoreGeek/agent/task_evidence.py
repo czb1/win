@@ -75,15 +75,24 @@ def evidence_matches(answer, output, contract):
 
 
 def parsing_rules(documents):
-    """Retain explicit rule lines, not record samples or current file paths."""
-    lines = []
+    """Keep complete rule paragraphs, including adjacent definitions without keywords."""
+    blocks, size = [], 0
     for document in documents:
-        for line in document.get('output', '').splitlines():
-            if (len(line) < 350 and not re.search(r'/tmp/|https?://|\d{4}-\d\d-\d\d', line)
-                    and re.search(r'故障|失败|ERROR|5xx|OOM|格式|解析', line)
-                    and line not in lines):
-                lines.append(line)
-    return '\n'.join(lines)[:2000]
+        text = document.get('output', '').partition('\nTASK_INPUTS ')[0]
+        text = re.sub(r'```.*?```', '', text, flags=re.S)
+        for block in re.split(r'\n\s*\n', text):
+            block = '\n'.join(line for line in block.splitlines()
+                              if not re.search(r'/tmp/|https?://|\d{4}-\d\d-\d\d', line))
+            if not re.search(r'故障|失败|ERROR|5xx|OOM|格式|解析', block):
+                continue
+            if block in blocks:
+                continue
+            if size + len(block) > 6000:
+                blocks.append('[规则未完整保存；需读取原文，不得猜测缺失定义]')
+                break
+            blocks.append(block)
+            size += len(block)
+    return '\n\n'.join(blocks)
 
 
 # Injected only for log tasks. No model code or local task file runs on the host.
@@ -174,17 +183,34 @@ def audited_function(function):
                       name[6:-5] if name != 'parse_line' else
                       str(args[0] if len(args) > 1 else kwargs.get('system', 'unknown')))[:80]
             systems = report.setdefault('parse_systems', {})
-            counts = systems.setdefault(system, {'total': 0, 'matched': 0, 'failures': 0, 'unmatched': []})
+            counts = systems.setdefault(system, {'total': 0, 'matched': 0, 'failures': 0,
+                                                  'normal': 0, 'invalid': 0, 'unmatched': []})
+            coverage = report.setdefault('parse_lines', {'total': 0, 'matched': 0, 'unmatched': []})
             counts['total'] += 1
-            if value is not None and value is not False:
+            coverage['total'] += 1
+            valid = (isinstance(value, dict) and isinstance(value.get('system'), str)
+                     and value.get('timestamp') is not None and type(value.get('is_fault')) is bool)
+            legacy = (isinstance(value, (tuple, list)) and len(value) >= 3
+                      and isinstance(value[0], str) and type(value[2]) is bool
+                      and (value[1] is not None or value[2] is False))
+            if valid or legacy:
+                fault = value['is_fault'] if valid else value[2]
                 counts['matched'] += 1
-                if isinstance(value, dict):
-                    counts['failures'] += value.get('is_fault') is True
-                elif isinstance(value, (tuple, list)) and len(value) >= 3:
-                    counts['failures'] += bool(value[2])
+                coverage['matched'] += 1
+                counts['failures' if fault else 'normal'] += 1
+                entry['returned_records'] += 1
             else:
-                if len(counts['unmatched']) < 3:
-                    counts['unmatched'].append(str(args[-1] if args else kwargs.get('line', ''))[:240])
+                line = str(args[-1] if args else kwargs.get('line', ''))[:240]
+                for counter in (counts, coverage):
+                    if len(counter['unmatched']) < 3:
+                        counter['unmatched'].append(line)
+                if value is not None:
+                    counts['invalid'] += 1
+                    # Report once per function, not once per input record.
+                    if not entry.get('invalid_return'):
+                        entry['invalid_return'] = type(value).__name__
+                        log_error('parser_contract', name + ': returned ' + type(value).__name__
+                                  + '; return {system, timestamp, is_fault: bool} for BOTH normal and fault lines; None only for unknown format')
         elif isinstance(value, (list, tuple)):
             entry['returned_records'] += len(value)
         return value
@@ -216,15 +242,15 @@ def audit_merge(function):
         return value
     return observed
 
-def task_parse(system, path):
+def task_parse(system, path, **parameters):
     function = learned_scope.get('parse_' + system + '_log')
     if function:
-        return function(path)
+        return function(path, **parameters)
     line_function = learned_scope.get('parse_' + system + '_line')
     function = line_function or learned_scope.get('parse_line')
     if function:
         with open(path, encoding='utf-8') as source:
             return [record for line in source if line.strip()
-                    for record in [function(line) if line_function else function(system, line)] if record is not None]
+                    for record in [function(line, **parameters) if line_function else function(system, line, **parameters)] if record is not None]
     raise ValueError('no verified parser for ' + system)
 '''

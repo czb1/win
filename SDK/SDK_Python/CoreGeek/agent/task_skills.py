@@ -29,8 +29,12 @@ def compatible(skill, point, contract, for_hint=False):
                      and skill['family'] == contract.get('family'))))
 
 
-def parser_method(code, used=None):
+def parser_method(code, used=None, diagnostics=None):
     """Retain only self-contained parsing functions, never top-level task data."""
+    def unavailable(reason):
+        if diagnostics is not None:
+            diagnostics['parser_unavailable'] = reason
+        return None
     try:
         tree = ast.parse(code)
         definitions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
@@ -38,7 +42,7 @@ def parser_method(code, used=None):
         if used is not None:
             roots = [name for name in roots if name in used]
         if not roots:
-            return None
+            return unavailable('no reusable parser function observed')
         needed, pending = {}, roots[:]
         while pending:
             name = pending.pop()
@@ -51,7 +55,7 @@ def parser_method(code, used=None):
         functions = list(needed.values())
         for function in functions:
             if function.decorator_list:
-                return None
+                return unavailable('decorated parser cannot be safely retained')
             if function.body and isinstance(function.body[0], ast.Expr) and isinstance(function.body[0].value, ast.Constant) and isinstance(function.body[0].value.value, str):
                 function.body = function.body[1:] or [ast.Pass()]
         references = {n.id for fn in functions for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
@@ -60,7 +64,7 @@ def parser_method(code, used=None):
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id in references:
                 value = ast.literal_eval(node.value)
                 if len(repr(value)) > 2000:
-                    return None
+                    return unavailable('parser constant exceeds budget')
                 constants.append(node)
         imports = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))
                    and all(name.split('.')[0] in {'re', 'datetime', 'collections', 'math', 'json', 'os', 'pathlib'}
@@ -71,15 +75,15 @@ def parser_method(code, used=None):
         if len(text) > 12000 or any(isinstance(n, ast.Constant) and isinstance(n.value, str)
                 and any(marker in n.value for marker in ('/tmp/', 'Bearer ', 'http://', 'https://'))
                 for node in nodes for n in ast.walk(node)):
-            return None
+            return unavailable('parser embeds task path, credential or exceeds size budget')
         # File parsers must receive their path, never retain a prior input name.
         for node in nodes:
             for call in ast.walk(node):
                 if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in ('open', 'Path'):
                     if not call.args or not isinstance(call.args[0], ast.Name):
-                        return None
+                        return unavailable('file parser must receive a path parameter')
                 if isinstance(call, ast.Constant) and isinstance(call.value, str) and re.search(r'\b(?:19|20)\d{2}\b|\.(?:log|json)$', call.value):
-                    return None
+                    return unavailable('parser embeds a date or filename; parameterize it')
         allowed = set(dir(builtins)) - {'eval', 'exec', '__import__'}
         allowed.update(n.name for n in functions)
         allowed.update(n.targets[0].id for n in constants)
@@ -91,11 +95,11 @@ def parser_method(code, used=None):
             table = tables.pop()
             if any(s.is_global() and s.is_referenced() and s.get_name() not in allowed
                    for s in table.get_symbols()):
-                return None
+                return unavailable('parser has unresolved global dependencies')
             tables.extend(table.get_children())
         return text
     except (SyntaxError, ValueError, TypeError):
-        return None
+        return unavailable('parser extraction failed: syntax, constant or dependency unsupported')
 
 
 def recipe_proposal(recipe, inputs, max_chars):

@@ -60,6 +60,8 @@ def task_round(value, ndigits=None):
 def track_parser(function):
     # Observe the proposed parser, without supplying guessed formats or records.
     def observed(*args, **kwargs):
+        if TASK_LOG:
+            return function(*args, **kwargs)  # LOG_AUDIT owns structural coverage.
         coverage = report.setdefault('parse_lines', {'total': 0, 'matched': 0, 'unmatched': []})
         coverage['total'] += 1
         value = function(*args, **kwargs)

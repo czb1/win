@@ -119,6 +119,77 @@ def diff(a, b, location='$'):
         return {'path': location, 'expected': a, 'actual': b}
     return None
 
+def bounded(value, limit=1800):
+    encoded = json.dumps(value, ensure_ascii=False)
+    return value if len(encoded) <= limit else {'detail': 'fragment exceeds budget', 'chars': len(encoded)}
+
+def objects(value):
+    if isinstance(value, dict):
+        yield value
+        for item in value.values():
+            yield from objects(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from objects(item)
+
+def record_evidence(records, expected, actual):
+    # Infer identity only when a unique input field survives in both projections.
+    if not isinstance(records, list) or not records or not all(isinstance(r, dict) for r in records):
+        return {'alignment': 'unavailable: input is not a nonempty record array'}
+    candidates = []
+    for key in sorted(set.intersection(*(set(r) for r in records))):
+        ids = [r[key] for r in records]
+        if not all(type(v) in (str, int) for v in ids) or len(set(ids)) != len(ids):
+            continue
+        projected = []
+        for output in (expected, actual):
+            items = [o[key] for o in objects(output) if key in o]
+            if (not items or not all(type(v) in (str, int) for v in items)
+                    or len(set(items)) != len(items) or not set(items) <= set(ids)):
+                break
+            projected.append(set(items))
+        if len(projected) == 2:
+            kept = tuple(i for i, v in enumerate(ids) if v in projected[0])
+            produced = tuple(i for i, v in enumerate(ids) if v in projected[1])
+            candidates.append((key, kept, produced))
+    if not candidates or len({(c[1], c[2]) for c in candidates}) != 1:
+        return {'alignment': 'unavailable: no unambiguous preserved unique field; do not infer a filter'}
+    key, kept, produced = candidates[0]
+    missing, extra = set(kept)-set(produced), set(produced)-set(kept)
+    return {'alignment': 'unique input field preserved in output', 'identity_field': key,
+            'missing_count': len(missing), 'extra_count': len(extra),
+            'missing_records': bounded([records[i] for i in sorted(missing)[:4]]),
+            'extra_records': bounded([records[i] for i in sorted(extra)[:4]]),
+            'expected_kept': numeric_summary([records[i] for i in kept]),
+            'expected_dropped': numeric_summary([r for i,r in enumerate(records) if i not in kept])}
+
+def numeric_summary(records):
+    result = {'count': len(records), 'numeric_fields': {}}
+    if not records or not all(isinstance(r, dict) for r in records):
+        return result
+    for key in sorted(set.intersection(*(set(r) for r in records)))[:24]:
+        values = [r[key] for r in records]
+        if all(type(v) in (int, float) for v in values):
+            values = sorted(set(values))
+            result['numeric_fields'][key] = {'min': values[0], 'max': values[-1],
+                                             'lowest': values[:4], 'highest': values[-4:]}
+    return bounded(result, 2200)
+
+def checker_fragment(value, text):
+    match = re.search(r'\$(?:(?:/[^\s/\[\]：:,]+)|(?:\[\d+\]))+', text)
+    if not match:
+        return {'path': None, 'output': bounded(value)}
+    location = match.group(0)
+    current, parent = value, value
+    try:
+        for key, index in re.findall(r'/([^/\[\]]+)|\[(\d+)\]', location[1:]):
+            parent = current
+            current = current[key] if key else current[int(index)]
+        return {'path': location, 'actual': bounded(current), 'parent': bounded(parent)}
+    except (KeyError, IndexError, TypeError, ValueError):
+        return {'path': location, 'detail': 'checker path cannot be resolved; do not guess'}
+
+
 try:
     data = read(CONFIG['cases'])
     cases = data.get('cases') if isinstance(data, dict) else data
@@ -144,13 +215,15 @@ try:
         expected = case['expected'] if 'expected' in case else case['output']
         mismatch = diff(expected, values[i])
         if mismatch and len(failures) < 3:
-            failures.append({'case': i, 'difference': mismatch, 'input': case['input'], 'expected': expected, 'actual': values[i]})
+            failures.append({'case': i, 'difference': mismatch, 'input': case['input'], 'expected': expected, 'actual': values[i],
+                             'record_evidence': record_evidence(case['input'], expected, values[i])})
     if failures:
         # Complete first mismatch pair; never dump all cases or splice JSON mid-record.
-        detail = {'case_count': len(cases), 'failures': []}
+        detail = {'stage': 'samples', 'case_count': len(cases), 'failures': []}
         for index, item in enumerate(failures):
             if index > 0 or len(json.dumps(item, ensure_ascii=False)) > 3500:
-                item = {'case': item['case'], 'difference': item['difference'], 'detail': 'large case; inspect this case separately'}
+                item = {'case': item['case'], 'difference': item['difference'], 'detail': 'large case; inspect this case separately',
+                        'record_evidence': item['record_evidence']}
             detail['failures'].append(item)
         print('TRANSFORM_DIAGNOSTIC ' + json.dumps(detail, ensure_ascii=False))
         raise SystemExit(1)
@@ -166,7 +239,14 @@ try:
     text = raw.decode(errors='replace')
     tokens = re.findall(r'^TOKEN:[ \t]*(\S+)[ \t]*$', text, re.M)
     if checked.returncode != 0 or len(raw) > 16000 or len(tokens) != 1 or re.search(r'\[FAIL\]', text):
-        print('TRANSFORM_DIAGNOSTIC samples passed; checker rejected:\n' + text[:8000])
+        print('TRANSFORM_DIAGNOSTIC ' + json.dumps({
+            'stage': 'checker', 'samples_passed': len(cases), 'checker_feedback': text[:2500],
+            'output_fragment': checker_fragment(values[-1], text),
+            'input_summary': numeric_summary(records),
+            'sample_evidence': [record_evidence(c['input'], c.get('expected', c.get('output')), values[i])
+                                for i,c in enumerate(cases[:3])],
+            'next_action': 'Public samples may admit multiple rules. Compare kept/dropped boundaries and current input; change one supported rule, never patch the answer.'
+        }, ensure_ascii=False))
         raise SystemExit(1)
     print('FINAL_ANSWER')
     print(json.dumps({'token': tokens[0]}))
