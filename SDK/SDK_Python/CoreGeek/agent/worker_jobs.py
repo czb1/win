@@ -3,6 +3,7 @@ import logging
 
 from .mining import mine, spare_mine, earn, sale_inventory, return_destination
 from .economy_plan import planned_weapons, via
+from .market import cashout_ores, preferred_stock
 
 LOG = logging.getLogger(__name__)
 
@@ -31,6 +32,13 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls):
     from .economy import buy_supply, supplies, use_inventory, build, batch_sale_ready
 
     kind, target = job['kind'], job['target']
+    if kind in ('mine', 'spare') and not job.get('want_stone'):
+        if cashout_ores(turn, cfg, mem, hero, sale_inventory(turn, mem, hero)):
+            ok = earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False)
+            return ok, 'news_cashout_or_return_deadline'
+        preferred = preferred_stock(turn, cfg, mem, ledger, hero)
+        if preferred and turn.zones.get(target) not in preferred:
+            return False, 'news_stock_replan'
     if target is not None and mem.movement.avoids(hero.id, target):
         return False, 'movement_retry_cooldown'
     if kind == 'sell':
