@@ -171,16 +171,18 @@ def finish(turn, mem, ledger, response, elapsed_ms, budget_reached=False, cached
             elif ledger.daytime_waits.get(int(uid)):
                 reason = ledger.daytime_waits[int(uid)]
             elif kind in WEAPONS:
-                reason = "cooldown" if role.get("cooldown", 0) else "no_selected_attack"
+                reason = ledger.weapon_diagnostics.get(int(uid), {}).get(
+                    "reason", "cooldown" if role.get("cooldown", 0) else "no_selected_attack")
             elif int(uid) in ledger.used:
                 reason = note.get("reason", "strategy_hold_without_command")
             else:
-                reason = "no_eligible_action"
+                reason = note.get("reason", "no_eligible_action")
             emit_event("unit_decision", {
                 "role_type": kind, "pos": role.get("pos"), "command": action,
                 "reason": reason, "selected_at": ledger.origins.get(int(uid)),
                 "conditions": note.get("conditions", {}), "weapon_operated": controllers.get(uid),
                 "planning": ledger.plans.get(int(uid), {}),
+                "targeting": ledger.weapon_diagnostics.get(int(uid), {}),
                 "navigation": navigation.diagnostics.get(int(uid), {}) if navigation else {},
                 "day_left": turn.day_left, "free_space": max(0, int(role.get("backPackCapability") or 0) - len(role.get("backpack") or [])),
                 "mine_target": mem.mine_targets.get(int(uid)), "build_target": mem.build_targets.get(int(uid)),

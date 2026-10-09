@@ -228,6 +228,7 @@ class Memory:
     gunner_id: int | None = None
     gunner_post: tuple | None = None
     gatling_operator_id: int | None = None
+    operator_yields: dict = field(default_factory=dict)
     next_gun: int = 0
     pending: tuple | None = None
     log_session: str = field(default_factory=lambda: uuid4().hex[:12])

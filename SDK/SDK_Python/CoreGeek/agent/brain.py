@@ -11,7 +11,10 @@ from .worker_jobs import resume_daytime_jobs, save_daytime_jobs
 from .model import Turn, distance
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger, command
-from .combat import assignments, operator_posts, return_plan, defend, emergency_items, shared_crew, shared_defend, clear_gunner_route
+from .combat import (assignments, operator_posts, return_plan, defend, emergency_items,
+                     shared_crew, shared_defend, clear_gunner_route, yield_gate_operators,
+                     finish_weapon_reports)
+from .projectiles import wall_gates
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .economy import reserve_treasure_gold
 from .economy_plan import via
@@ -283,6 +286,8 @@ class Agent:
                         mem.station_health - turn.station.health, turn.station.health)
         mem.station_health = turn.station.health if turn.station else None
         towers, walls = layout(turn, self.cfg)
+        if getattr(turn, "weapon_layout", None):
+            emit_event("weapon_layout", turn.weapon_layout, "decision")
         ledger = Ledger(turn, self.cfg, towers, walls)
         nav = Navigator(turn, started + self.cfg.decision_seconds, mem.movement)
         intel = Intelligence(turn, self.cfg, mem)
@@ -329,6 +334,10 @@ class Agent:
                     mem.stop_reason = "defence_threat" if danger else "night_role"
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             excluded = ({h.id} if h and hold_task else set())
+            alive = {hero.id for hero in turn.heroes}
+            mem.operator_yields = {uid: state for uid, state in mem.operator_yields.items()
+                                  if not turn.is_day and uid in alive and state["until"] >= turn.round}
+            unavailable = {uid: {state["gate"]} for uid, state in mem.operator_yields.items()}
             if pioneer_gunner and not mixed:
                 excluded.update(worker.id for worker in turn.workers)
             mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items() if uid not in excluded}
@@ -347,9 +356,15 @@ class Agent:
                             excluded={hero.id for hero in turn.heroes if hero.kind != "worker"},
                             fixed={mem.gatling_operator_id: gatling[0].id}, towers=gatling))
                     gatling_posts = operator_posts(turn, nav, gatling_pairs,
-                        walls + ([mem.gunner_post] if mem.gunner_post else []), mem.return_posts)
+                        walls + ([mem.gunner_post] if mem.gunner_post else []), mem.return_posts,
+                        unavailable=unavailable, gates=wall_gates(turn, walls),
+                        reports=ledger.operator_post_reports)
                     if gatling_pairs and not gatling_posts:
-                        gatling_pairs = []
+                        if gatling_pairs[0][0].id in mem.operator_yields:
+                            actor = gatling_pairs[0][0]
+                            gatling_posts = {actor.id: (actor.pos, 0)}
+                        else:
+                            gatling_pairs = []
                     mem.gatling_operator_id = gatling_pairs[0][0].id if gatling_pairs else None
                     pairs += gatling_pairs
                     posts.update(gatling_posts)
@@ -365,30 +380,41 @@ class Agent:
                         excluded={worker.id for worker in turn.workers} | excluded,
                         towers=sorted((w for w in turn.weapons if w.kind == "rocket"),
                                       key=lambda w: (bool(w.cooldown), w.id)))
-                    gatling_pairs = assignments(turn, nav, ledger,
-                        excluded={hero.id for hero in turn.heroes if hero.kind != "worker"},
-                        towers=[w for w in turn.weapons if w.kind == "gatling"])
+                    gatling = [w for w in turn.weapons if w.kind == "gatling"]
+                    holder = next((worker for worker in turn.workers
+                                   if worker.id == mem.gatling_operator_id), None)
+                    gatling_pairs = ([(holder, gatling[0])] if holder and holder.id in ledger.used else
+                        assignments(turn, nav, ledger,
+                            excluded={hero.id for hero in turn.heroes if hero.kind != "worker"},
+                            fixed={mem.gatling_operator_id: gatling[0].id}, towers=gatling))
+                    mem.gatling_operator_id = gatling_pairs[0][0].id if gatling_pairs else None
                     pairs += gatling_pairs
                 else:
                     pairs = assignments(turn, nav, ledger, excluded=excluded,
                                         fixed=mem.return_targets if turn.is_day else None)
                 fixed = ({hero.id: weapon.id for hero, weapon in pairs} if mixed else mem.return_targets)
                 pairs, posts = (return_plan(turn, nav, pairs, walls, fixed, mem.return_posts)
-                                if turn.is_day else (pairs, {}))
+                                if turn.is_day else (pairs, operator_posts(turn, nav, pairs, walls,
+                                    mem.return_posts, unavailable=unavailable,
+                                    reports=ledger.operator_post_reports)))
+                if not posts and mem.operator_yields:
+                    posts = {hero.id: (hero.pos, 0) for hero, _ in pairs if hero.id in mem.operator_yields}
             if not turn.is_day:
                 # Recall from the current position early enough for an approaching
                 # wave, but release workers immediately when local danger ends.
                 def needs_defence(hero, tower):
                     if hero.kind != "worker":
                         return True
-                    route = nav.approach(hero, [tower.pos])
+                    route = (nav.search(hero, {posts[hero.id][0]}) if hero.id in posts
+                             else nav.approach(hero, [tower.pos]))
                     lead = (route[0] if route else 130) + self.cfg.return_margin
                     return any(turn.threatens_us(r) and (
                         turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius, lead + r.attack_range)
                         or distance(tower.pos, r.pos) <= tower.attack_range + 1)
                         or distance(hero.pos, r.pos) <= r.attack_range + 2 for r in turn.robots)
                 pairs = [(hero, tower) for hero, tower in pairs
-                         if (shared is not None and tower.kind == "rocket") or needs_defence(hero, tower)]
+                         if (shared is not None and tower.kind == "rocket")
+                         or hero.id in mem.operator_yields or needs_defence(hero, tower)]
                 posts = {uid: p for uid, p in posts.items() if uid in {hero.id for hero, _ in pairs}}
                 mem.return_targets.clear()
                 mem.return_posts.clear()
@@ -397,6 +423,10 @@ class Agent:
             watcher = select_watch(turn, mem, pairs + gatling_pairs)
             ledger.return_pairs = pairs
             ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
+            for actor, weapon in pairs:
+                current = ledger.operator_post_reports.get((actor.id, weapon.id, actor.pos))
+                if current:
+                    ledger.weapon_diagnostics[weapon.id] = current.copy()
             if turn.is_day:
                 ledger.daytime_gunner_post = mem.gunner_post if shared is not None else None
             returning = set()
@@ -412,6 +442,10 @@ class Agent:
                     ledger.plans[hero.id] = {"reason": "defence_recall", "return_steps": length,
                                             "return_margin": self.cfg.return_margin, "day_left": turn.day_left,
                                             "post": posts.get(hero.id), "tower": tower.id}
+                    if hero.id in posts:
+                        evaluation = ledger.operator_post_reports.get((hero.id, tower.id, posts[hero.id][0]))
+                        if evaluation:
+                            ledger.plans[hero.id]["post_targeting"] = evaluation
                     returning.add(hero.id)
                     mem.return_targets[hero.id] = tower.id
                     if hero.id in posts:
@@ -457,13 +491,14 @@ class Agent:
                                        "first_wave_deadline" if first_watch else "task_deadline")
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             if not turn.is_day:
+                yield_gate_operators(turn, nav, ledger, mem, walls, pairs)
                 if shared is not None:
                     corridor = clear_gunner_route(turn, nav, ledger, mem, pairs)
                     shared_defend(turn, nav, ledger, mem, pairs, towers,
-                                  siege_radius=self.cfg.task_danger_radius)
+                                  siege_radius=self.cfg.task_danger_radius, corridor=corridor or ())
                     ledger.reserved.update(corridor or ())
                 else:
-                    defend(turn, nav, ledger, pairs)
+                    defend(turn, nav, ledger, pairs, ledger.operator_posts)
                 if shared is not None and mem.gunner_post:
                     ledger.reserved.add(mem.gunner_post)
                 for hero in turn.heroes:
@@ -539,6 +574,7 @@ class Agent:
         ledger.gold += robot_reserve
         save_daytime_jobs(turn, mem, ledger)
         response = ledger.response(prompt, execute)
+        finish_weapon_reports(turn, ledger)
         if mem.news or mem.treasure:
             hero = turn.pioneer
             reason = ("no_pioneer" if not hero else "night" if not turn.is_day

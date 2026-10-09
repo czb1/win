@@ -5,6 +5,8 @@ from collections import deque
 from .model import HEROES, WEAPONS, distance, dump, neighbours
 from .commands import command
 from .navigation import check_time
+from .projectiles import (line_cells, projectile_origin, projectile_obstacles,
+                          trajectory_blockers, wall_gates)
 
 
 def enemy_control_post(turn, nav, ledger, hero):
@@ -95,27 +97,6 @@ def block_enemy_workers(turn, nav, ledger, hero):
     return True
 
 
-def line_cells(start, end):
-    """Supercover grid traversal, conservatively includes cells touched at corners."""
-    x, y = start
-    dx, dy = end[0]-x, end[1]-y
-    nx, ny = abs(dx), abs(dy)
-    sx, sy = (1 if dx > 0 else -1), (1 if dy > 0 else -1)
-    ix = iy = 0
-    out = []
-    while ix < nx or iy < ny:
-        a, b = (1+2*ix)*ny, (1+2*iy)*nx
-        if a == b:
-            out.extend([(x+sx, y), (x, y+sy)])
-            x, y, ix, iy = x+sx, y+sy, ix+1, iy+1
-        elif a < b:
-            x, ix = x+sx, ix+1
-        else:
-            y, iy = y+sy, iy+1
-        out.append((x, y))
-    return out
-
-
 def assignments(turn, nav, ledger, excluded=(), fixed=None, towers=None):
     towers = turn.weapons[:3] if towers is None else towers
     heroes = [h for h in turn.heroes if h.id not in ledger.used and h.id not in excluded]
@@ -148,10 +129,11 @@ def assignments(turn, nav, ledger, excluded=(), fixed=None, towers=None):
     # When an operator heals/dies, tower IDs must not decide which gun stays idle.
     firepower = {}
     for w in towers:
-        damage = {}
-        if not turn.is_day and not w.cooldown:
-            select_targets(turn, w, damage, nav.deadline)
-        firepower[w.id] = sum(damage.get(r.id, 0) * threat(turn, r) for r in turn.robots)
+        for hero in heroes:
+            damage = {}
+            if not turn.is_day and not w.cooldown:
+                select_targets(turn, w, damage, nav.deadline, controller=hero)
+            firepower[hero.id, w.id] = sum(damage.get(r.id, 0) * threat(turn, r) for r in turn.robots)
     best, result = None, []
     for selected in permutations(towers, count):
         for crew in permutations(heroes, count):
@@ -160,15 +142,15 @@ def assignments(turn, nav, ledger, excluded=(), fixed=None, towers=None):
             # return trip. Keep the best reachable partial crew instead.
             pairs = [(h, w) for h, w in zip(crew, selected) if (h.id, w.id) in reachable]
             travel = sum(routes[h.id, w.id][0] if routes[h.id, w.id] else 10000 for h, w in pairs)
-            immediate = sum(firepower[w.id] for h, w in pairs
+            immediate = sum(firepower[h.id, w.id] for h, w in pairs
                             if routes[h.id, w.id] and routes[h.id, w.id][0] == 0)
             cost = (-immediate, -len(pairs), travel)
             if best is None or cost < best:
                 best, result = cost, pairs
-    return committed + sorted(result, key=lambda pair: (-firepower[pair[1].id], pair[1].id))
+    return committed + sorted(result, key=lambda pair: (-firepower[pair[0].id, pair[1].id], pair[1].id))
 
 
-def operator_posts(turn, nav, pairs, wall_sites=(), fixed=None):
+def operator_posts(turn, nav, pairs, wall_sites=(), fixed=None, unavailable=None, gates=None, reports=None):
     """Plan distinct control cells before recalling the crew, including detours.
 
     Teammates can move during the return trip; buildings cannot. Actual movement
@@ -178,6 +160,9 @@ def operator_posts(turn, nav, pairs, wall_sites=(), fixed=None):
     if not pairs:
         return {}
     fixed = fixed or {}
+    unavailable = unavailable or {}
+    gates = wall_gates(turn, wall_sites) if gates is None else set(gates)
+    scores = {}
     original = turn.blocked
     turn.blocked = original - {h.pos for h, _ in pairs}
     options = []
@@ -185,9 +170,19 @@ def operator_posts(turn, nav, pairs, wall_sites=(), fixed=None):
         for h, w in pairs:
             candidates = []
             for p in sorted(set(neighbours(w.pos)) - set(wall_sites)):
-                route = nav.search(h, {p})
+                if p in unavailable.get(h.id, ()):
+                    continue
+                route = nav.search(h, {p}, unavailable.get(h.id, ()))
                 if route is not None:
                     candidates.append((p, route[0]))
+                    damage = {}
+                    if not turn.is_day and w.kind != "rocket" and not w.cooldown:
+                        report = {} if reports is not None else None
+                        select_targets(turn, w, damage, nav.deadline, controller=h,
+                                       actor_positions={h.id: p}, diagnostics=report)
+                        if reports is not None:
+                            reports[h.id, w.id, p] = report
+                    scores[h.id, p] = sum(damage.values())
             if not candidates:
                 return {}
             options.append(candidates)
@@ -198,7 +193,16 @@ def operator_posts(turn, nav, pairs, wall_sites=(), fixed=None):
                 continue
             changes = sum(h.id in fixed and fixed[h.id] != p
                           for (h, _), (p, _) in zip(pairs, choice))
-            cost = (changes, sum(length for _, length in choice), max(length for _, length in choice))
+            ready = sum(scores[h.id, p] > 0 for (h, _), (p, _) in zip(pairs, choice))
+            # Keep a useful existing post stable; a blind post must not lock
+            # its operator forever just because the return distance is zero.
+            useful_changes = sum(h.id in fixed and fixed[h.id] != p
+                                 and scores.get((h.id, fixed[h.id]), 0) > 0
+                                 for (h, _), (p, _) in zip(pairs, choice))
+            gain = sum(scores[h.id, p] for (h, _), (p, _) in zip(pairs, choice))
+            gate_count = sum(p in gates for p, _ in choice)
+            cost = (-ready, useful_changes, gate_count, -gain, changes,
+                    sum(length for _, length in choice), max(length for _, length in choice))
             if best is None or cost < best:
                 best = cost
                 result = {h.id: option for (h, _), option in zip(pairs, choice)}
@@ -233,29 +237,67 @@ def threat(turn, robot):
     return score + {"bossRobot": 2, "largeRobot": 1, "middleRobot": .5}.get(robot.kind, .2)
 
 
-def select_targets(turn, tower, damage, deadline):
-    if tower.attack_range <= 0:
+def select_targets(turn, tower, damage, deadline, controller=None, actor_positions=None, diagnostics=None):
+    def empty(reason):
+        if diagnostics is not None:
+            diagnostics["reason"] = reason
         return []
+    if diagnostics is not None:
+        diagnostics.update(controller_id=controller.id if controller else None,
+                           origin_mode=turn.projectile_origin,
+                           characters_block=turn.projectile_characters_block,
+                           attack_range=tower.attack_range, cooldown=tower.cooldown,
+                           in_range=0, clear_paths=0, blocker_counts={}, blocker_samples=[])
+    if tower.attack_range <= 0:
+        return empty("no_attack_range")
     check_time(deadline)
+    origin = projectile_origin(turn, tower, controller, actor_positions)
+    if diagnostics is not None:
+        diagnostics["origin"] = origin
+    if origin is None and tower.kind != "rocket":
+        return empty("no_operator")
     targets = [r for r in turn.robots if turn.threatens_us(r)
                and distance(tower.pos, r.pos) <= tower.attack_range]
+    if diagnostics is not None:
+        diagnostics["in_range"] = len(targets)
+    if not targets and tower.kind != "rocket":
+        return empty("no_enemy_in_range")
     protected = {r.id for r in turn.robots if not turn.threatens_us(r)}
-    # Shot origin follows upstream demo (weapon centre); confirm against official engine.
-    barriers = {p for p, kind in turn.zones.items() if kind != "land"}
-    for u in (*turn.ours, *turn.enemies):
-        if u.id != tower.id:
-            barriers.update(u.cells)
     if tower.kind != "rocket":
-        targets = [r for r in targets if not (set(line_cells(tower.pos, r.pos)) & barriers)]
+        obstacles = projectile_obstacles(turn, tower, actor_positions)
+        clear = []
+        categories = {}
+        sampled = set()
+        for robot in targets:
+            check_time(deadline)
+            blockers = trajectory_blockers(origin, robot.pos, obstacles)
+            if not blockers:
+                clear.append(robot)
+                continue
+            category = next((kind for kind in ("building", "character", "neutral")
+                             if any(b["type"] == kind for b in blockers)), "neutral")
+            categories[category] = categories.get(category, 0) + 1
+            if diagnostics is not None and category not in sampled:
+                diagnostics["blocker_samples"].append({"robot_id": robot.id, "target": robot.pos,
+                                                      "category": category, "blockers": blockers[:4]})
+                sampled.add(category)
+        targets = clear
+        if diagnostics is not None:
+            diagnostics.update(clear_paths=len(clear), blocker_counts=categories)
+        if not targets:
+            reason = "blocked_by_" + next(iter(categories)) if len(categories) == 1 else "all_targets_blocked"
+            return empty(reason)
+    elif diagnostics is not None:
+        diagnostics["clear_paths"] = len(targets)
     remaining = {r.id: max(0, r.health - damage.get(r.id, 0)) for r in turn.robots}
     weights = {r.id: threat(turn, r) for r in turn.robots}
     if tower.kind == "railgun":
         options = []
         for r in targets:
             check_time(deadline)
-            path = set(line_cells(tower.pos, r.pos))
+            path = set(line_cells(origin, r.pos))
             energy, score, hits, collateral = max(0, tower.power), 0, {}, False
-            for hit in sorted((b for b in turn.robots if b.pos in path), key=lambda b: distance(tower.pos, b.pos)):
+            for hit in sorted((b for b in turn.robots if b.pos in path), key=lambda b: distance(origin, b.pos)):
                 # All damage settles at turn end: earlier planned shots do NOT
                 # reduce the energy absorbed by a currently living blocker.
                 actual = min(energy, hit.health)
@@ -268,12 +310,14 @@ def select_targets(turn, tower, damage, deadline):
             if not collateral:
                 options.append((score, -r.id, r.pos, hits))
         if not options:
-            return []
+            return empty("protected_robot_in_path")
         score, _, target, hits = max(options, key=lambda x: x[:2])
         if score <= 0:
-            return []
+            return empty("targets_already_covered")
         for uid, amount in hits.items():
             damage[uid] = damage.get(uid, 0) + amount
+        if diagnostics is not None:
+            diagnostics.update(reason="ready_to_fire", selected_targets=[target])
         return [target]
     # Cache physical hits, then rescore marginal damage after each projectile.
     # A rocket's best landing cell can be empty, including at the range edge.
@@ -287,13 +331,15 @@ def select_targets(turn, tower, damage, deadline):
     else:
         for robot in targets:
             check_time(deadline)
-            path = set(line_cells(tower.pos, robot.pos))
+            path = set(line_cells(origin, robot.pos))
             hit = min((b for b in turn.robots if b.pos in path),
-                      key=lambda b: distance(tower.pos, b.pos), default=robot)
+                      key=lambda b: distance(origin, b.pos), default=robot)
             shots[robot.pos] = {hit.id: 25}
     # Filter physical hits, not just aim points: splash and first-hit blocking
     # can otherwise help the opponent even when aiming at our own wave.
     shots = {point: hits for point, hits in shots.items() if not protected.intersection(hits)}
+    if not shots:
+        return empty("protected_robot_in_path")
     result = []
     for _ in range(tower.level):
         check_time(deadline)
@@ -307,7 +353,7 @@ def select_targets(turn, tower, damage, deadline):
             score = sum(amount * weights[uid] for uid, amount in hits.items())
             ranked.append((score, point, hits))
         if not ranked:
-            return []
+            return empty("no_legal_cone_targets")
         if tower.kind == "gatling":
             # Rank the robot actually hit, rather than a high-HP aim point
             # hidden behind a smaller robot. Health is the observed current HP;
@@ -319,11 +365,13 @@ def select_targets(turn, tower, damage, deadline):
         else:
             score, target, hits = min(ranked, key=lambda x: (-x[0], x[1]))
         if score <= 0 and not result:
-            return []
+            return empty("targets_already_covered")
         result.append(target)
         for uid, amount in hits.items():
             remaining[uid] -= amount
             damage[uid] = damage.get(uid, 0) + amount
+    if diagnostics is not None:
+        diagnostics.update(reason="ready_to_fire", selected_targets=result)
     return result
 
 
@@ -406,7 +454,11 @@ def defend(turn, nav, ledger, pairs=None, posts=None, damage=None):
     damage = {} if damage is None else damage
     pairs = pairs if pairs is not None else assignments(turn, nav, ledger)
     for hero, tower in pairs:
+        report = ledger.weapon_diagnostics.setdefault(tower.id, {})
+        report["controller_id"] = hero.id
         if hero.id in ledger.used:
+            if report.get("reason") != "operator_yielding_gate":
+                report["reason"] = "operator_busy"
             continue
         route = (nav.search(hero, {posts[hero.id]}, ledger.reserved) if posts and hero.id in posts
                  else nav.approach(hero, [tower.pos], ledger.reserved))
@@ -415,15 +467,116 @@ def defend(turn, nav, ledger, pairs=None, posts=None, damage=None):
                 continue
         if route and route[1] is not None:
             ledger.add(hero.id, command("move", route[1]))
+            report.update(reason="operator_moving", post=posts.get(hero.id) if posts else None,
+                          return_steps=route[0])
+            ledger.explain(hero.id, "operator_repositioning", tower=tower.id,
+                           post=report["post"], return_steps=route[0])
+        elif not route:
+            report.update(reason="operator_path_unreachable")
+            ledger.explain(hero.id, "operator_path_unreachable", tower=tower.id)
+        elif distance(hero.pos, tower.pos) != 1:
+            report.update(reason="operator_waiting_for_passage")
+            ledger.explain(hero.id, "operator_waiting_for_passage", tower=tower.id)
         elif route and not turn.is_day and not tower.cooldown:
             planned = damage.copy()
-            targets = select_targets(turn, tower, planned, nav.deadline)
+            targets = select_targets(turn, tower, planned, nav.deadline, controller=hero, diagnostics=report)
             if not targets:
                 targets = enemy_wall_targets(turn, tower, nav.deadline, ledger.cfg.task_danger_radius)
             if targets:
                 if ledger.add(tower.id, {"action": "attack", "controllerId": str(hero.id),
                                         "targetPos": [dump(p) for p in targets]}):
                     damage.update(planned)
+                    report["reason"] = "fired"
+                else:
+                    report["reason"] = "attack_rejected"
+            else:
+                ledger.explain(hero.id, "operator_standby", tower=tower.id,
+                               targeting_reason=report.get("reason"))
+        else:
+            report.update(reason="daytime" if turn.is_day else "cooldown")
+            if not turn.is_day:
+                ledger.explain(hero.id, "operator_standby", tower=tower.id, targeting_reason="cooldown")
+
+
+def yield_gate_operators(turn, nav, ledger, mem, walls, pairs):
+    """Leave a completed ring's sole gate open while a nearby teammate passes.
+
+    Withdraw outward so the inner aisle is not blocked by the yielding actor.
+    The gate stays unavailable to this actor for two observed passage turns.
+    """
+    gates = wall_gates(turn, walls)
+    built = {u.pos for u in turn.ours if u.kind == "wall"}
+    if not gates or not set(walls) <= built:
+        return
+    xs, ys = zip(*walls)
+    inside = lambda p: min(xs) < p[0] < max(xs) and min(ys) < p[1] < max(ys)
+    paired = {h.id for h, _ in pairs}
+    for holder, tower in pairs:
+        if tower.kind == "rocket" or holder.pos not in gates or holder.id in ledger.used:
+            continue
+        for helper in turn.heroes:
+            if (helper.id == holder.id or helper.id in ledger.used
+                    or distance(helper.pos, holder.pos) != 1):
+                continue
+            if helper.id in ledger.operator_posts:
+                goals = {ledger.operator_posts[helper.id]}
+            elif helper.id not in paired and helper.id in mem.mine_targets:
+                mine = mem.mine_targets[helper.id]
+                goals = set(neighbours(mine)) - {mine}
+            else:
+                continue
+            if helper.pos in goals or nav.search(helper, goals, ledger.reserved) is not None:
+                continue
+            original = turn.blocked
+            choices = []
+            try:
+                turn.blocked = original - {holder.pos}
+                freed = nav.search(helper, goals, ledger.reserved)
+                if freed is None or freed[1] != holder.pos:
+                    continue
+                for point in neighbours(holder.pos):
+                    if (not turn.inside(point) or inside(point) or point in original
+                            or point in ledger.reserved or point in ledger.wall_cells or point in ledger.tower_cells
+                            or nav.memory and point in nav.memory.blocked(holder.id)):
+                        continue
+                    turn.blocked = (original - {holder.pos}) | {point}
+                    onward = nav.search(helper, goals, ledger.reserved)
+                    if onward is not None and onward[1] == holder.pos:
+                        risk = sum(r.power for r in turn.robots if distance(point, r.pos) <= r.attack_range)
+                        choices.append((risk, distance(point, tower.pos), point))
+            finally:
+                turn.blocked = original
+            if choices:
+                point = min(choices)[-1]
+                if ledger.add(holder.id, command("move", point)):
+                    mem.operator_yields[holder.id] = {"gate": holder.pos, "until": turn.round + 2}
+                    mem.return_posts[holder.id] = point
+                    ledger.operator_posts[holder.id] = point
+                    ledger.explain(holder.id, "operator_yielding_gate", tower=tower.id,
+                                   gate=holder.pos, teammate=helper.id, yield_until=turn.round + 2)
+                    ledger.weapon_diagnostics[tower.id] = {"reason": "operator_yielding_gate",
+                                                         "controller_id": holder.id, "gate": holder.pos}
+                break
+
+
+def finish_weapon_reports(turn, ledger):
+    """Complete dispatch diagnostics from existing decisions, without searching."""
+    paired = {w.id: h for h, w in ledger.return_pairs}
+    for tower in turn.weapons:
+        report = ledger.weapon_diagnostics.setdefault(tower.id, {})
+        if str(tower.id) in ledger.commands:
+            report["reason"] = "fired"
+        elif turn.is_day:
+            report.setdefault("reason", "daytime")
+        elif tower.cooldown:
+            report.setdefault("reason", "cooldown")
+        elif tower.id not in paired:
+            report.setdefault("reason", "no_operator")
+        else:
+            hero = paired[tower.id]
+            if report.get("reason") in (None, "ready_to_fire"):
+                report["reason"] = "operator_busy" if hero.id in ledger.used else "operator_standby"
+            report.setdefault("controller_id", hero.id)
 
 
 def yield_operator(turn, nav, ledger, hero, pairs, posts, route):
@@ -556,12 +709,23 @@ def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
     return ([(hero, towers[0])] if towers else []), {hero.id: (post, length)}
 
 
-def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6):
+def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6, corridor=()):
     """A worker fires the gatling; the pioneer rotates the ready rockets."""
     damage = {}
-    defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id != mem.gunner_id],
-           ledger.operator_posts, damage=damage)
+    protected = set(corridor) - ledger.reserved
+    ledger.reserved.update(protected)
+    try:
+        defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id != mem.gunner_id],
+               ledger.operator_posts, damage=damage)
+    finally:
+        ledger.reserved.difference_update(protected)
     hero = next((h for h, _ in pairs if h.id == mem.gunner_id), None)
+    for tower in turn.weapons:
+        if tower.kind == "rocket":
+            ledger.weapon_diagnostics.setdefault(tower.id, {}).update(
+                controller_id=hero.id if hero else None,
+                reason="no_operator" if hero is None else "operator_busy" if hero.id in ledger.used else
+                       "cooldown" if tower.cooldown else "waiting_for_rotation")
     if hero is None or hero.id in ledger.used:
         return
     route = nav.search(hero, {mem.gunner_post}, ledger.reserved)
@@ -571,15 +735,20 @@ def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6):
         if (tower is None or tower.kind != "rocket" or tower.cooldown
                 or distance(hero.pos, tower.pos) != 1):
             continue
-        targets = select_targets(turn, tower, damage.copy(), nav.deadline)
+        report = ledger.weapon_diagnostics[tower.id]
+        targets = select_targets(turn, tower, damage.copy(), nav.deadline, controller=hero, diagnostics=report)
         if not targets:
             targets = enemy_wall_targets(turn, tower, nav.deadline, radius=siege_radius)
         if targets and ledger.add(tower.id, {'action': 'attack', 'controllerId': str(hero.id),
                                            'targetPos': [dump(p) for p in targets]}):
             mem.next_gun = (index + 1) % len(sites)
+            report["reason"] = "fired"
             return
     if route and route[1] is not None:
         ledger.add(hero.id, command('move', route[1]))
+        for tower in turn.weapons:
+            if tower.kind == "rocket" and not tower.cooldown:
+                ledger.weapon_diagnostics[tower.id].update(reason="operator_moving", return_steps=route[0])
 
 
 def clear_gunner_route(turn, nav, ledger, mem, pairs):
