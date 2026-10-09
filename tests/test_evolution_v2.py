@@ -91,22 +91,17 @@ class EvolutionV2Tests(unittest.TestCase):
             self.assertEqual(cases['keys'], ['cases'])
             self.assertIn('expected', cases['sample'])
             self.assertIn('inputPreview', response['prompt'])
-            code = "from pathlib import Path\nimport json\n" \
-                   "rows=json.loads(Path('work/input_s2.json').read_text())\n" \
-                   "Path('work/result_s2.json').write_text(str(sum(rows)))\n" \
-                   "print('FINAL_ANSWER')\nprint('{\"token\":\"xxx\"}')"
+            # Recognized pair-based tasks now validate and check in one sandbox call.
+            code = "def transform(records):\n    return sum(records)"
             payload.update(roundNo=3, lastCmdResult='', llmResp='PYTHON\n'+code)
             execution = agent.decide(payload)
             payload.update(roundNo=4, llmResp='', lastCmdResult=v2_result(execution, '/'))
-            checking = agent.decide(payload)
-            self.assertFalse(checking['roleCommandMap'])
-            self.assertTrue(checking['executeCmd'])
-            payload.update(roundNo=5, lastCmdResult=v2_result(checking, '/'))
             submitted = agent.decide(payload)
+            self.assertFalse(submitted['executeCmd'])
             answer = json.loads(submitted['roleCommandMap']['11']['taskAnswer'])
             self.assertEqual(answer, {'token': 'current-fixture-token'})
             self.assertIsNotNone(mem.submitted_method)
-            payload.update(roundNo=6, phaseTask='', lastCmdResult='', lastRoundRoleActionResults={'11': True})
+            payload.update(roundNo=5, phaseTask='', lastCmdResult='', lastRoundRoleActionResults={'11': True})
             agent.decide(payload)
             self.assertEqual(len(mem.skills), 1)
             self.assertNotIn('current-fixture-token', json.dumps(mem.skills))

@@ -17,6 +17,7 @@ from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status
 from .wall_watch_state import WallWatchState
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
 from .task_inputs import input_context, preview_code, zero_without_coverage
+from .task_transform import transform_config, transform_method, transform_code, case_page_code
 from .task_runtime import runtime_code, runtime_result, command_output
 from .task_evidence import computed_answer, evidence_matches, parsing_rules
 from .task_sop import answer_contract, answer_error, engineering_code
@@ -172,6 +173,14 @@ def parse_task_reply(text):
     blocks = re.findall(r"```python\s*\n(.*?)\n```", text, re.S | re.I)
     if len(blocks) == 1 and text.count("```") == 2 and not re.search(r"\bANSWER\b", text, re.I):
         return {"python": blocks[0].strip()}
+    if re.match(r"^(?:import |from |def |class |[A-Za-z_]\w*\s*=)", text):
+        try:
+            tree = ast.parse(text, '<task-reply>', 'exec')
+            compile(tree, '<task-reply>', 'exec')
+            if tree.body and not any(isinstance(n, ast.Expr) and isinstance(n.value, (ast.Name, ast.Constant)) for n in tree.body):
+                return {'python': text}
+        except (SyntaxError, ValueError):
+            pass
     parsed = parse_object(text)
     if parsed is not None:
         if set(parsed) & {"answer", "python", "skill", "use_skill", "read", "list"}:
@@ -594,6 +603,8 @@ class Memory:
             status, body, answer = sandbox_result(result)
             if status == 'ok' and not tool and self.contract.get('input_kind') == 'logs':
                 answer = computed_answer(body, self.contract)
+                if answer is not None:
+                    body = 'FINAL_ANSWER\n' + answer
             if report.get('logs'):
                 expected_logs = {str(PurePosixPath(self.inputs.get('directory', '')) / f['path'])
                                  for f in self.inputs.get('files', []) if f.get('path', '').endswith('.log')}
@@ -653,6 +664,9 @@ class Memory:
             if tool.get("kind") in ("engineering", "check", "query"):
                 self.last_attempt["python"] = ""
                 self.last_attempt["tool"] = tool["kind"]
+            if tool.get('kind') == 'transform':
+                self.last_attempt['tool'] = 'transform'
+                self.last_attempt['python'] = self.running_python
             if status == "ok":
                 if tool.get('kind') in ('discover', 'read', 'inspect'):
                     self.inputs = input_context(body) or self.inputs
@@ -677,7 +691,7 @@ class Memory:
                     if call not in self.method_calls:
                         self.method_calls.append(call)
                 self.method_calls = self.method_calls[-12:]
-                if not tool or tool.get('kind') in ('engineering', 'check', 'query'):
+                if not tool or tool.get('kind') in ('engineering', 'check', 'query', 'transform'):
                     self.supported_output, self.supported_python = body, self.running_python
                 self.successful_python, self.successful_output = self.running_python, body
                 self.task_failures = 0
@@ -706,7 +720,7 @@ class Memory:
                         saved = {"point": self.task_point, **record, "evidence": "sandbox_exit_0_only"}
                         self.knowledge = [k for k in self.knowledge if (k["point"], k["path"], k.get("start")) !=
                                           (self.task_point, record["path"], record.get("start"))][-5:] + [saved]
-                checker = tool.get("kind") in ("engineering", "check")
+                checker = tool.get("kind") in ("engineering", "check", "transform")
                 if self.contract.get("kind") == "check_token" and not checker and not self.running_tool:
                     # Model-generated output is not proof of a checker token.
                     # Verify the current workspace ourselves before submission.
@@ -811,12 +825,18 @@ class Memory:
                 except (ValueError, TypeError) as error:
                     self.reject(str(error))
                     return
+                conversion = self.transform_config()
+                if conversion and kind == 'read':
+                    requested = PurePosixPath(parsed[kind])
+                    requested = requested if requested.is_absolute() else PurePosixPath(conversion['workspace']) / requested
+                    if requested == PurePosixPath(conversion['workspace']) / conversion['cases']:
+                        code = case_page_code(conversion, parsed.get('start', 0))
                 file_request = {"kind": kind, "path": parsed[kind], "start": parsed.get("start", 0)}
             remaining = self.remaining(turn, cfg)
             if remaining <= 1 and not has_answer:
                 self.reject("只剩最后一回合；必须直接输出 ANSWER，禁止继续查询或执行代码。")
                 return
-            if remaining <= 2 and has_python and self.contract.get("kind") == "check_token":
+            if remaining <= 2 and has_python and self.contract.get("kind") == "check_token" and not self.transform_config():
                 self.reject("部署修复还需要代码执行、独立 check 和提交；剩余回合不足，不能再启动修复代码。")
                 return
             if remaining <= 4 and file_kinds:
@@ -824,9 +844,24 @@ class Memory:
                 return
             if has_python or file_kinds:
                 code = code if file_kinds else unfence(parsed["python"])
+                if has_python and self.transform_config():
+                    try:
+                        code = transform_method(code)
+                    except (ValueError, SyntaxError, TypeError) as error:
+                        self.reject(str(error))
+                        return
                 if len(code) > cfg.max_python_chars:
-                    self.reject("代码太长，请只完成当前一个步骤。")
-                    return
+                    # Tokenization strips only comments; strings and executable statements stay intact.
+                    import io
+                    import tokenize
+                    try:
+                        code = tokenize.untokenize((t.type, t.string) for t in tokenize.generate_tokens(io.StringIO(code).readline)
+                                                  if t.type != tokenize.COMMENT)
+                    except (tokenize.TokenError, IndentationError):
+                        pass
+                    if len(code) > cfg.max_python_chars:
+                        self.reject("代码太长，请只输出当前步骤的必要代码，不要推测性注释。")
+                        return
                 try:
                     tree = ast.parse(code, "<sandbox-proposal>", "exec")
                     if any(isinstance(node, ast.Expr) and isinstance(node.value, ast.Name)
@@ -854,6 +889,9 @@ class Memory:
                     self.reject('日志零结果缺少解析覆盖率证据；先修复 parse_line，不能把未匹配当成无故障。')
                     return
                 if self.contract.get("kind") == "check_token":
+                    if self.transform_config():
+                        self.reject('请输出 transform(records)，由框架验证全部样例并取得真实token；不能直接猜答案。')
+                        return
                     self.check_pending = (self.last_attempt.get("tool") not in ("engineering", "check")
                                           or self.last_attempt.get("status") == "ok")
                     self.reject("token 必须来自当前工作区 ./check；已有检查失败时先修复文件，不提交模型猜测。")
@@ -988,6 +1026,9 @@ class Memory:
                 return str(PurePosixPath(document["resolved_path"]).parent)
         return None
 
+    def transform_config(self):
+        return transform_config(self.documents, self.contract, self.inputs)
+
     def task_directory(self):
         if self.contract.get("workspace"):
             return self.contract["workspace"]
@@ -1023,15 +1064,16 @@ class Intelligence:
                      json.dumps(excerpt(self.mem.answer, LOG_EXCERPT), ensure_ascii=False))
             log_task_payload(self.turn.round, "submission_detail", self.mem.answer,
                              source="sandbox" if self.mem.answer_python or self.mem.last_attempt.get('tool')
-                             in ('engineering', 'check') else "model",
+                             in ('engineering', 'check', 'transform') else "model",
                              remaining=self.mem.remaining(self.turn, self.cfg))
             # Snapshot method evidence before reset; do not persist old data/code inputs.
             supported = (bool(self.mem.answer_python) or self.mem.last_attempt.get('tool') in
-                         ('engineering', 'check')) and output_supports(
+                         ('engineering', 'check', 'transform')) and output_supports(
                 self.mem.answer, self.mem.supported_output)
             self.mem.submitted_method = (learned_method(
                 self.mem.task_point, self.mem.contract, self.mem.recipe_candidate,
-                self.mem.method_calls, self.mem.parser_candidate, self.mem.parse_rules) if supported else None)
+                self.mem.method_calls, self.mem.parser_candidate, self.mem.parse_rules,
+                transform=self.mem.answer_python if self.mem.last_attempt.get('tool') == 'transform' else None) if supported else None)
             self.mem.submitted = (self.turn.round, self.mem.answer)
             self.mem.submitted_python = self.mem.answer_python
             self.mem.submitted_output = self.mem.successful_output if self.mem.answer_python else ""
@@ -1122,6 +1164,9 @@ class Intelligence:
                 self.mem.running_tool = {"kind": "query"}
         if self.mem.python is not None and self.mem.pending is None:
             code, self.mem.python = self.mem.python, None
+            conversion = self.mem.transform_config() if not self.mem.running_tool else None
+            if conversion:
+                self.mem.running_tool = {'kind': 'transform', 'path': conversion['workspace']}
             self.mem.pending = ("cmd", self.turn.round)
             self.mem.task_stats["sandboxCalls"] = self.mem.task_stats.get("sandboxCalls", 0) + 1
             self.mem.running_python = code
@@ -1137,7 +1182,7 @@ class Intelligence:
             self.mem.running_parser_id = learned['id'] if learned else None
             if learned:
                 LOG.info("round=%s task_parser=reused id=%s", self.turn.round, learned['id'])
-            executed = code if tool else runtime_code(code, self.mem.task_directory(),
+            executed = transform_code(code, conversion) if conversion else code if tool else runtime_code(code, self.mem.task_directory(),
                         self.mem.contract.get('rounding'), self.mem.contract.get('input_kind') == 'logs',
                         self.mem.running_parser)
             return "", "python3 -c " + shlex.quote(executed)
@@ -1210,10 +1255,10 @@ class Intelligence:
                        "已有答案：第一行 ANSWER，第二行起写任务要求的答案（原样字符串或JSON）。\n"
                        "还需查询：第一行 PYTHON，第二行起写完整Python3代码，不用JSON转义代码。\n")
         log_guidance = ""
-        if self.mem.contract.get('input_kind') == 'logs':
+        if self.mem.contract.get('input_kind') == 'logs' and remaining > 2:
             step = ("根据 logDiagnostics/submissionFeedback 定点修正故障筛选或事件合并；不要改算出的数字。"
                     if self.mem.submission_feedback else "按已验证故障定义解析当前文件，再做本题聚合。")
-            formats = "输出 PYTHON 完整代码，最后调用 task_result(result)；若只能 ANSWER，必须逐值照抄本题沙盒计算结果。\n"
+            formats = "第一行必须写 PYTHON，后面只写必要代码，最后调用 task_result(result)；若只能 ANSWER，必须逐值照抄本题沙盒计算结果。\n"
             log_guidance = ("日志任务：task_result(result)由程序提供，自动输出最终协议；无需自己打印标记。\n"
                             "verifiedParsingRules为前题成功后保存的定义；不得自行增加/遗漏故障关键词。\n"
                             "同格式且有learnedSkills解析器时，同名函数由框架复用；用当前路径调用原函数，或task_parse(system,path)。"
@@ -1268,6 +1313,21 @@ class Intelligence:
                       "上下文：\n" + json.dumps(log_context, ensure_ascii=False))
         if self.mem.task_failures >= 3:
             prompt = ("上次输出未能执行。现在只输出一个最小步骤；无需解释或编写skill。\n" + prompt)
+        conversion = self.mem.transform_config()
+        if conversion:
+            methods = [s.get('transform') for s in self.mem.skills if s.get('transform')
+                       and s.get('family') == self.mem.contract.get('family')
+                       and compatible(s, self.mem.task_point, self.mem.contract, for_hint=True)][-1:]
+            prompt = ("第一行 PYTHON，后面只定义 transform(records) 和必要辅助函数，返回题目要求的数据。\n"
+                      "不要读取/写入文件、打印、运行checker或定义主程序，不要长篇注释。\n"
+                      "框架在同一次沙盒执行中验证全部公开样例，通过后写入产物并独立运行checker。只有真实token会提交。\n"
+                      "按完整样例推断规则，逐项检查过滤、排序、相同键顺序、分组及输出字段。保留排序字段到最后再裁剪。\n"
+                      "样例有next_case且剩余回合>4时，可单独输出READ 样例路径 next_case（此处偏移为样例编号），按NEXT_CASE翻页。\n"
+                      "优先修复lastAttempt的具体反例；旧方法只能参考，必须通过当前全部样例。\n"
+                      "上下文：" + json.dumps({'documents': self.mem.documents, 'inputPreview': self.mem.inputs,
+                          'lastAttempt': self.mem.last_attempt, 'lastErrors': self.mem.task_feedback,
+                          'rejections': [item['error'] for item in list(self.mem.history)[-3:] if 'error' in item],
+                          'remainingRounds': remaining, 'verifiedMethods': methods}, ensure_ascii=False))
         LOG.info("round=%s task_request task_started=%s point=%s remaining=%s timeout=%s "
                  "deadline=%s documents=%s exploration=%s previous_solutions=%s prompt_chars=%s prompt_sha=%s",
                  self.turn.round, self.mem.task_started, self.mem.task_point, remaining,

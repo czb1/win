@@ -1,4 +1,5 @@
 """Host-side answer evidence and sandbox-only log diagnostics."""
+import ast
 import json
 import math
 import re
@@ -36,6 +37,27 @@ def computed_answer(body, contract):
     body = body.strip()
     if body.startswith('FINAL_ANSWER\n'):
         body = body.partition('\n')[2]
+    if body.startswith('RESULT '):
+        try:
+            tree = ast.parse(body[7:], mode='eval')
+            if sum(1 for _ in ast.walk(tree)) > 10000:
+                return None
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Dict):
+                    keys = [ast.literal_eval(k) for k in node.keys]
+                    if any(not isinstance(k, str) for k in keys) or len(set(keys)) != len(keys):
+                        return None
+            value = ast.literal_eval(tree)
+            # Only JSON-native values: tuples/sets/bytes are not silently converted.
+            def native(v):
+                return (v is None or type(v) in (str, int, float, bool)
+                        or type(v) is list and all(native(x) for x in v)
+                        or type(v) is dict and all(type(k) is str and native(x) for k, x in v.items()))
+            if not native(value):
+                return None
+            body = json.dumps(value, allow_nan=False)
+        except (SyntaxError, ValueError, TypeError, RecursionError):
+            return None
     return result_object(body, contract)
 
 
@@ -147,14 +169,18 @@ def audited_function(function):
         except Exception as error:
             log_error('parser', type(error).__name__ + ': ' + str(error))
             raise
-        if name == 'parse_line':
-            system = str(args[0] if args else kwargs.get('system', 'unknown'))[:80]
+        if name == 'parse_line' or name.endswith('_line'):
+            system = (str(value.get('system', name)) if isinstance(value, dict) else
+                      name[6:-5] if name != 'parse_line' else
+                      str(args[0] if len(args) > 1 else kwargs.get('system', 'unknown')))[:80]
             systems = report.setdefault('parse_systems', {})
             counts = systems.setdefault(system, {'total': 0, 'matched': 0, 'failures': 0, 'unmatched': []})
             counts['total'] += 1
             if value is not None and value is not False:
                 counts['matched'] += 1
-                if isinstance(value, (tuple, list)) and len(value) >= 3:
+                if isinstance(value, dict):
+                    counts['failures'] += value.get('is_fault') is True
+                elif isinstance(value, (tuple, list)) and len(value) >= 3:
                     counts['failures'] += bool(value[2])
             else:
                 if len(counts['unmatched']) < 3:
@@ -194,10 +220,11 @@ def task_parse(system, path):
     function = learned_scope.get('parse_' + system + '_log')
     if function:
         return function(path)
-    function = learned_scope.get('parse_line')
+    line_function = learned_scope.get('parse_' + system + '_line')
+    function = line_function or learned_scope.get('parse_line')
     if function:
         with open(path, encoding='utf-8') as source:
             return [record for line in source if line.strip()
-                    for record in [function(system, line)] if record is not None]
+                    for record in [function(line) if line_function else function(system, line)] if record is not None]
     raise ValueError('no verified parser for ' + system)
 '''

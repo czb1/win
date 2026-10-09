@@ -86,6 +86,7 @@ def preview_inputs():
                                      if p.suffix in ('.json', '.log', '.csv', '.tsv'))[:3])
         else:
             candidates.append(path)
+    case_budget = 10000
     for path in dict.fromkeys(candidates):
         if len(context['files']) >= 6:
             break
@@ -107,7 +108,26 @@ def preview_inputs():
                     entry['records'] = len(sequence) if isinstance(sequence, list) else None
                     sample = sequence[:1] if isinstance(sequence, list) else value
                     encoded = json.dumps(sample, ensure_ascii=False)
-                    entry['sample'] = encoded[:900]
+                    pairs = (isinstance(sequence, list) and bool(sequence) and all(
+                        isinstance(c, dict) and 'input' in c and len(set(c) & {'expected', 'output'}) == 1
+                        for c in sequence))
+                    if pairs:
+                        entry['case_count'] = len(sequence)
+                        entry['case_samples'] = []
+                        budget = case_budget
+                        for index, case in enumerate(sequence):
+                            pair = {'case': index, **case}
+                            size = len(json.dumps(pair, ensure_ascii=False))
+                            if size > budget:
+                                entry['next_case'] = index
+                                break
+                            entry['case_samples'].append(pair)
+                            budget -= size
+                        case_budget = budget
+                        first_pair = json.dumps(entry['case_samples'][:1], ensure_ascii=False)
+                        entry['sample'] = first_pair if len(first_pair) <= 1000 else ''
+                    else:
+                        entry['sample'] = encoded if len(encoded) <= 900 else ''
                     if len(encoded) > 900 or (isinstance(sequence, list) and len(sequence) > 1):
                         entry['next_read'] = str(path)
                 except ValueError as error:
