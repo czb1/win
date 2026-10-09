@@ -3,6 +3,7 @@ import logging
 from collections import Counter
 from dataclasses import replace
 from .commands import command
+from .market import hold_inventory, preferred_stock, cashout_ores
 from .model import ORES, distance, neighbours
 from .economy_plan import via
 
@@ -106,8 +107,13 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
         LOG.debug("round=%s worker=%s spare_mining=no_safe_mine_within_two_steps day_left=%s",
                   turn.round, hero.id, turn.day_left)
         return False
-    _, _, _, target, _, route = min(options, key=lambda o: (
-        o[3] != mem.mine_targets.get(hero.id), *o[:5]))
+    preferred = preferred_stock(turn, cfg, mem, ledger, hero)
+    if preferred:
+        chosen = min(options, key=lambda o: (
+            o[0], turn.zones[o[3]] not in preferred, o[3] != mem.mine_targets.get(hero.id), *o[1:5]))
+    else:
+        chosen = min(options, key=lambda o: (o[3] != mem.mine_targets.get(hero.id), *o[:5]))
+    _, _, _, target, _, route = chosen
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
         ledger.explain(hero.id, "spare_mining_for_later", target=target, route_steps=route[0],
@@ -241,6 +247,11 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
     # Finish a productive deposit, including its last few units. Replan only
     # when it vanishes, becomes inaccessible/unprofitable, or cannot meet dusk.
     chosen = previous if previous and previous[0] >= .65 * best[0] else best
+    preferred = preferred_stock(turn, cfg, mem, ledger, hero) if not want_stone else set()
+    # Never chase a shortage deposit whose present yield is substantially worse.
+    news_options = [o for o in options if turn.zones[o[3]] in preferred and o[0] >= .8 * best[0]]
+    if news_options:
+        chosen = min(news_options, key=lambda o: (-o[0], o[1], o[2], o[3]))
     _, _, _, target, route = chosen
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
@@ -266,6 +277,12 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
 def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, allow_spare=True,
          vendor_only=None):
     counts = sale_inventory(turn, mem, hero)
+    held = hold_inventory(turn, cfg, mem, ledger, hero, counts)
+    counts = {k: n - held.get(k, 0) for k, n in counts.items() if n > held.get(k, 0)}
+    cashout = cashout_ores(turn, cfg, mem, hero, counts)
+    if held:
+        ledger.explain(hero.id, "hold_ore_for_news", held=held, prices=turn.prices,
+                       tomorrow=turn.day + 1)
     ores = list(counts)
     total = sum(counts[k] for k in ores)
     if not total:
@@ -275,7 +292,7 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
         if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True):
             return True
         return allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero)
-    if hero.id in mem.sold_workers and hero.id not in mem.sale_workers and not force_sale:
+    if hero.id in mem.sold_workers and hero.id not in mem.sale_workers and not force_sale and not cashout:
         if turn.tick < 40 and mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=True):
             return True
         if allow_spare and not (turn.tick >= 40 and total) and spare_mine(turn, cfg, mem, nav, ledger, hero):
@@ -292,7 +309,7 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
     vendors = [p for p, k in turn.zones.items() if k == "vendor"]
     options = [(r[0] != 0, p != mem.sale_targets.get(hero.id), r[0], p, r) for p in vendors
                if (vendor_only is None or p == vendor_only)
-               and (force_sale or hero.id not in mem.sold_workers or p == mem.sale_targets.get(hero.id))
+               and (force_sale or cashout or hero.id not in mem.sold_workers or p == mem.sale_targets.get(hero.id))
                and not mem.movement.avoids(hero.id, p)
                and (r := nav.approach(hero, [p], ledger.reserved)) is not None]
     choice = min(options, default=None)
@@ -311,24 +328,27 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
     def sell():
         if not ores or route is None or not sale_fits:
             return False
-        kind = max(ores, key=lambda k: counts[k] * turn.prices[k])
+        kind = max(cashout or ores, key=lambda k: counts[k] * turn.prices[k])
         action = (command("sell", name=kind, num=counts[kind]) if route[1] is None
                   else command("move", route[1]))
         if ledger.add(hero.id, action):
             ledger.explain(hero.id, "sell_surplus_ore", vendor=vendor, route_steps=route[0],
                            kind=kind, quantity=counts[kind], price=turn.prices[kind],
+                           news_cashout=kind in cashout, held=held,
                            sale_fits=sale_fits, due=due, force_sale=force_sale,
                            day_left=turn.day_left, return_margin=cfg.return_margin)
             mem.sale_workers.add(hero.id)
             if route[1] is None:
                 mem.sold_workers.add(hero.id)
+                if kind in cashout:
+                    mem.market_cashouts.add((turn.day, hero.id, kind))
             mem.sale_targets[hero.id] = vendor
             mem.mine_targets.pop(hero.id, None)
             ledger.remember_work(hero, 'sell', vendor)
             return True
         return False
 
-    if total and (not hero.space or due or force_sale or hero.id in mem.sale_workers):
+    if total and (cashout or not hero.space or due or force_sale or hero.id in mem.sale_workers):
         if sell():
             return True
     # A liquidation request must not silently turn into another mining trip.

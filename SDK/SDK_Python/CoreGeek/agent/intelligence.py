@@ -22,6 +22,7 @@ from .task_runtime import runtime_code, runtime_result, command_output
 from .task_evidence import computed_answer, evidence_matches, parsing_rules
 from .task_sop import answer_contract, answer_error, engineering_code
 from .task_query import reference_paths, query_config, query_code
+from .market import observe_prices, merge_signals
 from .movement import MovementMemory
 from .sabotage import ImpMemory
 from .navigation import layout, wall_gaps
@@ -305,6 +306,9 @@ class Memory:
     treasure_attempted: bool = False
     treasure_done: bool = False
     outages: list = field(default_factory=list)
+    market_signals: list = field(default_factory=list)
+    market_prices: dict = field(default_factory=dict)
+    market_cashouts: set = field(default_factory=set)
     last_commands: dict = field(default_factory=dict)
     build_failures: dict = field(default_factory=dict)
     collect_failures: dict = field(default_factory=dict)
@@ -400,6 +404,7 @@ class Memory:
             for uid, cmd in self.last_commands.items():
                 if int(uid) in self.sold_workers and cmd["action"] != "sell":
                     self.sale_workers.discard(int(uid))
+        observe_prices(turn, self)
         news = turn.raw.get("worldNews") or {}
         record = {"day": turn.day, "officialNews": str(news.get("officialNews", ""))[:12000],
                   "folkLegends": str(news.get("folkLegends", ""))[:20000]}
@@ -963,6 +968,8 @@ class Memory:
                 self.trace_treasure(turn, "treasure_validation", accepted=False,
                                     reason="already_done" if self.treasure_done else "no_candidate",
                                     old_plan_retained=bool(self.treasure))
+            self.market_signals = merge_signals(self.market_signals, parsed.get("marketSignals"),
+                                               self.news, self.market_prices, turn.day)
             outages = parsed.get("oreOutages", [])
             if isinstance(outages, list):
                 self.outages = [o for o in outages if isinstance(o, dict)
@@ -1347,7 +1354,7 @@ class Intelligence:
         if not self.mem.news_dirty:
             return ""
         prompt = ("分析《未来战争》累计新闻，只输出一个JSON对象，先整理宝藏线索，再作结论。\n"
-                  "格式：{\"treasureClues\":[],\"treasure\":null,\"oreOutages\":[]}。\n"
+                  "格式：{\"treasureClues\":[],\"treasure\":null,\"oreOutages\":[],\"marketSignals\":[]}。\n"
                   "treasureClues每条仅含kind、day、quote、meaning四个字段。"
                   "kind只能是items（用品）、location（地点）、time（时间）；day为来源新闻天数，"
                   "quote逐字摘录该天民间传闻（4到500字），meaning写简短解读（最多300字）。"
@@ -1362,6 +1369,12 @@ class Intelligence:
                   "\"confidence\":0到1,\"evidence\":[依据]}。"
                   "evidence分别说明用品、坐标和时间的原文依据。西部等方位不足以猜坐标，"
                   "没有结束时间时不要编造窗口；信息不足只让treasure为null，继续保留treasureClues。\n"
+                  "marketSignals用于矿石采集和卖出时机，只根据官方消息推断供需及价格方向。"
+                  "每条含name（stone/iron/copper）、trend（up/down）、startDay、endDay、sourceDay、quote；"
+                  "sourceDay为新闻天数，quote逐字摘录该天官方消息，日期为闭区间。"
+                  "只有方向和起止日有明确依据才输出；不要猜测涨跌幅或绝对价格。"
+                  "恢复供应可能结束涨价，不能无依据延长窗口；不确定则省略。"
+                  "矿石只能采集后卖出，商店商品按实时报价购买，不推断不存在的矿石买入。"
                   "oreOutages沿用name/startDay/endDay格式，只根据官方消息判断。"
                   "明日等相对日期以该条新闻day计算，不以当前day计算。\n"
                   "一天130回合，白天70回合；"
