@@ -69,7 +69,7 @@ run.bat 8080
 
 ### 按天数、昼夜和任务查日志
 
-日志面向“看录像找到回合 → 下载一个 txt → 提取问题区间 → 交给智能体分析修改”的流程。比赛端统一向 stderr 输出 `FWLOG {JSON}`，无需 HTML 或平台支持多个文件。每条记录带格式版本、运行编号、请求编号、队伍、场次、全局回合、天数／昼夜及任务／单位编号；时间戳为 UTC，游戏时间按 `round_origin` 计算。回合倒退会新建场次，相同请求的缓存命中也单独记录。
+日志面向“看录像找到回合 → 下载一个 `.log` 文件 → 提取问题区间 → 交给智能体分析修改”的流程。比赛端统一向 stderr 输出 `FWLOG {JSON}`，无需 HTML 或平台支持多个文件。每条记录带格式版本、运行编号、请求编号、队伍、场次、全局回合、天数／昼夜及任务／单位编号；时间戳为 UTC，游戏时间按 `round_origin` 计算。回合倒退会新建场次，相同请求的缓存命中也单独记录。
 
 每回合的 `turn_snapshot` 保留原始地图、所有下发单位、背包、金币、积分、任务点、价格，以及 v2.0 的矿石 `remain`、驾驶状态、小车和 `summonRobotList`。敌方单位仅记录实际收到的观测；`enemy_last_seen` 是历史位置，不是当前真实位置。机器人攻击目标不代表归属。快照包含完整当前状态，不依赖之前回合的地图增量。
 
@@ -77,7 +77,7 @@ run.bat 8080
 
 长题目、prompt、模型回复和执行结果完整保存，重复内容通过 `payload_id` 引用。大记录按编号拆成可校验的 base64 分段，通常物理行小于8KB；分段只影响日志传输，不改 HTTP 响应。日志失败会尽力标记 `logging_failed`，不使已校验动作失败。核心快照、原因、反馈及任务原文在 WARNING／ERROR 下仍保存，`--log-level` 主要控制既有普通／DEBUG 诊断。
 
-`--log-dir` 是可选的本地副本，仍保存兼容的 `game.log` 与 `events.jsonl`，每文件50MB轮转并保留5份备份；下载的单个 txt 已包含分析所需记录。轮转删除的旧副本、平台截断或手工剪切造成的缺失不能恢复，提取结果会报告缺少元数据、分段、引用或中间序号。
+`--log-dir` 是可选的本地副本，仍保存兼容的 `game.log` 与 `events.jsonl`，每文件50MB轮转并保留5份备份；下载的单个 `.log` 文件已包含分析所需记录。轮转删除的旧副本、平台截断或手工剪切造成的缺失不能恢复，提取结果会报告缺少元数据、分段、引用或中间序号。
 
 ```bash
 .venv/bin/python SDK/SDK_Python/CoreGeek/main3.py 8080 --log-level INFO --log-dir artifacts/game
@@ -93,22 +93,22 @@ run.bat 8080
 .venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --category long_context
 ```
 
-下载 txt 后，在仓库根目录用本地 Python 执行（只用标准库，无需安装依赖）：
+下载 `.log` 文件后，在仓库根目录用本地 Python 执行（只用标准库，无需安装依赖）：
 
 ```bash
-# 同一 txt 有多个场次时先确认编号；也会列出任务编号
-python tools/extract_logs.py match.txt --list
+# 同一 .log 文件有多个场次时先确认编号；也会列出任务编号
+python tools/extract_logs.py match.log --list
 # 提取录像对应的120~140回合，并附带前后5回合
-python tools/extract_logs.py match.txt --from-round 120 --to-round 140 --context 5 --out issue
+python tools/extract_logs.py match.log --from-round 120 --to-round 140 --context 5 --out issue
 # 可附加 --session 场次编号、--team 队伍编号、--unit-id 人物编号
-python tools/extract_logs.py match.txt --task-id "场次/r领取回合" --context 0 --out task_issue
+python tools/extract_logs.py match.log --task-id "场次/r领取回合" --context 0 --out task_issue
 # 需要进一步分文件时使用 --split
-python tools/extract_logs.py match.txt --from-round 120 --to-round 140 --out issue --split
+python tools/extract_logs.py match.log --from-round 120 --to-round 140 --out issue --split
 ```
 
-默认输出 `issue/issue.txt`（全部相关诊断）、独立的 `issue/tasks.txt`（自进化、新闻推理、宝藏、相关开拓者动作与反馈）和 `issue/meta.json`（区间及完整性报告）。可以直接发送 `issue.txt`，任务问题可单独发送 `tasks.txt`。`--split` 额外输出 `turns.jsonl`、`decisions.jsonl`、`feedback.jsonl`、`errors.jsonl`。提取器分多遍流式读取，不将整份 txt 载入内存；自动补入所选场次的版本配置和区间外被引用的长文本，原始回合与任务编号不改写。`included_as` 标明补入的上下文；缺失数据明确报告，不据此补造执行成功。支持平台时间戳前缀、混杂启动信息、UTF-8／UTF-16 txt 和旧 JSONL，校验分段完整性及哈希。
+默认输出 `issue/issue.txt`（全部相关诊断）、独立的 `issue/tasks.txt`（自进化、新闻推理、宝藏、相关开拓者动作与反馈）和 `issue/meta.json`（区间及完整性报告）。可以直接发送 `issue.txt`，任务问题可单独发送 `tasks.txt`。`--split` 额外输出 `turns.jsonl`、`decisions.jsonl`、`feedback.jsonl`、`errors.jsonl`。提取器分多遍流式读取，不将整份 `.log` 文件载入内存；自动补入所选场次的版本配置和区间外被引用的长文本，原始回合与任务编号不改写。`included_as` 标明补入的上下文；缺失数据明确报告，不据此补造执行成功。支持平台时间戳前缀、混杂启动信息、UTF-8／UTF-16 `.log` 和旧 JSONL，校验分段完整性及哈希。
 
-从 `--list` 复制任务编号后，可用 `--task-id "编号"` 查看同一次任务跨白天／黑夜的记录；自进化编号为 `session/r领取回合`（没有领取记录时用首次看到题目的回合），长上下文编号为 `session/long-context`，新闻推理为 `session/reasoning`。查询工具支持 txt 和 JSONL，可组合 `--from-round`、`--to-round`、`--unit-id`、`--event`、`--team`、`--session`、`--contains`、`--level` 和 `--limit`；`--json` 输出恢复后的 JSON Lines。白天70回合、黑夜60回合，阶段内回合从1计数；任务结束和 outcome 保留旧任务编号，新任务单独编号。领取失败、合法提交、任务结束和有证据的完成分别记录。
+从 `--list` 复制任务编号后，可用 `--task-id "编号"` 查看同一次任务跨白天／黑夜的记录；自进化编号为 `session/r领取回合`（没有领取记录时用首次看到题目的回合），长上下文编号为 `session/long-context`，新闻推理为 `session/reasoning`。查询工具支持 `.log` 和 JSONL，可组合 `--from-round`、`--to-round`、`--unit-id`、`--event`、`--team`、`--session`、`--contains`、`--level` 和 `--limit`；`--json` 输出恢复后的 JSON Lines。白天70回合、黑夜60回合，阶段内回合从1计数；任务结束和 outcome 保留旧任务编号，新任务单独编号。领取失败、合法提交、任务结束和有证据的完成分别记录。
 
 工具不能给历史无结构的纯文本日志补充地图和任务编号。使用 `callback()` 的外部宿主需调用 `agent.logging_system.configure_logging("INFO")` 启用同样的 stderr 输出，也可传入日志目录。场次编号基于代理内存生命周期，不代表官方比赛 ID。运行配置和源码指纹可用于核对程序版本；打包方可通过 `FUTURE_WAR_VERSION` 附加包版本。
 
@@ -188,8 +188,8 @@ curl -X POST http://127.0.0.1:8080/ -H 'Content-Type: application/json' --data-b
 | `examples/response.json` | 原 v1.0 样例回放得到的响应，保留为历史夹具 |
 | `tests/test_agent.py` | 标准库 unittest 自动化测试 |
 | `tools/replay.py` | 单回合及连续请求回放 |
-| `tools/extract_logs.py` | 从单个比赛txt提取问题区间和独立任务日志 |
-| `tools/log_records.py` | txt／JSONL流式解析、分段恢复与完整性校验 |
+| `tools/extract_logs.py` | 从单个比赛 `.log` 文件提取问题区间和独立任务日志 |
+| `tools/log_records.py` | `.log`／JSONL流式解析、分段恢复与完整性校验 |
 
 仅实现 Python 分支，不创建图片中的 C++、Java、Go、Rust 空壳工程。
 

@@ -166,7 +166,7 @@ class TxtDiagnosticsTests(unittest.TestCase):
         self.assertGreater(len(physical), 2)
         self.assertTrue(all(len(line.encode()) < 8192 for line in physical))
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory, "match.txt")
+            path = Path(directory, "match.log")
             path.write_text("startup\n" + "\n".join("[platform time] " + line for line in physical))
             restored = list(events(path))
             self.assertEqual(restored[0]["data"]["content"], text)
@@ -214,7 +214,7 @@ class TxtDiagnosticsTests(unittest.TestCase):
 
     def test_extraction_restores_out_of_window_task_payload_and_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory, "match.txt")
+            path = Path(directory, "match.log")
             source = [dict(run="R", session="S", team="A", round=1, event="session_started", data={"config": {"round_origin": 0}}),
                       dict(run="R", session="S", team="A", round=2, task_id="S/r2", event="task_description", category="evolution",
                            record_id="definition", data={"payload_id": "question", "content": "完整题目"}),
@@ -244,7 +244,7 @@ class TxtDiagnosticsTests(unittest.TestCase):
         result = records(stream)
         task = next(r["task_id"] for r in result if r["event"] == "task_started")
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory, "match.txt")
+            path = Path(directory, "match.log")
             path.write_text("\n".join("FWLOG " + json.dumps(r, ensure_ascii=False) for r in result))
             output = Path(directory, "task")
             self.assertEqual(extract([str(path), "--task-id", task, "--context", "0", "--out", str(output)]), 0)
@@ -255,9 +255,9 @@ class TxtDiagnosticsTests(unittest.TestCase):
                                       "--context", "0", "--out", str(Path(directory, "unit")), "--split"]), 0)
             self.assertTrue(list(events(Path(directory, "unit/turns.jsonl"))))
 
-    def test_reader_accepts_utf16_txt_and_detects_sequence_gap(self):
+    def test_reader_accepts_utf16_log_and_detects_sequence_gap(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory, "windows.txt")
+            path = Path(directory, "windows.log")
             source = [{"run": "R", "sequence": n, "round": n, "event": "sample"} for n in (1, 3)]
             path.write_text("\n".join("FWLOG " + json.dumps(r) for r in source), encoding="utf-16")
             report = ReadReport()

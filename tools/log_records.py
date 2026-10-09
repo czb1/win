@@ -1,4 +1,4 @@
-"""Read FWLOG txt or legacy JSONL, restoring verified chunks in bounded memory."""
+"""Read FWLOG .log files or legacy JSONL, restoring verified chunks in bounded memory."""
 import base64
 from collections import OrderedDict
 from dataclasses import dataclass, field

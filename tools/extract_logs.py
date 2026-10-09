@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract a complete issue window and tasks.txt from one downloaded match txt."""
+"""Extract a complete issue window and tasks.txt from one downloaded match .log file."""
 import argparse
 from collections import Counter
 import json
@@ -32,7 +32,7 @@ def dumps(record):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("log", type=Path, help="Downloaded txt or legacy events.jsonl")
+    parser.add_argument("log", type=Path, help="Downloaded .log file or legacy events.jsonl")
     parser.add_argument("--out", type=Path, default=Path("issue"))
     parser.add_argument("--from-round", type=int)
     parser.add_argument("--to-round", type=int)
