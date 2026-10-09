@@ -13,8 +13,8 @@ class Config:
     wall_stones: int = 1
     weapon_cells: list = field(default_factory=list)
     wall_cells: list = field(default_factory=list)
-    # The rocket pair shares the rear post; the gatling has a worker by the gate.
-    loadout: list = field(default_factory=lambda: ["rocket", "rocket", "gatling"])
+    # One pioneer rotates three rockets from their common control cell.
+    loadout: list = field(default_factory=lambda: ["rocket", "rocket", "rocket"])
     # Keep inherited assumptions until verified against the official engine.
     projectile_origin: str = "weapon"
     projectile_characters_block: bool = True

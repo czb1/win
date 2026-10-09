@@ -21,6 +21,7 @@ class Navigator:
         self._trees = {}
         self._distances = {}
         self.diagnostics = {}
+        self.gate_guard = None
 
     def record_search(self, uid, outcome, **facts):
         record = self.diagnostics.setdefault(uid, {"outcomes": {}, "last_failure": None})
@@ -53,6 +54,13 @@ class Navigator:
         return self._distances[key]
 
     def search(self, hero, goals, reserved=()):
+        goals, reserved = set(goals), set(reserved)
+        route = self._search(hero, goals, reserved)
+        if self.gate_guard is not None:
+            self.gate_guard.observe_search(hero, goals, reserved, route)
+        return route
+
+    def _search(self, hero, goals, reserved=()):
         check_time(self.deadline)
         avoided = self.memory.blocked(hero.id) if self.memory else set()
         blocked = frozenset((self.turn.blocked | set(reserved) | avoided) - {hero.pos})
@@ -119,8 +127,9 @@ def layout(turn, cfg):
     tower_order = [(-1, -1), (0, -1), (-1, 1)]
     towers = [world(p) for p in tower_order[:len(cfg.loadout)] if turn.inside(world(p))]
     # Preserve the original six-cell front and flanks, then close the rear.
-    # The one-cell gate (-2, 1) is on the rear side beside the shared gunner
-    # post. Legal diagonal steps connect both the post and the inner aisle.
+    # The sole gate (-2, 1) faces the third rocket at (-1, 1): an inward
+    # advance meets a tower before the base. Legal diagonal steps keep the
+    # shared control post (-1, 0) and the inner aisle accessible to workers.
     # It is absent from the blueprint, including breach repairs.
     order = [(3, v) for v in (0, 1, -1, 2, -2, 3)]
     order += [(u, v) for u in (2, 1, 0) for v in (-2, 3)]

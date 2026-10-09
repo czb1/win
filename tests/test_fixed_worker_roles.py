@@ -2,7 +2,7 @@
 import unittest
 
 from test_agent import payload, setup_case, unit
-from test_mixed_battery import mixed_case
+from test_mixed_battery import mixed_case, mixed_config
 from agent.brain import Agent
 from agent.combat import fixed_gatling_crew
 from agent.config import Config
@@ -42,7 +42,7 @@ def gate_case(round_no=393):
 
 
 def seeded_agent(data, **kwargs):
-    agent = Agent(Config(llm_enabled=False))
+    agent = Agent(mixed_config(llm_enabled=False))
     turn = Turn(data, agent.cfg)
     mem = Memory(day=turn.day, last_round=turn.round-1,
                  gatling_operator_id=2, wall_watch_id=1, **kwargs)
@@ -54,7 +54,7 @@ class FixedWorkerRolesTests(unittest.TestCase):
     def test_living_gunner_keeps_job_after_positions_gold_and_day_change(self):
         data = mixed_case(390)
         data['robot']['roles'] = []
-        agent = Agent(Config(llm_enabled=False))
+        agent = Agent(mixed_config(llm_enabled=False))
         agent.decide(data)
         mem = next(iter(agent.sessions.values()))
         self.assertEqual((mem.gatling_operator_id, mem.wall_watch_id), (1, 2))
@@ -69,7 +69,7 @@ class FixedWorkerRolesTests(unittest.TestCase):
     def test_initial_assignment_keeps_pack_carrier_for_repairs(self):
         data = mixed_case(390)
         data['teamOur']['roles'][1]['backpack'] = ['WallFixer'] * 3
-        turn, cfg, nav, ledger = setup_case(data)
+        turn, cfg, nav, ledger = setup_case(data, loadout=['rocket', 'rocket', 'gatling'])
         mem = Memory()
         fixed_gatling_crew(turn, mem, nav, ledger)
         self.assertEqual(mem.gatling_operator_id, 2)
@@ -157,7 +157,7 @@ class DaytimeGateTests(unittest.TestCase):
     def test_temporary_blockage_unlocks_early_watcher_but_not_late_recall(self):
         for tick, expected in ((3, False), (65, True)):
             data = gate_case(390 + tick)
-            turn, cfg, nav, ledger = setup_case(data)
+            turn, cfg, nav, ledger = setup_case(data, loadout=['rocket', 'rocket', 'gatling'])
             mem = Memory(wall_watch_id=2, gunner_post=(8, 22))
             locked, funds = prepare_watch(turn, cfg, mem, nav, ledger, turn.units[2],
                                            layout(turn, cfg)[1])
@@ -169,7 +169,7 @@ class DaytimeGateTests(unittest.TestCase):
         data = gate_case()
         next(r for r in data['teamOur']['roles'] if r['id'] == 11)['pos'] = dict(x=6, y=23)
         data['teamOur']['roles'].append(unit(300, 'wall', 7, 21, health=1000))
-        turn, cfg, nav, ledger = setup_case(data)
+        turn, cfg, nav, ledger = setup_case(data, loadout=['rocket', 'rocket', 'gatling'])
         locked, _ = prepare_watch(turn, cfg, Memory(wall_watch_id=2, gunner_post=(8, 22)), nav, ledger,
                                   turn.units[2], layout(turn, cfg)[1])
         self.assertTrue(locked)
@@ -177,7 +177,7 @@ class DaytimeGateTests(unittest.TestCase):
 
     def test_future_return_estimate_does_not_authorize_an_occupied_outward_leg(self):
         data = gate_case()
-        turn, cfg, nav, ledger = setup_case(data)
+        turn, cfg, nav, ledger = setup_case(data, loadout=['rocket', 'rocket', 'gatling'])
         groups = [[(20, 16)], [(7, 21)]]
         before = turn.blocked.copy()
         self.assertIsNone(via(nav, turn.units[2], groups, final_exact=True))
@@ -192,14 +192,14 @@ class DaytimeGateTests(unittest.TestCase):
                 for group in (data['teamOur']['roles'], data['mapInfo']['zones']):
                     for role in group:
                         role['pos']['x'] = (39 if role.get('roleType') == 'station' else 40) - role['pos']['x']
-            turn, cfg, nav, ledger = setup_case(data)
+            turn, cfg, nav, ledger = setup_case(data, loadout=['rocket', 'rocket', 'gatling'])
             mem = Memory()
             self.assertTrue(park_idle_pioneer(turn, cfg, mem, nav, ledger, turn.pioneer))
             post = mem.pioneer_wait_post
             self.assertTrue(post[0] > 33 if mirror else post[0] < 7)
             self.assertNotIn(post, ledger.wall_cells | ledger.tower_cells)
             next(r for r in data['teamOur']['roles'] if r['id'] == 11)['pos'] = dict(x=post[0], y=post[1])
-            turn, cfg, nav, ledger = setup_case(data)
+            turn, cfg, nav, ledger = setup_case(data, loadout=['rocket', 'rocket', 'gatling'])
             self.assertTrue(park_idle_pioneer(turn, cfg, mem, nav, ledger, turn.pioneer))
             self.assertEqual(mem.pioneer_wait_post, post)
             self.assertFalse(ledger.commands)
@@ -209,7 +209,7 @@ class DaytimeGateTests(unittest.TestCase):
             data = gate_case(470 if case == 'night' else 393)
             if case == 'task':
                 data['phaseTask'] = 'ongoing task'
-            turn, cfg, nav, ledger = setup_case(data)
+            turn, cfg, nav, ledger = setup_case(data, loadout=['rocket', 'rocket', 'gatling'])
             mem = Memory(return_targets={11: 20} if case == 'recall' else {})
             if case == 'used':
                 ledger.used.add(11)
