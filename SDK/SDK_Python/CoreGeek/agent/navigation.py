@@ -2,6 +2,7 @@
 from collections import deque
 from time import monotonic
 from .model import neighbours
+from .projectiles import mixed_layout
 
 
 class DeadlineExceeded(Exception):
@@ -125,7 +126,8 @@ def layout(turn, cfg):
     order += [(u, v) for u in (2, 1, 0) for v in (-2, 3)]
     order += [(-1, v) for v in (-2, 3)]
     order += [(-2, v) for v in range(-2, 4) if v != 1]
-    return towers, [world(p) for p in order if turn.inside(world(p))]
+    walls = [world(p) for p in order if turn.inside(world(p))]
+    return mixed_layout(turn, cfg, towers, walls), walls
 
 
 

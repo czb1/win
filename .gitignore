@@ -5,5 +5,4 @@ __pycache__/
 artifacts/
 keys/
 *private*.json
-SDK/SDK_Python/CoreGeek/log-public.json
 

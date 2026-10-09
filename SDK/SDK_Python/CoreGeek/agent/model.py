@@ -75,6 +75,8 @@ class Unit:
 class Turn:
     def __init__(self, data, cfg):
         self.raw = data
+        self.projectile_origin = cfg.projectile_origin
+        self.projectile_characters_block = cfg.projectile_characters_block
         self.round = int(data["roundNo"])
         if self.round < cfg.round_origin:
             raise ValueError("roundNo precedes configured round origin")

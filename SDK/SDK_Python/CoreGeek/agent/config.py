@@ -15,6 +15,9 @@ class Config:
     wall_cells: list = field(default_factory=list)
     # The rocket pair shares the rear post; the gatling has a worker by the gate.
     loadout: list = field(default_factory=lambda: ["rocket", "rocket", "gatling"])
+    # Keep inherited assumptions until verified against the official engine.
+    projectile_origin: str = "weapon"
+    projectile_characters_block: bool = True
     stone_batch: int = 10
     sell_batch: int = 40
     sell_batch_max: int = 80
@@ -42,6 +45,10 @@ class Config:
         cfg = cls(**raw)
         if cfg.layout_mode not in ("demo_inferred", "explicit"):
             raise ValueError("layout_mode must be demo_inferred or explicit")
+        if cfg.projectile_origin not in ("weapon", "controller"):
+            raise ValueError("projectile_origin must be weapon or controller")
+        if type(cfg.projectile_characters_block) is not bool:
+            raise ValueError("projectile_characters_block must be boolean")
         if not cfg.loadout or len(cfg.loadout) > 3 or any(
                 x not in ("gatling", "railgun", "rocket") for x in cfg.loadout):
             raise ValueError("loadout must contain 1..3 weapons")

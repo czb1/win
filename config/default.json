@@ -6,6 +6,8 @@
   "weapon_cells": [],
   "wall_cells": [],
   "loadout": ["rocket", "rocket", "gatling"],
+  "projectile_origin": "weapon",
+  "projectile_characters_block": true,
   "stone_batch": 10,
   "sell_batch": 40,
   "sell_batch_max": 80,
