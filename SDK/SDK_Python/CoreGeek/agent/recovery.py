@@ -94,6 +94,9 @@ class Recovery:
             if action and ledger.add(uid, action):
                 if action["action"] != "move":
                     self.active.pop(uid, None)
+                else:
+                    ledger.remember_work(turn.units[uid], 'recovery', goal[2],
+                                         action=goal[1], until=self.active[uid][1])
             else:
                 self.active.pop(uid, None)
 
@@ -121,6 +124,8 @@ class Recovery:
             if ledger.add(hero.id, action):
                 if action["action"] == "move":
                     self.active[hero.id] = (goal, turn.round + 8)
+                    ledger.remember_work(hero, 'recovery', goal[2],
+                                         action=goal[1], until=turn.round + 8)
                 # Always execute a deterministic fallback in the request round.
                 if len(options) > 1 and not self.ready:
                     self.ready = [g for g, _ in options]

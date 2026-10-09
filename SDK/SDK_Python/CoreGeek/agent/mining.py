@@ -1,4 +1,4 @@
-"""Persistent mining, safe night runs and one daily sale visit per worker."""
+"""Persistent mining, safe night runs and budgeted daytime batch sales."""
 import logging
 from collections import Counter
 from dataclasses import replace
@@ -46,7 +46,7 @@ def reserve_watch_space(turn, mem, hero, ledger=None):
 
 
 def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
-               reserved=(), max_steps=2, allow_blocked_home=False):
+               reserved=(), max_steps=2, allow_blocked_home=False, target_only=None):
     """Use otherwise idle daylight near ore; carry it to a later day's sale."""
     hero = reserve_watch_space(turn, mem, hero, ledger)
     if not turn.is_day or not hero.space:
@@ -68,6 +68,10 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
     reserved = set(ledger.reserved) | set(reserved) | danger
     options = []
     for target, kind in turn.zones.items():
+        if target_only is not None and target != target_only:
+            continue
+        if turn.mine_remain.get(target) is not None and turn.mine_remain[target] <= 0:
+            continue
         if (kind not in ORES or turn.prices.get(kind, 0) <= 0 or target in mem.collect_failures
                 or mem.movement.avoids(hero.id, target)):
             continue
@@ -102,7 +106,8 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
         LOG.debug("round=%s worker=%s spare_mining=no_safe_mine_within_two_steps day_left=%s",
                   turn.round, hero.id, turn.day_left)
         return False
-    _, _, _, target, _, route = min(options, key=lambda o: o[:5])
+    _, _, _, target, _, route = min(options, key=lambda o: (
+        o[3] != mem.mine_targets.get(hero.id), *o[:5]))
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
         ledger.explain(hero.id, "spare_mining_for_later", target=target, route_steps=route[0],
@@ -111,6 +116,8 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
         changed = mem.mine_targets.get(hero.id) != target
         mem.mine_targets[hero.id] = target
         ledger.mine_claims[hero.id] = target
+        if route[1] is not None:
+            ledger.remember_work(hero, 'spare', target)
         record_target(turn, hero, target, route, "carry_for_later", changed)
         return True
     return False
@@ -124,7 +131,7 @@ def sale_inventory(turn, mem, hero):
 
 
 def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
-         deadline=None, stockpile=False, dedicated=False):
+         deadline=None, stockpile=False, dedicated=False, target_only=None, stone_goal=None):
     hero = reserve_watch_space(turn, mem, hero, ledger)
     if not hero.space:
         LOG.debug("round=%s worker=%s mining=backpack_full", turn.round, hero.id)
@@ -155,6 +162,11 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
               deadline if deadline is not None and turn.tick < deadline else 70)
     options, skipped = [], Counter()
     for p, kind in turn.zones.items():
+        if target_only is not None and p != target_only:
+            continue
+        if turn.mine_remain.get(p) is not None and turn.mine_remain[p] <= 0:
+            skipped['mine_exhausted'] += 1
+            continue
         if kind not in ORES:
             continue
         if p in mem.collect_failures:
@@ -235,19 +247,24 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         ledger.explain(hero.id, "mine_wall_material" if want_stone else "mine_for_later" if stockpile else "mine_for_sale",
                        target=target, route_steps=route[0], candidate_count=len(options),
                        skipped=dict(skipped), selected_score=chosen[0], best_score=best[0],
-                       retained_previous=chosen is previous, retention_ratio=0.65,
+                       retained_previous=chosen is previous, continuation=target_only is not None,
+                       retention_ratio=None if target_only is not None else 0.65,
                        free_space=hero.space, day_left=turn.day_left, deadline=deadline,
                        return_margin=cfg.return_margin)
         changed = mem.mine_targets.get(hero.id) != target
         mem.mine_targets[hero.id] = target
         ledger.mine_claims[hero.id] = target
+        ledger.remember_work(hero, 'mine', target, ore=turn.zones[target],
+                             want_stone=want_stone, stockpile=stockpile,
+                             deadline=deadline, stone_goal=stone_goal)
         record_target(turn, hero, target, route,
                       "wall_material" if want_stone else "carry_for_later" if stockpile else "sell_today", changed)
         return True
     return False
 
 
-def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, allow_spare=True):
+def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, allow_spare=True,
+         vendor_only=None):
     counts = sale_inventory(turn, mem, hero)
     ores = list(counts)
     total = sum(counts[k] for k in ores)
@@ -274,7 +291,8 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
         return False
     vendors = [p for p, k in turn.zones.items() if k == "vendor"]
     options = [(r[0] != 0, p != mem.sale_targets.get(hero.id), r[0], p, r) for p in vendors
-               if (force_sale or hero.id not in mem.sold_workers or p == mem.sale_targets.get(hero.id))
+               if (vendor_only is None or p == vendor_only)
+               and (force_sale or hero.id not in mem.sold_workers or p == mem.sale_targets.get(hero.id))
                and not mem.movement.avoids(hero.id, p)
                and (r := nav.approach(hero, [p], ledger.reserved)) is not None]
     choice = min(options, default=None)
@@ -305,6 +323,7 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
                 mem.sold_workers.add(hero.id)
             mem.sale_targets[hero.id] = vendor
             mem.mine_targets.pop(hero.id, None)
+            ledger.remember_work(hero, 'sell', vendor)
             return True
         return False
 

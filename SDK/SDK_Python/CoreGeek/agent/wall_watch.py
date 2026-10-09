@@ -77,7 +77,7 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
                 if (name := f'WeaponUpgradeVoucher{w.level}') in turn.shop and turn.shop[name] > 0]
     core_budget = (max(0, len(cfg.loadout) - len(turn.weapons)) * cfg.weapon_cost
                    + min(upgrades, default=0))
-    from .economy import wall_purchase_allowed, voucher_for, refresh_stone_reserves
+    from .economy import wall_purchase_allowed, voucher_for, refresh_stone_reserves, batch_sale_ready
     wall_prices = [turn.shop[name] for wall in walls
                    if wall_purchase_allowed(turn, wall, mem)
                    and (name := voucher_for(wall)) in turn.shop and turn.shop[name] > 0]
@@ -113,7 +113,8 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         return True, 0
     shops = []
     for point, kind in turn.zones.items():
-        if kind != 'weaponShop' or (hero.id, 'WallFixer') in mem.buy_failures:
+        if (kind != 'weaponShop' or (hero.id, 'WallFixer') in mem.buy_failures
+                or mem.movement.avoids(hero.id, point)):
             continue
         for cell in neighbours(point):
             route = nav.search(hero, {cell}, ledger.reserved)
@@ -123,8 +124,14 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
             if back is None:
                 back = watch_route(turn, nav, ledger, mem, replace(hero, pos=cell), sites)
             if back:
-                shops.append((route[0] + back[0] + 1, route))
-    shop = min(shops, key=lambda o: o[0], default=None)
+                shops.append((route[0] + back[0] + 1, route, point))
+    previous_job = mem.daytime_jobs.get(hero.id, {})
+    previous_shop = (previous_job.get('target') if previous_job.get('kind') == 'buy'
+                     and previous_job.get('name') == 'WallFixer' else None)
+    feasible_shops = [o for o in shops if o[0] + cfg.return_margin < turn.day_left]
+    shop = min(feasible_shops, key=lambda o: (o[2] != previous_shop, o[0]), default=None)
+    if shop is None:
+        shop = min(shops, key=lambda o: o[0], default=None)
     if shop is None:
         funds = 0
     else:
@@ -160,17 +167,29 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
             return True, 0
     # Sell the watcher's own ore before shopping, including while carrying
     # packs. Keep enough daylight for the vendor, shop and inside return.
-    if ores and stage:
+    sale_value = sum(count * turn.prices[kind] for kind, count in ores.items())
+    funding_pack = (price is not None and price > 0
+                    and quota < max(0, min(safety_stock, target) - held)
+                    and (ledger.gold + sale_value) // price > ledger.gold // price)
+    # A tiny new load must not restart a distant sale after every fallback
+    # pickup. Selling to unlock another safety pack or clear its slots remains
+    # a defence need; otherwise use the ordinary batch/deadline contract.
+    sale_ready = (batch_sale_ready(turn, cfg, mem, nav, ledger, hero)
+                  or funding_pack or hero.space < quota
+                  or hero.id not in mem.sold_workers and turn.day_left <= budget)
+    if ores and stage and sale_ready:
         if any(trip is not None and trip + len(ores) + int(bool(quota))
                + cfg.return_margin < turn.day_left for trip in trips):
-            if earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False):
+            if earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False,
+                    vendor_only=mem.sale_targets.get(hero.id) if hero.id in mem.sale_workers else None):
                 report('sell', 'liquidate_before_stock')
                 return True, funds
     if quota and shop:
         if shop[0] + cfg.return_margin < turn.day_left:
             if hero.space < quota and any(hero.inventory[k] for k in ORES):
                 # Clear ore through the existing once-daily sale contract.
-                if earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False):
+                if earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False,
+                        vendor_only=mem.sale_targets.get(hero.id) if hero.id in mem.sale_workers else None):
                     report('sell', 'clear_pack_slots')
                     return True, funds
             count = min(quota, hero.space)
@@ -182,6 +201,8 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
                     funds = 0
                     ledger.daytime_waits[hero.id] = 'command_rejected'
                     ledger.watch_pack_slots[hero.id] = 0
+                elif route[1] is not None:
+                    ledger.remember_work(hero, 'buy', shop[2], name='WallFixer', quantity=count)
                 report('move' if route[1] else 'buy', 'restock' if added else 'command_rejected', count=count)
                 return True, funds if route[1] else 0
     ledger.watch_pack_slots[hero.id] = 0

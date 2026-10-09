@@ -35,10 +35,17 @@ class Ledger:
         # and intentional watch standby must have different fallback policies.
         self.daytime_waits = {}
         self.watch_pack_slots = {}
+        self.work_jobs = {}
+        self.supply_targets = {}
         self.notes, self.plans, self.origins, self.rejections, self.rejected_samples = {}, {}, {}, {}, {}
 
     def explain(self, uid, reason, **conditions):
         self.notes[uid] = {"reason": reason, "conditions": conditions}
+
+    def remember_work(self, hero, kind, target=None, **details):
+        """Record accepted daytime work, never speculative role assignments."""
+        if self.turn.is_day and hero.kind == "worker" and hero.id in self.used:
+            self.work_jobs[hero.id] = dict(kind=kind, target=target, **details)
 
     def _reject(self, reason):
         try:

@@ -292,15 +292,23 @@ def voucher_for(building):
     return f"{prefix}UpgradeVoucher{building.level}" if prefix and building.level < 3 else None
 
 
-def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
+def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
+                  target_only=None, name_only=None, urgent_only=False):
     if hero.health <= (165 if hero.kind == "worker" else 150) and hero.inventory["Medicine"]:
         return ledger.add(hero.id, command("use", name="Medicine"))
     upgrades = []
     for building in turn.ours:
+        if target_only is not None and building.pos != target_only:
+            continue
+        if urgent_only and not (building.kind == 'station' and critical_station(turn, building, mem)
+                                or rebuilding_wall(turn, building, mem)
+                                or building.kind == 'wall' and building.health < 500):
+            continue
         if building.kind == "station" and replacement_work_pending(turn, mem):
             continue
         name = voucher_for(building)
-        if (name and hero.inventory[name] and wall_upgrade_allowed(turn, building, mem)
+        if (name and (name_only is None or name == name_only)
+                and hero.inventory[name] and wall_upgrade_allowed(turn, building, mem)
                 and building.id not in ledger.upgrade_claims
                 and not (mem and mem.movement.avoids(hero.id, building.pos))):
             route = (dusk_route(turn, nav, ledger, hero, building.cells,
@@ -309,7 +317,8 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
                      else nav.approach(hero, building.cells, ledger.reserved))
             if route and (not local_only or route[0] == 0):
                 upgrades.append((upgrade_order(turn, building, mem), route[0], name, building, route))
-        if (building.kind == "wall" and hero.inventory["WallFixer"]
+        if (building.kind == "wall" and (name_only is None or name_only == 'WallFixer')
+                and hero.inventory["WallFixer"]
                 and (building.health < 500 if turn.is_day else needs_night_repair(building, turn, mem))
                 and building.id not in ledger.repair_claims
                 and not (mem and not turn.is_day and turn.day >= 4
@@ -347,12 +356,13 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None):
             if mem:
                 mem.upgrade_targets[hero.id] = building.pos
             (ledger.repair_claims if name == "WallFixer" else ledger.upgrade_claims).add(building.id)
+            ledger.remember_work(hero, 'use', building.pos, name=name)
             return True
     return False
 
 
 def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
-             planned=(), bulk=False):
+             planned=(), bulk=False, item_only=None, shop_only=None, quantity=None):
     """Return an affordable, applicable purchase and its shopping route.
 
     Routes are checked before committing to shopping. A full backpack can be
@@ -363,7 +373,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     # Ordinary dusk items remain single purchases. Walls may share one trip
     # only after the complete batch's delivery/return budget has been checked.
     bulk = bulk and not dusk
-    shops = [p for p, k in turn.zones.items() if k == "weaponShop"]
+    shops = [p for p, k in turn.zones.items() if k == "weaponShop"
+             and (shop_only is None or p == shop_only)]
     routes = [(r[0], p, r) for p in shops
               if not mem.movement.avoids(hero.id, p)
               and (r := nav.approach(hero, [p], ledger.reserved)) is not None]
@@ -411,6 +422,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     candidates.sort(key=lambda c: c[0])
     seen = set()
     for _, name, destinations in candidates:
+        if item_only is not None and name != item_only:
+            continue
         if name in seen:
             continue
         seen.add(name)
@@ -434,6 +447,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         wall_batch = dusk and turn.day >= RESOURCE_POLICY_DAY and name.startswith("WallUpgradeVoucher")
         count = min(len(matches) if bulk or wall_batch else 1, max(1, hero.space),
                     (ledger.gold - reserve) // price if price else len(matches))
+        if quantity is not None:
+            count = min(count, quantity)
         options = []
         for _, shop, _ in routes:
             if dusk and "UpgradeVoucher" in name:
@@ -452,7 +467,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                                 turn, nav, ledger, replace(hero, pos=cell), batch, count,
                                 to_shop[0] + 1, require_home=not late_wall_relief(turn))
                             if num:
-                                options.append((-num, cost, to_shop))
+                                options.append((-num, cost, to_shop, shop))
                             continue
                         # dusk_route reads day_left; charge shopping travel and
                         # the buy action through its action budget instead.
@@ -462,7 +477,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                     finally:
                         turn.blocked = original
                     if deliveries:
-                        options.append((-1, to_shop[0] + min(r[0] for r in deliveries), to_shop))
+                        options.append((-1, to_shop[0] + min(r[0] for r in deliveries), to_shop, shop))
                 continue
             arrival = nav.approach(hero, destinations, ledger.reserved)
             if arrival is None:
@@ -508,10 +523,11 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                                 + 2 * held + len(prerequisites)
                                 + 2 * sum(w.id < 0 for w in planned) + cfg.return_margin)
                         if cost < turn.day_left:
-                            options.append((-num, cost, to_shop))
+                            options.append((-num, cost, to_shop, shop))
                             break
         if options:
-            neg_num, _, route = min(options, key=lambda o: o[:2])
+            neg_num, _, route, shop = min(options, key=lambda o: o[:2])
+            ledger.supply_targets[hero.id] = shop
             return name, route, -neg_num
     return None
 
@@ -525,6 +541,7 @@ def buy_supply(turn, ledger, hero, plan):
     if ledger.add(hero.id, command("move", route[1])):
         ledger.purchases.add(name)
         ledger.gold -= turn.shop[name] * num
+        ledger.remember_work(hero, 'buy', ledger.supply_targets.get(hero.id), name=name, quantity=num)
         return True
     return False
 
@@ -542,8 +559,38 @@ def refresh_stone_reserves(turn, cfg, mem, ledger):
         stone_need -= mem.stone_reserves[h.id]
 
 
+def batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
+    """Small late loads justify travel only for a phase/return deadline."""
+    counts = sale_inventory(turn, mem, hero)
+    total = sum(counts.values())
+    if not total:
+        return False
+    if (hero.id in mem.sale_workers or not hero.space
+            or total >= min(hero.capacity, cfg.sell_batch)):
+        return True
+    home, exact = return_destination(turn, nav, ledger, hero)
+    for vendor, kind in turn.zones.items():
+        if kind != 'vendor':
+            continue
+        route = nav.approach(hero, [vendor], ledger.reserved)
+        if route is None:
+            continue
+        # An adjacent sale has no outward journey to amortize.
+        if route[0] == 0:
+            return True
+        trip = via(nav, hero, [[vendor], home], ledger.reserved, final_exact=exact) if home else route[0]
+        if trip is None or trip + len(counts) + cfg.return_margin > turn.day_left:
+            continue
+        phase_due = (hero.id not in mem.sold_workers
+                     and min(60, mem.preparation_tick) - turn.tick <= route[0] + len(counts))
+        return_due = turn.day_left <= trip + len(counts) + cfg.return_margin + 2
+        if phase_due or return_due:
+            return True
+    return False
+
+
 def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
-    """Liquidate surplus ore early, then spend daylight before return locks."""
+    """Sell complete batches or due loads, then spend feasible daylight."""
     if not turn.is_day or turn.tick < 40:
         return
     refresh_stone_reserves(turn, cfg, mem, ledger)
@@ -555,11 +602,11 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
         if hero.health <= 165 and hero.inventory["Medicine"]:
             if ledger.add(hero.id, command("use", name="Medicine")):
                 continue
-        # Begin well before tick 60 so selling several ore types and returning
-        # can fit. Reopen a completed daily sale for newly collected surplus.
+        # Do not reopen a vendor journey for each newly collected unit.
+        sale_ready = hero.kind == 'worker' and batch_sale_ready(turn, cfg, mem, nav, ledger, hero)
         carrying = any("UpgradeVoucher" in k or k == "WallFixer" for k in hero.backpack)
         if (hero.kind == "worker" and not carrying
-                and hero.id != mem.wall_repair_worker and sale_inventory(turn, mem, hero)
+                and hero.id != mem.wall_repair_worker and sale_ready
                 and earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False)):
             continue
         # The sale window opens at tick 40. Use any remaining daylight for a
@@ -568,7 +615,7 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
         if use_inventory(turn, nav, ledger, hero, mem=mem):
             continue
         if (hero.kind == "worker" and hero.id != mem.wall_repair_worker
-                and sale_inventory(turn, mem, hero)
+                and sale_ready
                 and earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False)):
             continue
         if hero.kind != "worker" or hero.id == mem.wall_repair_worker:
@@ -667,6 +714,8 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
         if ledger.add(hero.id, action):
             ledger.build_claims[target] = (hero.id, name)
             mem.build_targets[hero.id] = target
+            if route[1] is not None:
+                ledger.remember_work(hero, 'build', target, name=name, work_cell=work_cell)
             return True
     return False
 
@@ -760,7 +809,8 @@ def repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
         # Once delivery starts, finish the carried batch rather than refilling
         # after each wall or switching to a shopping trip.
         if not mem.wall_repair_delivering and held < goal:
-            if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True):
+            if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
+                    stone_goal=goal):
                 return gaps
         if held >= cfg.wall_stones:
             mem.wall_repair_delivering = True
@@ -832,7 +882,8 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
         # The courier can construct guns while the other worker collects the
         # front-wall batch on its way home, avoiding a second base -> mine trip.
         if held < min(cfg.stone_batch, missing * cfg.wall_stones):
-            if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True):
+            if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
+                    stone_goal=min(cfg.stone_batch, missing * cfg.wall_stones)):
                 return
     available_towers = [p for p in tower_sites if p not in turn.blocked
                         and p not in ledger.reserved and p not in ledger.build_claims
@@ -885,7 +936,7 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
             stone_goal = min(stone_goal, feasible)
     if need_walls and hero.inventory["stone"] < stone_goal:
         if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
-                local_only=hero.inventory["stone"] >= cfg.wall_stones):
+                local_only=hero.inventory["stone"] >= cfg.wall_stones, stone_goal=stone_goal):
             return
     if need_walls and hero.inventory["stone"] >= cfg.wall_stones:
         if build(turn, cfg, mem, nav, ledger, hero, wall_sites, lambda _: "wall"):
@@ -1041,8 +1092,6 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
         worker(turn, cfg, mem, nav, ledger, hero, tower_sites, selected_walls, hero.id in builder_ids,
                develop=hero.id in developing, shopping=hero.id == buyer, deadline=cutoff,
                gather_first=bool(trading) and hero.id in builder_ids and buyer is not None)
-        if hero.id not in ledger.mine_claims:
-            mem.mine_targets.pop(hero.id, None)
         if hero.id not in ledger.used:
             vacate_site(turn, nav, ledger, hero, sites)
 
