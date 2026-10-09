@@ -1,17 +1,210 @@
 #!/usr/bin/env python3
-"""Extract a complete issue window and tasks.txt from one downloaded match txt."""
+"""Extract a complete issue window and tasks.txt from one downloaded match .log file.
+
+Standalone script: Python 3.11+ standard library only; no other scripts needed.
+"""
 import argparse
-from collections import Counter
+import base64
+from collections import Counter, OrderedDict
+from dataclasses import dataclass, field
+from hashlib import sha256
 import json
 from pathlib import Path
+import re
 import sys
 
-from log_records import events, is_task, payload_key, ReadReport, scope
+PREFIX = "FWLOG "
+TASK_CATEGORIES = {"evolution", "long_context", "reasoning"}
+TASK_ACTIONS = {"acceptTask", "submitAnswer", "summonTreasure"}
+TASK_PAYLOAD_EVENTS = {"sent_prompt", "sent_executeCmd", "received_llmResp", "received_lastCmdResult"}
+
+
+@dataclass
+class ReadReport:
+    records: int = 0
+    ignored_lines: int = 0
+    invalid_lines: int = 0
+    duplicate_records: int = 0
+    incomplete_records: int = 0
+    problems: list = field(default_factory=list)
+    sequences: dict = field(default_factory=dict)
+
+    def problem(self, line, reason):
+        if len(self.problems) < 100:
+            self.problems.append({"line": line, "reason": reason})
+
+    def summary(self):
+        gaps = []
+        for run, numbers in self.sequences.items():
+            ordered = sorted(numbers)
+            gaps.extend({"run": run, "from": a + 1, "to": b - 1}
+                        for a, b in zip(ordered, ordered[1:]) if b > a + 1)
+        return {"records": self.records, "ignored_lines": self.ignored_lines,
+                "invalid_lines": self.invalid_lines, "duplicate_records": self.duplicate_records,
+                "incomplete_records": self.incomplete_records, "sequence_gaps": gaps[:100],
+                "problems": self.problems,
+                "note": "Gaps describe this input; platform truncation and manually cut excerpts may cause them."}
+
+
+def events(path, report=None, warn=True):
+    report = report if report is not None else ReadReport()
+    pending, emitted = OrderedDict(), OrderedDict()
+    pending_bytes = 0
+    decoder = json.JSONDecoder()
+    with Path(path).open("rb") as source:
+        prefix = source.read(4)
+    encoding = "utf-16" if prefix.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+    with Path(path).open(encoding=encoding, errors="replace") as source:
+        for line_no, line in enumerate(source, 1):
+            line = re.sub(r"\x1b\[[0-9;]*[mK]", "", line).strip()
+            if not line:
+                continue
+            if line.startswith("{"):
+                raw = line
+            elif PREFIX in line:
+                raw = line.split(PREFIX, 1)[1]
+            else:
+                report.ignored_lines += 1
+                if Path(path).suffix == ".jsonl":
+                    report.invalid_lines += 1
+                    report.problem(line_no, "invalid JSONL line")
+                    if warn and report.invalid_lines <= 5:
+                        print(f"跳过无效日志：{path}:{line_no}", file=sys.stderr)
+                continue
+            try:
+                record, end = decoder.raw_decode(raw)
+                if raw[end:].strip() or not isinstance(record, dict):
+                    raise ValueError("expected one JSON object")
+                fragment = record.get("fragment")
+                if fragment is not None:
+                    if not isinstance(fragment, dict):
+                        raise ValueError("invalid fragment")
+                    index, total = fragment["index"], fragment["total"]
+                    if type(index) is not int or type(total) is not int or not 0 <= index < total <= 4096:
+                        raise ValueError("invalid fragment count")
+                    if fragment.get("encoding") != "base64":
+                        raise ValueError("unsupported fragment encoding")
+                    identity = (record.get("run"), record["record_id"])
+                    if not isinstance(identity[1], str):
+                        raise ValueError("missing fragment identity")
+                    part = base64.b64decode(fragment["content"], validate=True)
+                    state = pending.setdefault(identity, {"parts": {}, "total": total,
+                                               "sha256": fragment["sha256"], "line": line_no})
+                    if state["total"] != total or state["sha256"] != fragment["sha256"]:
+                        raise ValueError("fragment metadata mismatch")
+                    if index in state["parts"] and state["parts"][index] != part:
+                        raise ValueError("conflicting duplicate fragment")
+                    if index not in state["parts"]:
+                        state["parts"][index] = part
+                        pending_bytes += len(part)
+                    while len(pending) > 128 or pending_bytes > 32 * 1024 * 1024:
+                        _, removed = pending.popitem(last=False)
+                        pending_bytes -= sum(map(len, removed["parts"].values()))
+                        report.incomplete_records += 1
+                        report.problem(removed["line"], "fragment buffer limit; record unavailable")
+                    if identity not in pending or len(state["parts"]) != total:
+                        continue
+                    encoded = b"".join(state["parts"][i] for i in range(total))
+                    pending_bytes -= len(encoded)
+                    del pending[identity]
+                    if sha256(encoded).hexdigest() != state["sha256"]:
+                        raise ValueError("fragment checksum mismatch")
+                    record = json.loads(encoded.decode("utf-8"))
+                    if not isinstance(record, dict) or (record.get("run"), record.get("record_id")) != identity:
+                        raise ValueError("restored record identity mismatch")
+                for key in ("run", "request_id", "session", "team", "record_id", "task_id", "category", "event"):
+                    if record.get(key) is not None and type(record[key]) not in (str, int):
+                        raise ValueError("invalid scalar identity: " + key)
+            except (ValueError, KeyError, TypeError, UnicodeError) as error:
+                report.invalid_lines += 1
+                report.problem(line_no, str(error))
+                if warn and report.invalid_lines <= 5:
+                    print(f"跳过无效日志：{path}:{line_no} ({error})", file=sys.stderr)
+                continue
+            identity = (record.get("run"), record.get("record_id"))
+            if identity[1] is not None:
+                if identity in emitted:
+                    report.duplicate_records += 1
+                    continue
+                emitted[identity] = True
+                if len(emitted) > 4096:
+                    emitted.popitem(last=False)
+            sequence = record.get("sequence")
+            if type(sequence) is int:
+                report.sequences.setdefault(record.get("run"), set()).add(sequence)
+            report.records += 1
+            yield record
+    for state in pending.values():
+        report.incomplete_records += 1
+        report.problem(state["line"], "missing fragments; record unavailable")
+    if warn and report.incomplete_records:
+        print(f"日志缺少分段：{report.incomplete_records} 条记录无法恢复", file=sys.stderr)
+
+
+def scope(record):
+    return record.get("run"), record.get("session"), record.get("team")
+
+
+def payload_key(record):
+    data = record.get("data")
+    if isinstance(data, dict) and isinstance(data.get("payload_id"), str):
+        return (*scope(record), record.get("category"), data["payload_id"])
+    return None
+
+
+def is_task(record):
+    return record.get("category") in TASK_CATEGORIES or str(record.get("event", "")).startswith("task_")
+
+
+def task_category(record):
+    category = record.get("category")
+    if category in TASK_CATEGORIES:
+        return category
+    if str(record.get("event", "")).startswith("task_"):
+        return "evolution"
+    return None
+
+
+def task_related(record):
+    if task_category(record) or record.get("event") in TASK_PAYLOAD_EVENTS:
+        return True
+    data = record.get("data")
+    if not isinstance(data, dict):
+        return False
+    if record.get("event") == "unit_decision" and data.get("role_type") == "pioneer":
+        return True
+    commands = data.get("commands", data.get("roleCommandMap", {}))
+    if isinstance(commands, dict) and any(isinstance(command, dict) and command.get("action") in TASK_ACTIONS
+                                          for command in commands.values()):
+        return True
+    action = data.get("command")
+    if isinstance(action, dict) and action.get("action") in TASK_ACTIONS:
+        return True
+    if record.get("event") == "turn_response" and (data.get("prompt_chars") or data.get("execute_chars")):
+        return True
+    if record.get("event") == "previous_feedback":
+        if record.get("task_id") or data.get("lastSummonTreasureResult") not in (None, "", 0):
+            return True
+        actions = data.get("actions")
+        if isinstance(actions, list) and any(isinstance(item, dict) and isinstance(item.get("command"), dict)
+                                            and item["command"].get("action") in TASK_ACTIONS for item in actions):
+            return True
+    return False
+
+
+def matches_mode(record, mode):
+    if mode == "evolution":
+        return task_category(record) == "evolution"
+    if mode == "long-context":
+        return task_category(record) == "long_context"
+    if mode == "non-task":
+        return not task_related(record)
+    return True
 
 
 def anchors(record, args):
     number = record.get("round")
-    if type(number) is not int:
+    if type(number) is not int or not matches_mode(record, args.mode):
         return False
     for name in ("session", "team", "run", "day", "phase", "task_id"):
         expected = getattr(args, name)
@@ -26,13 +219,30 @@ def anchors(record, args):
     return True
 
 
+def selected_record(record, args, interval):
+    number = record.get("round")
+    if interval is None or type(number) is not int or not interval[0] - args.context <= number <= interval[1] + args.context:
+        return False
+    if not matches_mode(record, args.mode):
+        return False
+    if args.mode != "all":
+        # Context must not cross an explicit day/phase/task boundary in filtered modes.
+        for name in ("day", "phase", "task_id"):
+            expected = getattr(args, name)
+            if expected is not None and record.get(name) != expected:
+                return False
+    return True
+
+
 def dumps(record):
     return json.dumps(record, ensure_ascii=False, separators=(",", ":"))
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("log", type=Path, help="Downloaded txt or legacy events.jsonl")
+    parser.add_argument("log", type=Path, help="Downloaded .log file or legacy events.jsonl")
+    parser.add_argument("--mode", choices=("all", "evolution", "long-context", "non-task"), default="all",
+                        help="all=全部；evolution=仅自进化；long-context=仅长上下文；non-task=仅普通日志")
     parser.add_argument("--out", type=Path, default=Path("issue"))
     parser.add_argument("--from-round", type=int)
     parser.add_argument("--to-round", type=int)
@@ -44,6 +254,8 @@ def main(argv=None):
     parser.add_argument("--split", action="store_true", help="Also write snapshots, decisions, feedback and errors JSONL")
     parser.add_argument("--list", action="store_true", help="List sessions and tasks without writing files")
     args = parser.parse_args(argv)
+    if args.day is not None and args.day < 1:
+        parser.error("--day must be at least 1")
     if args.context < 0 or (args.from_round is not None and args.to_round is not None and args.from_round > args.to_round):
         parser.error("invalid round range or negative context")
     report = ReadReport()
@@ -51,13 +263,13 @@ def main(argv=None):
     for record in events(args.log, report):
         identity = scope(record)
         number = record.get("round")
-        groups[(identity, record.get("task_id"))] += 1
         if record.get("event") == "session_started":
             metadata[identity] = record
         key = payload_key(record)
         if key and "content" in record.get("data", {}):
             definitions.setdefault(key, record.get("record_id"))
         if anchors(record, args):
+            groups[(identity, None if args.mode == "non-task" else record.get("task_id"))] += 1
             lower, upper = bounds.get(identity, (number, number))
             bounds[identity] = min(lower, number), max(upper, number)
     if args.list:
@@ -79,9 +291,9 @@ def main(argv=None):
     try:
         with temporary.open("w", encoding="utf-8") as target:
             for record in events(args.log, warn=False):
-                identity, number = scope(record), record.get("round")
+                identity = scope(record)
                 interval = bounds.get(identity)
-                if interval is None or type(number) is not int or not interval[0] - args.context <= number <= interval[1] + args.context:
+                if not selected_record(record, args, interval):
                     continue
                 if record.get("event") == "session_started":
                     continue
@@ -102,19 +314,21 @@ def main(argv=None):
         missing = requested - available
         absent = [list(key) for key in missing if key not in definitions]
         meta = {"source": str(args.log), "filters": {name: getattr(args, name) for name in
-                ("from_round", "to_round", "context", "team", "session", "run", "day", "phase", "task_id", "unit_id")},
+                ("mode", "from_round", "to_round", "context", "team", "session", "run", "day", "phase", "task_id", "unit_id")},
                 "windows": [{"run": key[0], "session": key[1], "team": key[2],
                              "from_round": value[0] - args.context, "to_round": value[1] + args.context}
                             for key, value in bounds.items()],
                 "selected_records": selected_count, "read_report": report.summary(),
                 "missing_payloads": absent, "requests_without_response": [list(key) for key in unfinished],
                 "missing_session_metadata": [list(key) for key in bounds if key not in metadata]}
+        if args.mode != "all":
+            meta["session_metadata"] = [metadata[key] for key in bounds if key in metadata]
         files = {"issue": (args.out / "issue.txt").open("w", encoding="utf-8"),
                  "tasks": (args.out / "tasks.txt").open("w", encoding="utf-8")}
         if args.split:
             files.update({name: (args.out / (name + ".jsonl")).open("w", encoding="utf-8")
                           for name in ("turns", "decisions", "feedback", "errors")})
-        counts = Counter()
+        counts = Counter(task_records=0)
         def write(record):
             encoded = dumps(record)
             files["issue"].write("FWLOG " + encoded + "\n")
@@ -125,7 +339,7 @@ def main(argv=None):
             task = task or request in task_requests and (record.get("event") in ("previous_feedback", "turn_response")
                      or record.get("event") == "unit_decision" and isinstance(record.get("data"), dict) and record["data"].get("role_type") == "pioneer"
                      or record.get("level") in ("WARNING", "ERROR", "CRITICAL"))
-            if task:
+            if task and args.mode != "non-task":
                 files["tasks"].write("FWLOG " + encoded + "\n")
                 counts["task_records"] += 1
             for name, category in (("turns", "snapshot"), ("decisions", "decision"), ("feedback", "feedback")):
@@ -135,12 +349,13 @@ def main(argv=None):
                                        or record.get("event") in ("judger_errors", "log_integrity")):
                 files["errors"].write(encoded + "\n")
         try:
-            write({"schema_version": 2, "event": "log_integrity", "category": "runtime",
-                   "level": "WARNING" if report.invalid_lines or report.incomplete_records or absent or unfinished else "INFO",
-                   "data": meta})
-            for identity in bounds:
-                if identity in metadata:
-                    write({**metadata[identity], "included_as": "session_metadata"})
+            if args.mode == "all":
+                write({"schema_version": 2, "event": "log_integrity", "category": "runtime",
+                       "level": "WARNING" if report.invalid_lines or report.incomplete_records or absent or unfinished else "INFO",
+                       "data": meta})
+                for identity in bounds:
+                    if identity in metadata:
+                        write({**metadata[identity], "included_as": "session_metadata"})
             supplied = set()
             for record in events(args.log, warn=False):
                 key = payload_key(record)
