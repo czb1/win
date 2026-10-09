@@ -444,11 +444,12 @@ def events(path, report=None, warn=True, decryptor=None):
             line = re.sub(r"\x1b\[[0-9;]*[mK]", "", line).strip()
             if not line:
                 continue
-            encrypted_line = ENCRYPTED_PREFIX in line
+            encrypted_line = False
             if line.startswith("{"):
                 raw = line
-            elif encrypted_line:
+            elif ENCRYPTED_PREFIX in line and (PREFIX not in line or line.index(ENCRYPTED_PREFIX) < line.index(PREFIX)):
                 raw = line.split(ENCRYPTED_PREFIX, 1)[1]
+                encrypted_line = True
             elif PREFIX in line:
                 raw = line.split(PREFIX, 1)[1]
             else:

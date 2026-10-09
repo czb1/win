@@ -166,6 +166,18 @@ class LogEncryptionTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 2)
         self.assertEqual(missing.stdout, "")
 
+    def test_legacy_message_can_mention_encryption_markers_without_a_key(self):
+        record = {"run": "legacy", "record_id": "old", "round": 1,
+                  "message": "Use FWENC {JSON} to encrypt a FWLOG record", "data": {}}
+        raw = json.dumps(record)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.log"
+            for line in (raw, "FWLOG " + raw, "[platform time] FWLOG " + raw):
+                path.write_text(line)
+                report = extractor.ReadReport()
+                self.assertEqual(list(extractor.events(path, report, warn=False)), [record])
+                self.assertEqual(report.crypto_errors, 0)
+
     def test_downloaded_script_decrypts_and_preserves_all_modes(self):
         base = dict(run="R", session="S", team="A", day=2, phase="night")
         records = [
