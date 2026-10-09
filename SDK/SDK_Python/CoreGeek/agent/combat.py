@@ -116,6 +116,33 @@ def line_cells(start, end):
     return out
 
 
+def fixed_gatling_crew(turn, mem, nav, ledger):
+    """Night ownership survives daylight jobs, congestion and a missing gun."""
+    workers = {h.id: h for h in turn.workers}
+    previous = mem.gatling_operator_id
+    holder = workers.get(previous)
+    gatling = next((w for w in turn.weapons if w.kind == 'gatling'), None)
+    if holder is None and workers:
+        # Initial assignment considers equipment and travel. Once selected,
+        # only the loss of the living owner can make another worker take over.
+        original = turn.blocked
+        try:
+            turn.blocked = original - {h.pos for h in turn.heroes}
+            def cost(h):
+                route = nav.approach(h, gatling.cells) if gatling else None
+                return (h.id == mem.wall_watch_id, h.inventory['WallFixer'] > 0,
+                        route[0] if route else 10000, h.id)
+            holder = min(workers.values(), key=cost)
+        finally:
+            turn.blocked = original
+    mem.gatling_operator_id = holder.id if holder else None
+    if previous != mem.gatling_operator_id:
+        logging.getLogger(__name__).info(
+            'round=%s night_gatling_owner=%s->%s reason=%s', turn.round,
+            previous, mem.gatling_operator_id, 'initial' if previous is None else 'owner_unavailable')
+    return [(holder, gatling)] if holder and gatling else []
+
+
 def assignments(turn, nav, ledger, excluded=(), fixed=None, towers=None):
     towers = turn.weapons[:3] if towers is None else towers
     heroes = [h for h in turn.heroes if h.id not in ledger.used and h.id not in excluded]
