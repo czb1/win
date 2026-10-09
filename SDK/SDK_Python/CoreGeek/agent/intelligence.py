@@ -228,6 +228,7 @@ class Memory:
     gunner_id: int | None = None
     gunner_post: tuple | None = None
     gatling_operator_id: int | None = None
+    operator_yields: dict = field(default_factory=dict)
     pioneer_wait_post: tuple | None = None
     next_gun: int = 0
     pending: tuple | None = None
