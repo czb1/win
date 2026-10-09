@@ -34,6 +34,10 @@ def gate_case(round_no=70, imp=GATE, worker=(11, 2), pioneer=(4, 11)):
                                for i, p in enumerate(walls)]
     data['mapInfo']['zones'] = [dict(neutralType='copper', pos=dict(x=12, y=2), remain=10)]
     data['vendorShopList'] = [dict(name='copper', price=3)]
+    # An opponent-bound robot can still attack an imp blocking its route.
+    # Keep a local wave in traffic tests without diverting our gunner/workers.
+    data['robot']['roles'] = [unit(90, 'largeRobot', 10, 14, health=500,
+                                  targetTeam='defender', attackRange=3)]
     return data
 
 
@@ -109,6 +113,132 @@ class ThreeRocketTests(unittest.TestCase):
             self.assertTrue(any(p not in turn.station.cells and p not in walls and p not in towers
                                 and all(distance(p, t) == 1 for t in towers)
                                 for p in neighbours(towers[0])))
+
+
+class GateGuardEligibilityTests(unittest.TestCase):
+    def test_every_unbuilt_or_destroyed_perimeter_wall_releases_night_sabotage(self):
+        complete = gate_case(imp=(11, 2), worker=(1, 1))
+        wall_ids = [u['id'] for u in complete['teamOur']['roles'] if u['roleType'] == 'wall']
+        for uid in wall_ids:
+            for destroyed in (False, True):
+                with self.subTest(wall=uid, destroyed=destroyed):
+                    data = gate_case(imp=(11, 2), worker=(1, 1))
+                    if destroyed:
+                        next(u for u in data['teamOur']['roles'] if u['id'] == uid)['health'] = 0
+                    else:
+                        data['teamOur']['roles'] = [u for u in data['teamOur']['roles'] if u['id'] != uid]
+                    agent = Agent(Config(llm_enabled=False))
+                    commands = agent.decide(data)['roleCommandMap']
+                    self.assertEqual(commands['14'], command('destroy', (12, 2)))
+                    self.assertEqual(next(iter(agent.sessions.values())).sabotage.gate_states, {})
+
+    def test_unbuilt_perimeter_does_not_recall_at_dusk(self):
+        data = gate_case(69, imp=(11, 2), worker=(1, 1))
+        data['teamOur']['roles'] = [u for u in data['teamOur']['roles'] if u['roleType'] != 'wall']
+        turn, _, nav, ledger = setup_case(data, llm_enabled=False)
+        mem = Memory()
+        mem.observe(turn, Config())
+        towers, walls = layout(turn, Config())
+        self.assertIsNone(prepare_gate_guard(turn, Config(), mem, nav, ledger, towers, walls))
+        self.assertNotIn(14, ledger.used)
+
+    def test_wall_built_in_gate_disables_guard(self):
+        data = gate_case()
+        data['teamOur']['roles'].append(unit(200, 'wall', *GATE))
+        _, _, ledger, mem, guard = guard_setup(data)
+        self.assertIsNone(guard)
+        self.assertNotIn(14, ledger.used)
+        self.assertEqual(mem.sabotage.gate_states, {})
+
+    def test_no_living_local_robot_releases_stale_guard_and_keeps_channel(self):
+        for robots in ([], [unit(90, 'largeRobot', 2, 10, health=0)],
+                       [unit(90, 'largeRobot', 14, 14, attackRange=3, targetTeam='challenger')]):
+            with self.subTest(robots=robots):
+                data = gate_case(imp=(11, 2), worker=(1, 1))
+                data['robot']['roles'] = robots
+                turn, cfg, nav, ledger = setup_case(data, llm_enabled=False)
+                mem = Memory()
+                mem.observe(turn, cfg)
+                mem.sabotage.gate_states[14] = dict(day=turn.day, recalling=True, yield_until=75)
+                mem.sabotage.targets[14] = (12, 2), 'copper'
+                mem.sabotage.progress[14] = 2
+                towers, walls = layout(turn, cfg)
+                self.assertIsNone(prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls))
+                self.assertEqual(mem.sabotage.gate_states, {})
+                self.assertNotIn(14, ledger.used)
+                self.assertEqual(mem.sabotage.targets[14], ((12, 2), 'copper'))
+                self.assertEqual(mem.sabotage.progress[14], 2)
+                act_imps(turn, mem.sabotage, nav, ledger)
+                self.assertEqual(ledger.commands['14'], command('destroy', (12, 2)))
+
+    def test_local_robot_boundary_and_long_attack_range(self):
+        for point, attack_range, expected in (((10, 4), 3, True), ((11, 3), 3, False),
+                                              ((14, 0), 8, True), ((14, 0), 7, False)):
+            with self.subTest(point=point, attack_range=attack_range):
+                data = gate_case()
+                data['robot']['roles'] = [unit(90, 'largeRobot', *point, attackRange=attack_range)]
+                _, _, ledger, _, guard = guard_setup(data)
+                self.assertEqual(guard is not None, expected)
+                self.assertEqual(14 in ledger.used, expected)
+
+    def test_nearby_opponent_bound_and_stunned_robots_still_require_guard(self):
+        for target_team in ('challenger', 'defender', ''):
+            for abnormal in ('', 'dizzy'):
+                with self.subTest(target_team=target_team, abnormal=abnormal):
+                    data = gate_case()
+                    data['robot']['roles'] = [unit(90, 'largeRobot', 2, 10, attackRange=3,
+                                                  targetTeam=target_team, abnormalState=abnormal)]
+                    self.assertIsNotNone(guard_setup(data)[-1])
+
+    def test_own_summoned_robot_does_not_keep_gate_guard_active(self):
+        data = gate_case(imp=(11, 2), worker=(1, 1))
+        data['teamOur']['summonRobotList'] = data['robot']['roles']
+        _, _, ledger, mem, guard = guard_setup(data)
+        self.assertIsNone(guard)
+        self.assertNotIn(14, ledger.used)
+        self.assertEqual(mem.sabotage.gate_states, {})
+
+    def test_guard_leaves_when_local_wave_clears_and_returns_for_new_wave(self):
+        data, agent = gate_case(), Agent(Config(llm_enabled=False))
+        self.assertNotIn('14', agent.decide(data)['roleCommandMap'])
+        mem = next(iter(agent.sessions.values()))
+        mem.sabotage.gate_states[14].update(recalling=True, yield_until=75)
+        data['roundNo'] = 71
+        data['robot']['roles'] = []
+        commands = agent.decide(data)['roleCommandMap']
+        self.assertEqual(commands['14']['action'], 'move')
+        self.assertIn(pos(commands['14']['targetPos'][0]), POSTS)
+        self.assertEqual(mem.sabotage.gate_states, {})
+        data['roundNo'] = 72
+        data['teamOur']['roles'][3]['pos'] = commands['14']['targetPos'][0]
+        data['robot']['roles'] = [unit(90, 'largeRobot', 9, 14, attackRange=3)]
+        self.assertEqual(agent.decide(data)['roleCommandMap']['14'], command('move', GATE))
+        self.assertIn(14, mem.sabotage.gate_states)
+
+    def test_incomplete_wall_clears_prior_recall_and_yield_state(self):
+        data = gate_case(imp=(11, 2), worker=(1, 1))
+        data['teamOur']['roles'][-1]['health'] = 0
+        turn, cfg, nav, ledger = setup_case(data, llm_enabled=False)
+        mem = Memory()
+        mem.observe(turn, cfg)
+        mem.sabotage.gate_states[14] = dict(day=turn.day, recalling=True, yield_until=75)
+        towers, walls = layout(turn, cfg)
+        self.assertIsNone(prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls))
+        self.assertEqual(mem.sabotage.gate_states, {})
+        self.assertNotIn(14, ledger.used)
+        act_imps(turn, mem.sabotage, nav, ledger)
+        self.assertEqual(ledger.commands['14'], command('destroy', (12, 2)))
+
+    def test_released_imp_completes_four_consecutive_night_destroy_turns(self):
+        data, agent = gate_case(imp=(11, 2), worker=(1, 1)), Agent(Config(llm_enabled=False))
+        data['robot']['roles'] = []
+        for offset in range(4):
+            data['roundNo'] = 70 + offset
+            data['lastRoundRoleActionResults'] = {'14': True}
+            self.assertEqual(agent.decide(data)['roleCommandMap']['14'], command('destroy', (12, 2)))
+            mem = next(iter(agent.sessions.values()))
+            self.assertEqual(mem.sabotage.progress.get(14, 0), offset)
+            self.assertEqual(mem.sabotage.gate_states, {})
 
 
 class GateGuardTests(unittest.TestCase):
@@ -205,28 +335,34 @@ class GateGuardTests(unittest.TestCase):
         self.assertEqual(ledger.notes[14]['reason'], 'imp_guarding_gate')
         self.assertTrue(ledger.notes[14]['conditions']['at_gate'])
 
-    def test_exit_without_remembered_mine_clears_gate_before_worker_moves(self):
+    def test_quiet_night_sabotage_clears_gate_before_worker_moves(self):
         data, agent = gate_case(worker=(4, 9)), Agent(Config(llm_enabled=False))
-        data['mapInfo']['zones'] = [dict(neutralType='copper', pos=dict(x=1, y=7), remain=10)]
+        data['robot']['roles'] = []
+        data['mapInfo']['zones'].append(dict(neutralType='copper', pos=dict(x=1, y=7), remain=10))
         commands = agent.decide(data)['roleCommandMap']
         self.assertIn(pos(commands['14']['targetPos'][0]), POSTS)
         self.assertNotIn('1', commands)  # No move into the imp's observed cell.
         advance(data, commands)
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['1'], command('move', GATE))
-        self.assertNotIn('14', commands)
+        self.assertNotEqual(pos(commands['14']['targetPos'][0]), GATE)
         advance(data, commands)
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['1']['action'], 'move')
         self.assertNotEqual(pos(commands['1']['targetPos'][0]), GATE)
-        self.assertNotIn('14', commands)
+        self.assertNotEqual(pos(commands['14']['targetPos'][0]), GATE)
         advance(data, commands)
 
-    def test_far_inside_worker_can_request_exit_instead_of_stalling(self):
-        data = gate_case(worker=(7, 9))
-        data['mapInfo']['zones'] = [dict(neutralType='copper', pos=dict(x=1, y=7), remain=10)]
-        commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
+    def test_quiet_night_far_inside_worker_can_exit_after_imp_leaves(self):
+        data, agent = gate_case(worker=(7, 9)), Agent(Config(llm_enabled=False))
+        data['robot']['roles'] = []
+        data['mapInfo']['zones'].append(dict(neutralType='copper', pos=dict(x=1, y=7), remain=10))
+        commands = agent.decide(data)['roleCommandMap']
         self.assertIn(pos(commands['14']['targetPos'][0]), POSTS)
+        advance(data, commands)
+        commands = agent.decide(data)['roleCommandMap']
+        self.assertEqual(commands['1']['action'], 'move')
+        self.assertEqual(next(iter(agent.sessions.values())).sabotage.gate_states, {})
 
     def test_outside_wall_watcher_enters_and_imp_waits_for_observed_clearance(self):
         data, agent = gate_case(460, worker=(2, 10)), Agent(Config(llm_enabled=False))
@@ -255,6 +391,7 @@ class GateGuardTests(unittest.TestCase):
 
     def test_accepted_local_collection_does_not_trigger_unneeded_yield(self):
         data = gate_case(worker=(7, 9))
+        data['robot']['roles'][0]['pos'] = dict(x=1, y=14)
         data['mapInfo']['zones'] = [dict(neutralType='copper', pos=dict(x=7, y=10), remain=10),
                                   dict(neutralType='copper', pos=dict(x=1, y=7), remain=10)]
         commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
@@ -348,20 +485,27 @@ class GateGuardTests(unittest.TestCase):
         self.assertEqual(commands['14']['action'], 'move')
         self.assertNotEqual(pos(commands['14']['targetPos'][0]), GATE)
 
-    def test_guard_staging_and_worker_exit_mirror_in_four_corners(self):
+    def test_quiet_night_gate_clearance_and_worker_exit_mirror_in_four_corners(self):
         for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
             data = gate_case(worker=(4, 9))
+            data['robot']['roles'] = []
             data['mapInfo']['zones'] = [dict(neutralType='copper', pos=dict(x=1, y=7), remain=10)]
             expected_posts = {(14-x if flip_x else x, 14-y if flip_y else y) for x, y in POSTS}
-            for group in (data['teamOur']['roles'], data['mapInfo']['zones']):
+            for group in (data['teamOur']['roles'], data['mapInfo']['zones'], data['robot']['roles']):
                 for u in group:
                     p = u['pos']
                     if flip_x:
                         p['x'] = (13 if u.get('roleType') == 'station' else 14) - p['x']
                     if flip_y:
                         p['y'] = (15 if u.get('roleType') == 'station' else 14) - p['y']
-            commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
+            turn = Turn(data, Config())
+            enemy_mine = (13, 1) if sum(turn.mine_half(p) for p in turn.station.cells) > 0 else (1, 13)
+            data['mapInfo']['zones'].append(dict(neutralType='copper', pos=dict(zip(('x', 'y'), enemy_mine)), remain=10))
+            agent = Agent(Config(llm_enabled=False))
+            commands = agent.decide(data)['roleCommandMap']
             self.assertIn(pos(commands['14']['targetPos'][0]), expected_posts)
+            advance(data, commands)
+            self.assertEqual(agent.decide(data)['roleCommandMap']['1']['action'], 'move')
 
 
 if __name__ == '__main__':

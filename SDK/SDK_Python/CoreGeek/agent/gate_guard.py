@@ -138,11 +138,27 @@ class GateGuard:
 
 
 def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
-    """Recall early enough to be beside the sole tower-facing gap at dusk."""
+    """Stage for a completed perimeter; guard only while a local wave remains."""
     gates = wall_gates(turn, walls)
-    if len(gates) != 1 or not turn.imps:
+    if not turn.imps:
+        return None
+    hero = turn.imps[0]
+    built = {u.pos for u in turn.ours if u.kind == 'wall'}
+    # The blueprint describes the intended doorway, not the observed holes.
+    # Dead/missing walls and a wall filling the doorway invalidate this job.
+    if len(gates) != 1 or not set(walls) <= built or gates & built:
+        mem.sabotage.gate_states.pop(hero.id, None)
         return None
     gate = next(iter(gates))
+    if not turn.is_day and not any(
+            robot.id not in turn.summon_robot_ids
+            and min(distance(gate, robot.pos), turn.base_distance(robot.pos))
+            <= max(cfg.task_danger_radius, robot.attack_range + 2)
+            for robot in turn.robots):
+        # Release recall/yield memory too, so it cannot suppress sabotage on
+        # later quiet turns. Keep any valid mine target and channel progress.
+        mem.sabotage.gate_states.pop(hero.id, None)
+        return None
     xs, ys = zip(*walls)
     if gate[0] == min(xs):
         inward = (1, 0)
@@ -160,7 +176,6 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     posts = [p for p in posts if turn.inside(p)]
     if not posts:
         return None
-    hero = turn.imps[0]
     state = mem.sabotage.gate_states.get(hero.id, {})
     returning = state.get('day') == turn.day and state.get('recalling', False)
     yielding = state.get('day') == turn.day and state.get('yield_until', -1) >= turn.round
