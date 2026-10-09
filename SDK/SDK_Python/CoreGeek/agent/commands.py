@@ -39,6 +39,8 @@ class Ledger:
         self.watch_pack_slots = {}
         self.work_jobs = {}
         self.supply_targets = {}
+        self.supply_reports = {}
+        self.spending_plan = {}
         self.notes, self.plans, self.origins, self.rejections, self.rejected_samples = {}, {}, {}, {}, {}
 
     def explain(self, uid, reason, **conditions):
@@ -282,3 +284,4 @@ class Ledger:
 
     def response(self, prompt="", execute=""):
         return {"roleCommandMap": self.commands.copy(), "prompt": prompt, "executeCmd": execute}
+

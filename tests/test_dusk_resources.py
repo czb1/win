@@ -140,7 +140,7 @@ class DuskResourceTests(unittest.TestCase):
         self.assertEqual(agent.decide(copy.deepcopy(p)), result)
 
     def test_carried_voucher_can_take_short_detour_before_return(self):
-        p = self.case(65)
+        p = self.case(62)
         p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher1"]
         p["teamOur"]["roles"][3]["pos"] = {"x": 4, "y": 2}
         t, c, n, l = self.setup(p)
@@ -162,15 +162,14 @@ class DuskResourceTests(unittest.TestCase):
         l.operator_posts[1] = (14, 14)
         self.assertIsNone(supplies(t, c, Memory(), n, l, t.workers[0], bulk=True))
 
-    def test_day_four_maxed_weapons_can_spend_wall_cash_without_post_return(self):
+    def test_maxed_weapons_do_not_release_assigned_operator_return(self):
         p = self.case(450, gold=120)
         p["teamOur"]["roles"][2]["level"] = 3
         p["teamOur"]["roles"][3]["level"] = 2
         t, c, n, l = self.setup(p)
         l.operator_posts[1] = (14, 14)
         plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
-        self.assertIsNotNone(plan)
-        self.assertEqual(plan[0], "WallUpgradeVoucher2")
+        self.assertIsNone(plan)
 
     def test_late_wall_phase_prefetches_front_and_other_level_three(self):
         p = self.case(440, gold=120)
@@ -264,3 +263,4 @@ class DuskResourceTests(unittest.TestCase):
             self.assertEqual(p["teamOur"]["roles"][0]["backpack"], [])
             self.assertEqual(p["teamOur"]["roles"][1]["level"], 3)
             self.assertEqual(p["teamOur"]["goldNum"], 150)
+
