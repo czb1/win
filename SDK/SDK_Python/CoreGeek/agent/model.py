@@ -9,6 +9,8 @@ SUMMON_ORDERS = ("SmallRobotSummonOrder", "MiddleRobotSummonOrder",
 HEROES = ("worker", "pioneer")
 CHARACTERS = (*HEROES, "imp")
 ORES = ("stone", "iron", "copper")
+# Daily tick: recall operators and stop wall construction at the same time.
+DEFENCE_RETURN_TICK = 67
 Pos = tuple[int, int]
 
 

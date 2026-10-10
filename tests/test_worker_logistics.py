@@ -234,14 +234,16 @@ class OperatorReturnTests(unittest.TestCase):
         self.assertFalse(mem.return_targets)
         self.assertFalse(mem.return_posts)
 
-    def test_late_wall_must_preserve_time_to_the_reserved_post(self):
-        p = payload(66, [unit(1, "worker", 2, 2, backpack=["stone"]), unit(20, "rocket", 5, 2)])
-        t, _, nav, ledger = setup_case(p)
-        ledger.return_pairs = [(t.heroes[0], t.weapons[0])]
-        ledger.operator_posts = {1: (4, 2)}
-        original = t.blocked.copy()
-        self.assertFalse(wall_keeps_access(t, nav, ledger, (3, 2)))
-        self.assertEqual(t.blocked, original)
+    def test_wall_and_reserved_post_share_tick_67_cutoff(self):
+        for tick, allowed in ((66, True), (67, False)):
+            with self.subTest(tick=tick):
+                p = payload(tick, [unit(1, "worker", 2, 2, backpack=["stone"]), unit(20, "rocket", 5, 2)])
+                t, _, nav, ledger = setup_case(p)
+                ledger.return_pairs = [(t.heroes[0], t.weapons[0])]
+                ledger.operator_posts = {1: (4, 2)}
+                original = t.blocked.copy()
+                self.assertEqual(wall_keeps_access(t, nav, ledger, (3, 2)), allowed)
+                self.assertEqual(t.blocked, original)
 
 
 class LogisticsReplayTests(unittest.TestCase):

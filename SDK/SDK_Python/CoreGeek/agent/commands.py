@@ -1,7 +1,7 @@
 """One per-turn ledger owns role locks, gold and destination reservations."""
 from collections import Counter
 import sys
-from .model import WEAPONS, CHARACTERS, ORES, SUMMON_ORDERS, dump, distance, pos
+from .model import WEAPONS, CHARACTERS, ORES, SUMMON_ORDERS, DEFENCE_RETURN_TICK, dump, distance, pos
 from .logging_system import logging_failure
 
 EMPTY = {"roleCommandMap": {}, "prompt": "", "executeCmd": ""}
@@ -186,6 +186,8 @@ class Ledger:
                         return self._reject("weapon_site_or_count_limit")
                     cost = self.cfg.weapon_cost
                 elif name == "wall":
+                    if self.turn.tick >= DEFENCE_RETURN_TICK:
+                        return self._reject("wall_construction_cutoff")
                     if target not in self.wall_cells or unit.inventory["stone"] < self.cfg.wall_stones:
                         return self._reject("wall_site_or_materials")
                 else:

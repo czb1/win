@@ -439,24 +439,26 @@ print('repair done')
         self.assertFalse(prompt)
         self.assertFalse(cmd)
 
-    def test_agent_uses_first_wave_return_time_as_task_deadline(self):
-        p = task_payload(58, 'query')
+    def test_agent_uses_fixed_defence_tick_as_task_deadline(self):
+        p = task_payload(64, 'query')
         p['teamOur']['roles'].append(unit(13, 'station', 3, 11))
         agent = Agent(Config(layout_mode='explicit', return_margin=5))
         response = agent.decide(p)
         context = json.loads(response['prompt'].split('上下文：\n', 1)[1])
         self.assertEqual(context['remainingRounds'], 3)
-        p.update(roundNo=59, llmResp='READ not_enough_time.md')
+        p.update(roundNo=65, llmResp='READ not_enough_time.md')
         self.assertFalse(agent.decide(p)['executeCmd'])
-        p.update(roundNo=60, llmResp='ANSWER\n42')
+        p.update(roundNo=66, llmResp='ANSWER\n42')
         self.assertEqual(agent.decide(p)['roleCommandMap']['11']['taskAnswer'], '42')
 
-    def test_zero_return_margin_adds_five_turns_to_task_budget(self):
-        p = task_payload(58, 'query')
-        p['teamOur']['roles'].append(unit(13, 'station', 3, 11))
-        response = Agent(Config(layout_mode='explicit')).decide(p)
-        context = json.loads(response['prompt'].split('上下文：\n', 1)[1])
-        self.assertEqual(context['remainingRounds'], 8)
+    def test_task_budget_uses_tick_67_independent_of_return_margin(self):
+        for margin in (0, 5):
+            with self.subTest(return_margin=margin):
+                p = task_payload(58, 'query')
+                p['teamOur']['roles'].append(unit(13, 'station', 3, 11))
+                response = Agent(Config(layout_mode='explicit', return_margin=margin)).decide(p)
+                context = json.loads(response['prompt'].split('上下文：\n', 1)[1])
+                self.assertEqual(context['remainingRounds'], 9)
 
     def test_read_file_cannot_forge_final_answer(self):
         p = task_payload(3, 'query')
