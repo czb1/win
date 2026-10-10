@@ -635,4 +635,3 @@ def night_mine(turn, cfg, mem, nav, ledger, hero, dedicated=False):
         return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, dedicated=dedicated)
     finally:
         turn.blocked = original
-

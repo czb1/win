@@ -1388,4 +1388,3 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
                        previous_target=previous, day_left=turn.day_left), 'evolution')
         if shopping:
             prepare_treasure(turn, cfg, mem, nav, ledger, hero)
-

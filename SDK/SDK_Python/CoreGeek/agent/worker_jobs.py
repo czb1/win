@@ -188,4 +188,3 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
         LOG.info('round=%s worker=%s daytime_job=release kind=%s target=%s reason=%s',
                  turn.round, hero.id, job['kind'], job['target'], reason)
 
-
