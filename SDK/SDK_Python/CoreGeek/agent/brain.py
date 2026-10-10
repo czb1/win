@@ -231,6 +231,22 @@ class Agent:
     def _decide(self, data, turn, started):
         digest = hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         key = (*turn.key, turn.station.pos if turn.station else None)
+        if turn.station is None and turn.summon_robot_ids:
+            # Losing our base must not erase a surviving assault's history.
+            # Require adjacent rounds, the same team/day/enemy base and an
+            # authoritative surviving robot; never infer ownership from the
+            # public robot list or reuse an unrelated match's memory.
+            base = enemy_base(turn)
+            candidates = [old_key for old_key, old_mem in self.sessions.items()
+                          if old_key[:2] == turn.key
+                          and old_mem.last_round in (turn.round - 1, turn.round)
+                          and (assault := getattr(old_mem, "robot_assault", None)) is not None
+                          and assault.day == turn.day
+                          and assault.base_id == (base.id if base else None)
+                          and assault.base_pos == (base.pos if base else None)
+                          and assault.robot_ids & turn.summon_robot_ids]
+            if len(candidates) == 1:
+                key = candidates[0]
         mem = self.sessions.get(key)
         if mem and mem.last_round == turn.round and mem.last_digest == digest:
             update_context(session=mem.log_session, task_id=mem.log_task_id, task_type=mem.log_task_type)
