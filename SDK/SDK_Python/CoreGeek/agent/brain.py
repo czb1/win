@@ -27,6 +27,7 @@ from .gate_guard import prepare_gate_guard
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position, enemy_base
 from .spending import first_day_boss_phase, plan_day_spending, robot_purchase_plan
 from .scouting import act_night_scout
+from .task_schedule import task_options, switch_task_option
 
 LOG = logging.getLogger(__name__)
 
@@ -104,6 +105,21 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                     ledger.explain(hero.id, "summon_highest_robot", item=name, summon_position=position,
                                    daily_reserved_uses=state["count"], daily_limit=DAILY_SUMMON_LIMIT)
                     return True
+    # Protect the next task as well as a task already in progress. Workers can
+    # buy and use orders themselves; ordinary mining may yield, urgent work may not.
+    pioneer = turn.pioneer
+    protect_task = bool(pioneer and turn.is_day and turn.tick < DEFENCE_RETURN_TICK
+                        and cfg.llm_enabled and (turn.phase_task or
+                        any(turn.tick + option['finish'] < DEFENCE_RETURN_TICK
+                            for option in task_options(turn, cfg, mem, nav, ledger, pioneer))))
+    if protect_task:
+        free = [hero for hero in free if hero.kind == 'worker'
+                and hero.health > 150 and hero.id not in mem.return_targets
+                and hero.id != mem.wall_repair_worker
+                and hero.id != mem.wall_watch_id
+                and mem.daytime_jobs.get(hero.id, {}).get('kind') not in
+                    ('build', 'buy', 'use')]
+        ledger.spending_plan['pioneer_reserved_for_task'] = True
     available = max(0, ledger.gold - reserve)
     names = [name for name in reversed(SUMMON_ORDERS)
              if (item_only is None or name == item_only)
@@ -494,11 +510,24 @@ class Agent:
                             returning.add(helper.id)
                             mem.return_targets[helper.id] = weapon.id
                             mem.return_posts[helper.id] = posts[helper.id][0]
+            if (h and turn.phase_task and (hold_task or mem.stop_reason == "task_switch_budget")
+                    and not danger and not defence_return_due and h.id not in ledger.used
+                    and h.id not in returning):
+                alternative = switch_task_option(turn, self.cfg, mem, nav, ledger, h)
+                if alternative and ledger.add(h.id, command('move', alternative['route'][1])):
+                    mem.stop_reason = 'task_switch_budget'
+                    hold_task = False
+                    ledger.explain(h.id, 'task_switch_budget', elapsed=turn.round - mem.task_started,
+                                   limit=self.cfg.task_switch_rounds, next_point=alternative['point'],
+                                   route_steps=alternative['route'][0], budget=alternative['budget'])
+                    emit_event('task_switch', dict(elapsed=turn.round - mem.task_started,
+                               limit=self.cfg.task_switch_rounds, next_point=alternative['point']), 'evolution')
             if h and turn.phase_task and not (not turn.is_day and pioneer_gunner):
                 # Submit a ready answer before a return movement can cancel it.
                 # LLM/sandbox work holds the pioneer at the task point and gets
                 # its own chance before expensive worker connectivity searches.
-                if within_timeout and not defence_return_due and (mem.answer is not None or hold_task):
+                if (within_timeout and not defence_return_due and h.id not in ledger.used
+                        and (mem.answer is not None or hold_task)):
                     available = min(mem.task_timeout, self.cfg.task_max_rounds) - (turn.round - mem.task_started)
                     if home:
                         available = min(available, max(0, DEFENCE_RETURN_TICK - turn.tick))
