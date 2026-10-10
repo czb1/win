@@ -23,6 +23,7 @@ from .mining import night_mine
 from .wall_watch import select_watch, prepare_watch, repair_watch
 from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
+from .front_wall import prepare_front
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position
 from .spending import defenses_ready, plan_day_spending, robot_purchase_plan
 
@@ -300,6 +301,7 @@ class Agent:
         budget_reached = False
         gate_guard = None
         try:
+            prepare_front(turn, self.cfg, mem, nav, ledger, walls)
             gate_guard = prepare_gate_guard(turn, self.cfg, mem, nav, ledger, towers, walls)
             nav.gate_guard = gate_guard
             act_imps(turn, mem.sabotage, nav, ledger)
@@ -615,4 +617,3 @@ class Agent:
         LOG.debug("round=%s day=%s phase=%s commands=%s latency_ms=%.2f", turn.round, turn.day,
                  "day" if turn.is_day else "night", len(ledger.commands), (monotonic()-started)*1000)
         return json.loads(json.dumps(response))
-

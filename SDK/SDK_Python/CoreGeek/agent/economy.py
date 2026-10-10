@@ -649,7 +649,7 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
         buy_supply(turn, ledger, hero, plan)
 
 
-def wall_keeps_access(turn, nav, ledger, target):
+def wall_keeps_access(turn, nav, ledger, target, max_gun_detour=0):
     destinations = [turn.station.cells] if turn.station else []
     for kind in ("vendor", "weaponShop", *ORES):
         cells = {p for p, k in turn.zones.items() if k == kind}
@@ -674,9 +674,9 @@ def wall_keeps_access(turn, nav, ledger, target):
         gun_routes = [(h, p, r[0]) for h in heroes for p in unfinished_guns
                       if (r := nav.approach(h, {p})) is not None]
         turn.blocked = turn.blocked | {target}
-        # A wall must not lengthen access to a gun still under construction.
-        # Reachability alone allows huge detours and courier/builder oscillation.
-        if any((r := nav.approach(h, {p})) is None or r[0] > length
+        # Ordinary walls must not lengthen unfinished-gun routes. The opening
+        # batch can explicitly allow a small detour, never lost connectivity.
+        if any((r := nav.approach(h, {p})) is None or r[0] > length + max_gun_detour
                for h, p, length in gun_routes):
             return False
         if not all(nav.approach(h, ds) is not None for h, ds in reachable):
@@ -691,7 +691,7 @@ def wall_keeps_access(turn, nav, ledger, target):
         turn.blocked = original
 
 
-def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
+def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None, max_gun_detour=0):
     options = []
     wall_chain = {w.pos for w in turn.ours if w.kind == "wall" and w.pos in ledger.wall_cells}
     wall_chain.update(pos(c["targetPos"][0]) for c in ledger.commands.values()
@@ -729,7 +729,7 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
             options.append((priority, route[0], continuity, index, target, route))
     for _, _, _, index, target, route in sorted(options):
         name = name_for(index)
-        if name == "wall" and not wall_keeps_access(turn, nav, ledger, target):
+        if name == "wall" and not wall_keeps_access(turn, nav, ledger, target, max_gun_detour):
             continue
         action = command("move", route[1]) if route[1] is not None else command("build", target, name=name)
         if ledger.add(hero.id, action):
