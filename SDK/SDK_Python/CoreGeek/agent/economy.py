@@ -691,7 +691,7 @@ def wall_keeps_access(turn, nav, ledger, target):
         turn.blocked = original
 
 
-def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
+def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None, front_claim=False):
     options = []
     wall_chain = {w.pos for w in turn.ours if w.kind == "wall" and w.pos in ledger.wall_cells}
     wall_chain.update(pos(c["targetPos"][0]) for c in ledger.commands.values()
@@ -702,7 +702,8 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
     gaps = wall_gaps(turn, ledger.wall_cells, mem.wall_hits) | (
         set(mem.wall_rebuild_levels) - wall_chain)
     for index, target in enumerate(sites):
-        if name_for(index) == "wall" and cfg.layout_mode != "explicit":
+        if (name_for(index) == "wall" and cfg.layout_mode != "explicit"
+                and not (front_claim and target in front)):
             # Shared edges, not diagonal contact: grow one continuous wall.
             # A move claim is not a built wall and cannot seed a second segment.
             if wall_chain and not any(abs(target[0]-p[0]) + abs(target[1]-p[1]) == 1

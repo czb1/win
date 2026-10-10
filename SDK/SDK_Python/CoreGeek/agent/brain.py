@@ -23,6 +23,7 @@ from .mining import night_mine
 from .wall_watch import select_watch, prepare_watch, repair_watch
 from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
+from .front_wall import prepare_front, stage_front_breach
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position
 from .spending import defenses_ready, plan_day_spending, robot_purchase_plan
 
@@ -289,6 +290,7 @@ class Agent:
         budget_reached = False
         gate_guard = None
         try:
+            prepare_front(turn, self.cfg, mem, nav, ledger, walls)
             gate_guard = prepare_gate_guard(turn, self.cfg, mem, nav, ledger, towers, walls)
             nav.gate_guard = gate_guard
             act_imps(turn, mem.sabotage, nav, ledger)
@@ -486,6 +488,9 @@ class Agent:
                     defend(turn, nav, ledger, pairs, ledger.operator_posts)
                 if shared is not None and mem.gunner_post:
                     ledger.reserved.add(mem.gunner_post)
+                stage_front_breach(turn, self.cfg, mem, nav, ledger, walls,
+                                   excluded={hero.id for hero, _ in pairs}
+                                   | ({watcher.id} if watcher else set()))
                 for hero in turn.heroes:
                     if watcher and hero.id == watcher.id and hero.id not in ledger.used:
                         if hero.health <= 165 and hero.inventory["Medicine"]:
