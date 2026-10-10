@@ -146,8 +146,6 @@ class ContextFilter(logging.Filter):
                 record.data = json.loads(match.group(1)) if match else {}
             except ValueError:
                 record.data = {}
-        record.game_time = (f"第{record.day}天{'白天' if record.phase == 'day' else '黑夜'}"
-                            f"第{record.phase_round}回合" if record.day is not None else "系统")
         return True
 
 
@@ -160,7 +158,7 @@ class JsonFormatter(logging.Formatter):
         result = {key: getattr(record, key, None) for key in FIELDS}
         result.update(schema_version=SCHEMA_VERSION, sequence=record.sequence, record_id=record.record_id,
                       timestamp=datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
-                      game_time=record.game_time, level=record.levelname, logger=record.name,
+                      level=record.levelname, logger=record.name,
                       message=record.getMessage(), data=record.data)
         if record.exc_info:
             result["exception"] = self.formatException(record.exc_info)

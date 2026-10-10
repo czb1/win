@@ -11,9 +11,7 @@ from extract_logs import compact_record, record_value
 def readable(record):
     view = compact_record(record)
     parts = []
-    if view.get("game_time"):
-        parts.append(view["game_time"])
-    elif view.get("day") is not None:
+    if view.get("day") is not None:
         phase = {"day": "白天", "night": "黑夜"}.get(view.get("phase"), "")
         parts.append(f"第{view['day']}天{phase}")
     if view.get("round") is not None:
