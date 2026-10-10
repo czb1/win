@@ -1,4 +1,4 @@
-"""Deploy behind the enemy frontage and clear the path toward its base."""
+"""Reach an open base firing position before coordinating unavoidable clearance."""
 from collections import deque
 from dataclasses import dataclass, field
 import re
@@ -402,7 +402,10 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
     phase = "base" if target.kind == "station" else "breach" if target.kind == "wall" else "clear"
     facts = dict(phase=phase, target_id=target.id, target_kind=target.kind,
                  target_source="visible" if target in turn.enemies else "last_seen_building",
-                 observed_health=target.health, focus_target_id=memory.focus_target_id)
+                 observed_health=target.health, focus_target_id=memory.focus_target_id,
+                 assault_choice="base_route" if phase == "base" else
+                 "shared_clearance" if target.id == memory.focus_target_id else "local_clearance",
+                 focus_unreachable=memory.focus_target_id is not None and target.id != memory.focus_target_id)
     point = _firing_point(robot.pos, robot, target, memory, occupied)
     if point is not None and ledger.add(robot.id, command("attack", point)):
         memory.objectives[robot.id] = RobotObjective(point, target.id if target.kind == "wall" else None, phase)
@@ -417,6 +420,15 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
         return False
     avoided = memory.avoided_steps(robot.id)
     reserved = ledger.reserved | avoided
+    # Attacks settle before movement, but stopping in a teammate's established
+    # firing lane would interrupt its next shot. Preserve those lanes while
+    # finding a new stance; current occupancy still governs every attack.
+    robots = {r.id: r for r in turn.summon_robots}
+    for uid, action in ledger.commands.items():
+        shooter = robots.get(int(uid))
+        if shooter is not None and action.get('action') == 'attack':
+            aim = action['targetPos'][0]
+            reserved.update(line_cells(shooter.pos, (aim['x'], aim['y'])))
     blocked = (turn.blocked | reserved) - {robot.pos}
     goals = set()
     reach = robot.attack_range
@@ -479,7 +491,11 @@ def act_robots(turn, memory, nav, ledger):
     ledger.robot_known_enemies = tuple(u for uid, u in memory.buildings.items()
                                        if uid not in memory.rejected_buildings)
     occupied = _occupants(turn, memory)
-    focus = _focus_blocker(turn, memory, ledger, base, occupied) if base and not turn.is_day else None
+    # Give every robot its direct shot or obstacle-free route first. Only the
+    # remaining robots participate in clearance; moving/attacking the base must
+    # not supply imaginary firepower to the shared obstacle objective.
+    previous_focus = memory.focus_target_id
+    memory.focus_target_id = None
     for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
         check_time(nav.deadline)
         if robot.id in ledger.used:
@@ -489,16 +505,38 @@ def act_robots(turn, memory, nav, ledger):
             ledger.explain(robot.id, "robot_wait_day" if turn.is_day else "robot_dizzy" if robot.abnormal_state == "dizzy"
                            else "robot_enemy_base_missing")
             continue
-        # Check all four base cells before giving up an attack to reposition
-        # or clear a blocker on just one ray. Successful aims remain preferred
-        # only while their current occupancy and range still permit firing.
-        if _act_toward_target(turn, memory, nav, ledger, robot, base, occupied, attack_only=True):
+        # An exposed wall/tower is not necessarily an unavoidable obstacle.
+        # Search all reachable clear firing stances before spending attacks on
+        # it. This retains current legal base shots without moving closer.
+        _act_toward_target(turn, memory, nav, ledger, robot, base, occupied, attack_only=True)
+
+    # Allocate all existing shots before moves so even a higher-ID shooter's
+    # lane is protected from a lower-ID robot's new stance.
+    for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
+        check_time(nav.deadline)
+        if robot.id not in ledger.used:
+            _act_toward_target(turn, memory, nav, ledger, robot, base, occupied)
+
+    memory.focus_target_id = previous_focus
+    focus = _focus_blocker(turn, memory, ledger, base, occupied) if base and not turn.is_day else None
+    if focus is None:
+        memory.focus_target_id = None
+    else:
+        for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
+            check_time(nav.deadline)
+            if robot.id not in ledger.used:
+                _act_toward_target(turn, memory, nav, ledger, robot, focus, occupied, attack_only=True)
+    for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
+        check_time(nav.deadline)
+        if robot.id in ledger.used:
             continue
         hits = [_first_hit(robot.pos, point, occupied, robot.id)
                 for point in _target_points(robot.pos, base)]
         hit = hits[0]
-        if (focus is not None and any(h and h[1] and h[0].id != base.id for h in hits)
-                and _act_toward_target(turn, memory, nav, ledger, robot, focus, occupied, attack_only=True)):
+        # Join the shared target by moving when necessary, rather than silently
+        # reverting to a different wall just because today's ray is blocked.
+        if (focus is not None
+                and _act_toward_target(turn, memory, nav, ledger, robot, focus, occupied)):
             continue
         target = hit[0] if hit and hit[1] and hit[0].kind in (*CHARACTERS, *WEAPONS, "wall", "station") else base
         # With no base shot, a reachable enemy on another base-directed ray
@@ -529,4 +567,5 @@ def act_robots(turn, memory, nav, ledger):
         ledger.reserved.add(robot.pos)
         ledger.explain(robot.id, "robot_assault_path_blocked", target_id=target.id,
                        first_blocker=hit[2] if hit else None,
+                       focus_target_id=memory.focus_target_id,
                        rejected_stance=memory.rejected(robot.id, robot.pos, target.id, _target_point(robot.pos, target)))
