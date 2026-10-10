@@ -1,13 +1,69 @@
 """Persistent mining, safe night runs and budgeted daytime batch sales."""
 import logging
 from collections import Counter
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from math import isclose
 from .commands import command
 from .market import hold_inventory, preferred_stock, cashout_ores
 from .model import ORES, distance, neighbours
 from .economy_plan import via
 
 LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MineOption:
+    target: tuple
+    route: tuple
+    score: float
+    amount: int
+    claimants: tuple
+    return_steps: int = 0
+    cell: tuple | None = None
+
+
+def remaining_ore(turn, mem, target):
+    remaining = turn.mine_remain.get(target)
+    if remaining is not None:
+        return max(0, remaining)
+    return max(1, 10 - mem.mine_collected.get(target, 0))
+
+
+def mining_sector(turn, hero):
+    """Stable worker IDs split the two wings around the actual base centre."""
+    if not turn.station or len(turn.workers) != 2 or min(turn.width, turn.height) <= 1:
+        return None
+    home_side = sum(turn.mine_half(p) for p in turn.station.cells)
+    if not home_side:
+        return None
+    index = sorted(h.id for h in turn.workers).index(hero.id)
+    if home_side < 0:
+        index = 1 - index
+    return 'southwest' if index == 0 else 'northeast'
+
+
+def target_sector(turn, target):
+    if not turn.station:
+        return None
+    cells = turn.station.cells
+    projection = ((len(cells) * target[0] - sum(p[0] for p in cells)) * (turn.height - 1)
+                  + (len(cells) * target[1] - sum(p[1] for p in cells)) * (turn.width - 1))
+    return 'southwest' if projection < 0 else 'northeast' if projection > 0 else 'boundary'
+
+
+def prefer_separate_sector(turn, hero, options):
+    # Nearby simultaneous collection remains useful. Only redirect a journey
+    # when a comparable independent deposit exists; never walk to a bare corner.
+    separate = [o for o in options if not o.claimants or o.route[0] == 0]
+    options = separate or options
+    sector = mining_sector(turn, hero)
+    local = [o for o in options if target_sector(turn, o.target) in (sector, 'boundary')] if sector else []
+    return local or options
+
+
+def comparable_score(score, best):
+    threshold = .8 * best
+    return score >= threshold or isclose(score, threshold, rel_tol=1e-12)
 
 
 def record_target(turn, hero, target, route, mode, changed=False):
@@ -44,6 +100,65 @@ def reserve_watch_space(turn, mem, hero, ledger=None):
                 affordable = ledger.watch_pack_slots.get(hero.id, affordable)
             return replace(hero, capacity=max(0, hero.capacity - affordable))
     return hero
+
+
+def mining_yield(turn, mem, nav, ledger, hero, target, steps, capacity):
+    """Forecast this worker's yield using active claims and real arrival paths."""
+    remaining = remaining_ore(turn, mem, target)
+    partners = []
+    for other in turn.workers:
+        if other.id == hero.id or other.abnormal_state == 'dizzy':
+            continue
+        other = reserve_watch_space(turn, mem, other, ledger)
+        if not other.space:
+            continue
+        job = ledger.work_jobs.get(other.id, mem.daytime_jobs.get(other.id, {}))
+        if other.id in ledger.mine_claims:
+            claim = ledger.mine_claims[other.id]
+        elif other.id in ledger.used or other.id in mem.sale_workers:
+            continue
+        elif job:
+            if job['kind'] not in ('mine', 'spare'):
+                continue
+            claim = job['target']
+        else:
+            claim = mem.mine_targets.get(other.id)
+        if claim != target or mem.movement.avoids(other.id, target):
+            continue
+        plan = ledger.mine_plans.get(other.id)
+        if plan is not None:
+            arrival, limit = plan
+        else:
+            route = nav.approach(other, [target], ledger.reserved)
+            if route is None:
+                continue
+            arrival, limit = route[0], other.space
+            if job.get('kind') == 'spare':
+                limit = min(limit, 1)
+            elif job.get('want_stone') and job.get('stone_goal') is not None:
+                limit = min(limit, max(0, job['stone_goal'] - other.inventory['stone']))
+        before = min(limit, max(0, steps - arrival))
+        remaining -= before
+        partners.append([arrival, limit - before, other.id])
+    claimants = tuple(p[2] for p in partners)
+    if remaining <= 0:
+        return 0, claimants
+    amount = 0
+    # A deposit holds at most ten units. On its last collection turn the rules
+    # grant each simultaneous collector one unit, even if only one remains.
+    for offset in range(remaining):
+        if amount >= capacity:
+            break
+        collectors = 1
+        for partner in partners:
+            if partner[0] <= steps + offset and partner[1] > 0:
+                partner[1] -= 1
+                collectors += 1
+        amount += 1
+        remaining -= collectors
+        if remaining <= 0:
+            break
+    return amount, claimants
 
 
 def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
@@ -84,6 +199,9 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
             route = nav.search(hero, {cell}, reserved)
             if route is None or route[0] > max_steps:
                 continue
+            amount, claimants = mining_yield(turn, mem, nav, ledger, hero, target, route[0], 1)
+            if not amount:
+                continue
             original = turn.blocked
             try:
                 turn.blocked = original - {hero.pos}
@@ -102,26 +220,37 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
                 return_steps = back[0]
                 if route[0] + 1 + return_steps + cfg.return_margin > turn.day_left:
                     continue
-            options.append((route[0], -turn.prices[kind], return_steps, target, cell, route))
+            options.append(MineOption(target, route, turn.prices[kind] / (1 + route[0]),
+                                      amount, claimants, return_steps, cell))
     if not options:
         LOG.debug("round=%s worker=%s spare_mining=no_safe_mine_within_two_steps day_left=%s",
                   turn.round, hero.id, turn.day_left)
         return False
     preferred = preferred_stock(turn, cfg, mem, ledger, hero)
+    order = lambda o: (o.route[0], -o.score, o.return_steps, o.target, o.cell)
+    previous = min((o for o in options if o.target == mem.mine_targets.get(hero.id)),
+                   key=order, default=None)
+    shortest = min(o.route[0] for o in options)
+    nearby = [o for o in options if o.route[0] == shortest]
+    best_score = max(o.score for o in nearby)
+    comparable = [o for o in nearby if comparable_score(o.score, best_score)]
     if preferred:
-        chosen = min(options, key=lambda o: (
-            o[0], turn.zones[o[3]] not in preferred, o[3] != mem.mine_targets.get(hero.id), *o[1:5]))
+        news = [o for o in comparable if turn.zones[o.target] in preferred]
+        chosen = min(prefer_separate_sector(turn, hero, news or comparable), key=order)
     else:
-        chosen = min(options, key=lambda o: (o[3] != mem.mine_targets.get(hero.id), *o[:5]))
-    _, _, _, target, _, route = chosen
+        chosen = previous or min(prefer_separate_sector(turn, hero, comparable), key=order)
+    target, route = chosen.target, chosen.route
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
         ledger.explain(hero.id, "spare_mining_for_later", target=target, route_steps=route[0],
                        day_left=turn.day_left, return_margin=cfg.return_margin,
-                       free_space=hero.space)
+                       free_space=hero.space, mining_sector=mining_sector(turn, hero),
+                       target_sector=target_sector(turn, target), remaining_ore=remaining_ore(turn, mem, target),
+                       expected_units=chosen.amount, claimed_by=chosen.claimants)
         changed = mem.mine_targets.get(hero.id) != target
         mem.mine_targets[hero.id] = target
         ledger.mine_claims[hero.id] = target
+        ledger.mine_plans[hero.id] = route[0], chosen.amount
         if route[1] is not None:
             ledger.remember_work(hero, 'spare', target)
         record_target(turn, hero, target, route, "carry_for_later", changed)
@@ -196,20 +325,13 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
             skipped["unreachable"] += 1
             continue
         cells = [q for q in neighbours(p) if q in sale_dist]
-        # A distant worker must not chase the last units another worker can
-        # exhaust before arrival. Sharing a nearby deposit remains legal.
-        remaining = max(1, 10 - mem.mine_collected.get(p, 0))
-        others = [h for h in turn.workers if h.id != hero.id
-                  and (ledger.mine_claims.get(h.id, mem.mine_targets.get(h.id)) == p)
-                  and h.id not in mem.sale_workers]
-        for other in others:
-            arrival = max(0, distance(other.pos, p) - 1)
-            remaining -= max(0, route[0] - arrival)
-        if remaining <= 0:
+        capacity = hero.space
+        if want_stone and stone_goal is not None:
+            capacity = min(capacity, max(0, stone_goal - hero.inventory['stone']))
+        amount, claimants = mining_yield(turn, mem, nav, ledger, hero, p, route[0], capacity)
+        if amount <= 0:
             skipped["other_worker_exhausts_mine"] += 1
             continue
-        share = max(1, (remaining + len(others)) // (1 + len(others)))
-        amount = min(hero.space, share)
         sale_walk = min((sale_dist[q] for q in cells), default=None)
         if stockpile and home and not dedicated and (turn.is_day or wave_budget is not None):
             home_walk = min((home_dist[q] for q in neighbours(p) if q in home_dist), default=None)
@@ -234,7 +356,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         batch = min(hero.capacity, cfg.sell_batch_max)
         score = value * amount / (amount + route[0] +
                                  (amount * (sale_walk + 1) / max(1, batch) if sale_walk is not None else 0))
-        options.append((score, route[0], turn.base_distance(p), p, route))
+        options.append(MineOption(p, route, score, amount, claimants))
     if not options:
         ledger.explain(hero.id, "no_mining_candidate", skipped=dict(skipped),
                        day_left=turn.day_left, deadline=deadline, free_space=hero.space)
@@ -242,29 +364,35 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
                   turn.round, hero.id, dict(skipped), turn.day_left, deadline)
         mem.mine_targets.pop(hero.id, None)
         return False
-    best = min(options, key=lambda o: (-o[0], o[1], o[2], o[3]))
-    previous = next((o for o in options if o[3] == mem.mine_targets.get(hero.id)), None)
+    order = lambda o: (-o.score, o.route[0], turn.base_distance(o.target), o.target)
+    best = min(options, key=order)
+    previous = next((o for o in options if o.target == mem.mine_targets.get(hero.id)), None)
     # Finish a productive deposit, including its last few units. Replan only
     # when it vanishes, becomes inaccessible/unprofitable, or cannot meet dusk.
-    chosen = previous if previous and previous[0] >= .65 * best[0] else best
+    comparable = [o for o in options if comparable_score(o.score, best.score)]
+    chosen = (previous if previous and previous.score >= .65 * best.score else
+              min(prefer_separate_sector(turn, hero, comparable), key=order))
     preferred = preferred_stock(turn, cfg, mem, ledger, hero) if not want_stone else set()
     # Never chase a shortage deposit whose present yield is substantially worse.
-    news_options = [o for o in options if turn.zones[o[3]] in preferred and o[0] >= .8 * best[0]]
+    news_options = [o for o in comparable if turn.zones[o.target] in preferred]
     if news_options:
-        chosen = min(news_options, key=lambda o: (-o[0], o[1], o[2], o[3]))
-    _, _, _, target, route = chosen
+        chosen = min(prefer_separate_sector(turn, hero, news_options), key=order)
+    target, route = chosen.target, chosen.route
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
         ledger.explain(hero.id, "mine_wall_material" if want_stone else "mine_for_later" if stockpile else "mine_for_sale",
                        target=target, route_steps=route[0], candidate_count=len(options),
-                       skipped=dict(skipped), selected_score=chosen[0], best_score=best[0],
+                       skipped=dict(skipped), selected_score=chosen.score, best_score=best.score,
                        retained_previous=chosen is previous, continuation=target_only is not None,
                        retention_ratio=None if target_only is not None else 0.65,
                        free_space=hero.space, day_left=turn.day_left, deadline=deadline,
-                       return_margin=cfg.return_margin)
+                       return_margin=cfg.return_margin, mining_sector=mining_sector(turn, hero),
+                       target_sector=target_sector(turn, target), remaining_ore=remaining_ore(turn, mem, target),
+                       expected_units=chosen.amount, claimed_by=chosen.claimants)
         changed = mem.mine_targets.get(hero.id) != target
         mem.mine_targets[hero.id] = target
         ledger.mine_claims[hero.id] = target
+        ledger.mine_plans[hero.id] = route[0], chosen.amount
         ledger.remember_work(hero, 'mine', target, ore=turn.zones[target],
                              want_stone=want_stone, stockpile=stockpile,
                              deadline=deadline, stone_goal=stone_goal)

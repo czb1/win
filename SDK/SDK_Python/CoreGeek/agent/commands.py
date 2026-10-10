@@ -32,6 +32,7 @@ class Ledger:
         self.upgrade_claims = set()
         self.repair_claims = set()
         self.mine_claims = {}
+        self.mine_plans = {}
         self.return_pairs = []
         self.operator_posts = {}
         self.weapon_diagnostics = {}
@@ -195,6 +196,7 @@ class Ledger:
             elif action == "collect":
                 if (unit.kind != "worker" or not unit.space
                         or self.turn.zones.get(target) not in ORES
+                        or self.turn.mine_remain.get(target) is not None and self.turn.mine_remain[target] <= 0
                         or not self.turn.adjacent(unit.pos, target)):
                     return self._reject("collect_preconditions")
             elif action == "destroy":
@@ -273,6 +275,9 @@ class Ledger:
             self.used.add(controller.id)
         if action in ("build", "move"):
             self.reserved.add(target)
+        if action == "collect":
+            self.mine_claims[uid] = target
+            self.mine_plans[uid] = 0, 1
         if action == "build" and name in WEAPONS:
             self.new_towers += 1
         if action == "buy":
