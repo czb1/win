@@ -140,6 +140,31 @@ class ExtractionModeTests(unittest.TestCase):
                 self.assertFalse(hidden & row.keys())
                 self.assertNotIn("task_id", row)
 
+    def test_split_decisions_include_spending_plan(self):
+        spending = dict(record("spending-plan", 132, 2, "day"),
+                        event="spending_plan", category="economy",
+                        data={"gold_available": 581, "reserved_gold": 100, "surplus": 481,
+                              "robot_blocked": "no_free_buyer_or_return_deadline"})
+        worker = dict(record("worker", 132, 2, "day"), event="unit_decision",
+                      category="decision", data={"role_type": "worker", "reason": "mine_for_sale"})
+        other = dict(record("other-economy", 132, 2, "day"), event="market_prices", category="economy")
+        previous = dict(spending, round=131, record_id="previous-spending", message="previous-spending")
+        (self.working / "match.log").write_text(
+            "\n".join("FWLOG " + json.dumps(row) for row in (previous, worker, spending, other)),
+            encoding="utf-8")
+        for mode in ("all", "non-task"):
+            with self.subTest(mode=mode):
+                rows, _, output = self.extract("--mode", mode, "--from-round", "132",
+                                               "--to-round", "132", "--context", "0", "--split")
+                decisions = [json.loads(line) for line in
+                             (output / "decisions.jsonl").read_text(encoding="utf-8").splitlines()]
+                self.assertEqual([row["event"] for row in decisions], ["unit_decision", "spending_plan"])
+                self.assertEqual(decisions[1]["category"], "economy")
+                self.assertEqual(decisions[1]["data"], spending["data"])
+                self.assertEqual([row for row in rows if row["event"] == "spending_plan"], [decisions[1]])
+                self.assertIn("other-economy", {row["message"] for row in rows})
+                self.assertNotIn("previous-spending", {row["message"] for row in rows})
+
     def test_non_task_night_has_strict_boundaries(self):
         rows, meta, output = self.extract("--mode", "non-task", "--day", "2", "--phase", "night")
         self.assertEqual({row["message"] for row in rows},
