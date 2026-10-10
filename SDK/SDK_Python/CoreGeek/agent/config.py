@@ -19,7 +19,6 @@ class Config:
     projectile_origin: str = "weapon"
     projectile_characters_block: bool = True
     stone_batch: int = 10
-    opening_guard: str = "auto"
     sell_batch: int = 40
     sell_batch_max: int = 80
     economy_rounds: int = 40
@@ -46,8 +45,6 @@ class Config:
         cfg = cls(**raw)
         if cfg.layout_mode not in ("demo_inferred", "explicit"):
             raise ValueError("layout_mode must be demo_inferred or explicit")
-        if cfg.opening_guard not in ("auto", "worker", "pioneer", "imp"):
-            raise ValueError("opening_guard must be auto, worker, pioneer or imp")
         if cfg.projectile_origin not in ("weapon", "controller"):
             raise ValueError("projectile_origin must be weapon or controller")
         if type(cfg.projectile_characters_block) is not bool:
