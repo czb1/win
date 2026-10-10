@@ -146,6 +146,9 @@ class RobotObstacleMemoryTests(unittest.TestCase):
 
     def test_repeated_invalid_hidden_target_is_bypassed_until_seen_again(self):
         data, memory = self.hidden_weapon()
+        # Keep every in-range base ray behind this weapon after the closer
+        # retry, so this test still exercises hidden-target rejection.
+        data["teamEnemy"]["roles"][0]["pos"] = {"x": 10, "y": 5}
         decide(data, memory)
         data["roundNo"] += 1
         data["lastRoundRoleActionResults"] = {"30000": False}
@@ -210,24 +213,27 @@ class RobotObstacleMemoryTests(unittest.TestCase):
                                                     targetTeam="challenger") for i in range(3)]
         data["robot"]["roles"] = copy.deepcopy(data["teamOur"]["summonRobotList"])
         ledger, _ = decide(data, memory)
-        # The first two rays also touch adjacent friendly robots. They must
-        # move clear; the third robot can directly shoot the remembered tower.
+        # The first robot has no clear base-directed target. The second can
+        # clear a tower on another ray without moving through the third robot.
         self.assertEqual(ledger.commands["31035"]["action"], "move")
-        self.assertEqual(ledger.commands["31036"]["action"], "move")
+        self.assertEqual(ledger.commands["31036"], command("attack", (8, 20)))
         self.assertEqual(ledger.commands["31037"], command("attack", (8, 22)))
-        for i in range(2):
-            action = ledger.commands[str(31035 + i)]
-            self.assertEqual(distance(pos(action["targetPos"][0]), (6, 18 + i)), 1)
-            self.assertNotIn("controllerId", action)
+        action = ledger.commands["31035"]
+        self.assertEqual(distance(pos(action["targetPos"][0]), (6, 18)), 1)
+        self.assertTrue(all("controllerId" not in action for action in ledger.commands.values()))
 
 
 class RobotActionFeedbackTests(unittest.TestCase):
-    def test_false_attack_feedback_repositions_for_string_and_integer_ids(self):
+    def test_false_feedback_tries_alternate_cell_then_repositions_for_both_id_types(self):
         for key in ("30000", 30000):
             with self.subTest(key=key):
                 data = assault_payload(robot=controlled_robot(x=7))
                 first, memory = decide(data)
                 self.assertEqual(first.commands["30000"], command("attack", (10, 4)))
+                data["roundNo"] += 1
+                data["lastRoundRoleActionResults"] = {key: False}
+                ledger, _ = decide(data, memory)
+                self.assertEqual(ledger.commands["30000"], command("attack", (10, 3)))
                 data["roundNo"] += 1
                 data["lastRoundRoleActionResults"] = {key: False}
                 ledger, _ = decide(data, memory)
