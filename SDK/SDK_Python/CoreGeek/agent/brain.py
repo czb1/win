@@ -24,7 +24,7 @@ from .mining import night_mine
 from .wall_watch import select_watch, prepare_watch, repair_watch
 from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
-from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position
+from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position, enemy_base
 from .spending import first_day_boss_phase, plan_day_spending, robot_purchase_plan
 
 LOG = logging.getLogger(__name__)
@@ -70,6 +70,11 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                       item_only=None, shop_only=None, quantity_limit=None):
     """Use carried orders or prepare the strongest affordable surplus order."""
     state = observe_robot_summons(turn, mem)
+    # Enemy stations are globally visible; no live base means no assault budget.
+    if enemy_base(turn) is None:
+        state["buyer"] = None
+        ledger.spending_plan['robot_blocked'] = 'enemy_base_missing'
+        return False
     if turn.day == 1 and not first_day_boss_phase(turn, cfg):
         ledger.spending_plan['robot_blocked'] = 'first_day_tower_construction'
         return False
