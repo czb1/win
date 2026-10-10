@@ -143,7 +143,7 @@ class FirstWaveTests(unittest.TestCase):
         self.assertEqual(result["roleCommandMap"]["20"]["action"], "attack")
 
     def test_first_wave_recall_does_not_wait_for_robots_or_llm(self):
-        p = payload(63, [unit(11, "pioneer", 12, 5), unit(20, "rocket", 5, 5),
+        p = payload(67, [unit(11, "pioneer", 12, 5), unit(20, "rocket", 5, 5),
                          unit(13, "station", 3, 7)])
         p["phaseTask"] = "slow unresolved task"
         agent = Agent(Config(layout_mode="explicit", return_margin=5))
