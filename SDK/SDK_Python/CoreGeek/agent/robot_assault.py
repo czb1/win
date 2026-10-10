@@ -1,10 +1,11 @@
-"""Deploy behind the enemy frontage, breach a weak entry, then attack base."""
+"""Deploy behind the enemy frontage and clear the path toward its base."""
 from collections import deque
 from dataclasses import dataclass, field
 
 from .commands import command
 from .model import CHARACTERS, WEAPONS, distance, neighbours
 from .navigation import check_time
+from .projectiles import line_cells
 
 
 @dataclass(frozen=True)
@@ -24,15 +25,70 @@ class RobotObjective:
 @dataclass
 class RobotAssaultMemory:
     objectives: dict = field(default_factory=dict)
+    buildings: dict = field(default_factory=dict)
+    rejected_buildings: set = field(default_factory=set)
+    pending: dict = field(default_factory=dict)
+    failed_shots: set = field(default_factory=set)
+    failed_steps: dict = field(default_factory=dict)
     day: int | None = None
     base_id: int | None = None
 
     def observe(self, turn, base):
-        if self.day != turn.day or self.base_id != (base.id if base else None):
+        base_id = base.id if base else None
+        if self.base_id != base_id:
+            self.buildings.clear()
+        if self.day != turn.day or self.base_id != base_id:
             self.objectives.clear()
-        self.day, self.base_id = turn.day, base.id if base else None
+            self.pending.clear()
+            self.failed_shots.clear()
+            self.failed_steps.clear()
+            self.rejected_buildings.clear()
+        self.day, self.base_id = turn.day, base_id
         alive = turn.summon_robot_ids
         self.objectives = {uid: goal for uid, goal in self.objectives.items() if uid in alive}
+        self.failed_shots = {key for key in self.failed_shots if key[0] in alive}
+        self.failed_steps = {key: until for key, until in self.failed_steps.items()
+                             if key[0] in alive and until > turn.round}
+        results = turn.raw.get("lastRoundRoleActionResults") or {}
+        robots = {r.id: r for r in turn.summon_robots}
+        visible_ids = {u.id for u in turn.enemies}
+        for uid, (issued, origin, action, point, target_id) in self.pending.items():
+            if issued != turn.round - 1 or uid not in alive:
+                continue
+            result = results.get(str(uid), results.get(uid))
+            if action == "attack" and result is False:
+                self.failed_shots.add((uid, origin, target_id, point))
+                if (target_id in self.buildings and target_id not in visible_ids
+                        and distance(origin, point) <= 2
+                        and any(key[2] == target_id and key[1] != origin for key in self.failed_shots)):
+                    # Two failed stances, including one inside the range
+                    # boundary, make this unseen target unreliable. Keep its
+                    # cell as an obstacle and route around, without declaring
+                    # it dead. A fresh sighting restores it as a target.
+                    self.rejected_buildings.add(target_id)
+            elif action == "move" and robots[uid].pos != point:
+                # Legal moves may still collide. Avoid that cell temporarily.
+                self.failed_steps[uid, point] = turn.round + 4
+        self.pending = {uid: value for uid, value in self.pending.items()
+                        if uid in alive and value[0] == turn.round}
+        # Weapons do not move. Losing sight alone does not prove destruction;
+        # a reported death or absence inside ordinary shared vision does.
+        reported = {int(r["id"]) for r in turn.raw.get("teamEnemy", {}).get("roles", [])}
+        seen = {u.id: u for u in turn.enemies if u.kind in WEAPONS}
+        observers = [p for u in turn.ours for p in u.cells]
+        self.buildings = {uid: u for uid, u in self.buildings.items()
+                          if uid in seen or (uid not in reported and
+                              not any(distance(u.pos, p) <= 4 for p in observers))}
+        self.buildings.update(seen)
+        self.rejected_buildings.intersection_update(self.buildings)
+        self.rejected_buildings.difference_update(seen)
+        turn.blocked.update(u.pos for u in self.buildings.values())
+
+    def rejected(self, uid, origin, target_id, point):
+        return (uid, origin, target_id, point) in self.failed_shots
+
+    def remember(self, turn, robot, action, point, target_id=None):
+        self.pending[robot.id] = turn.round, robot.pos, action, point, target_id
 
 
 def enemy_base(turn):
@@ -195,8 +251,77 @@ def _new_objective(turn, base, robot, nav, ledger):
     return None
 
 
-def _target_point(robot, target):
-    return min(target.cells, key=lambda point: (distance(robot.pos, point), point != target.pos, point))
+def _target_point(origin, target):
+    return min(target.cells, key=lambda point: (distance(origin, point), point != target.pos,
+               (origin[0] - point[0]) ** 2 + (origin[1] - point[1]) ** 2, point))
+
+
+def _occupants(turn, memory):
+    enemies = {u.id: u for u in memory.buildings.values()}
+    enemies.update((u.id, u) for u in turn.enemies)
+    occupied = {p: (u, u.id not in memory.rejected_buildings) for u in enemies.values() for p in u.cells}
+    # Public robots have unknown ownership and are never attack targets.
+    occupied.update((p, (u, False)) for u in (*turn.ours, *turn.robots, *turn.summon_robots)
+                    for p in u.cells)
+    for p, kind in turn.zones.items():
+        if kind != "land":
+            occupied.setdefault(p, (None, False))
+    return occupied
+
+
+def _first_hit(origin, point, occupied, actor_id):
+    for cell in line_cells(origin, point):
+        hit = occupied.get(cell)
+        if hit is not None and (hit[0] is None or hit[0].id != actor_id):
+            return *hit, cell
+    return None
+
+
+def _clear_shot(origin, target, point, occupied, actor_id):
+    hit = _first_hit(origin, point, occupied, actor_id)
+    return bool(hit and hit[1] and hit[0].id == target.id)
+
+
+def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied):
+    point = _target_point(robot.pos, target)
+    phase = "base" if target.kind == "station" else "breach" if target.kind == "wall" else "clear"
+    memory.objectives[robot.id] = RobotObjective(point, target.id if target.kind == "wall" else None, phase)
+    facts = dict(phase=phase, target_id=target.id, target_kind=target.kind,
+                 target_source="visible" if target in turn.enemies else "last_seen_building",
+                 observed_health=target.health)
+    if (distance(robot.pos, point) <= robot.attack_range
+            and not memory.rejected(robot.id, robot.pos, target.id, point)
+            and _clear_shot(robot.pos, target, point, occupied, robot.id)
+            and ledger.add(robot.id, command("attack", point))):
+        memory.remember(turn, robot, "attack", point, target.id)
+        reason = ("robot_attack_base" if phase == "base" else "robot_breach_wall"
+                  if phase == "breach" else "robot_clear_path_blocker")
+        ledger.explain(robot.id, reason, **facts)
+        return True
+    avoided = {p for (uid, p) in memory.failed_steps if uid == robot.id}
+    reserved = ledger.reserved | avoided
+    blocked = (turn.blocked | reserved) - {robot.pos}
+    goals = set()
+    reach = robot.attack_range
+    if memory.rejected(robot.id, robot.pos, target.id, point):
+        reach = min(reach, max(1, distance(robot.pos, point) - 1))
+    for i, origin in enumerate(sorted(_attack_goals(turn, target.cells, reach))):
+        if i % 16 == 0:
+            check_time(nav.deadline)
+        if origin in blocked:
+            continue
+        aim = _target_point(origin, target)
+        if (not memory.rejected(robot.id, origin, target.id, aim)
+                and _clear_shot(origin, target, aim, occupied, robot.id)):
+            goals.add(origin)
+    route = nav.search(robot, goals, reserved)
+    if route is not None and route[1] is not None and ledger.add(robot.id, command("move", route[1])):
+        memory.remember(turn, robot, "move", route[1])
+        reason = ("robot_approach_base" if phase == "base" else "robot_approach_weak_wall"
+                  if phase == "breach" else "robot_approach_path_blocker")
+        ledger.explain(robot.id, reason, route_steps=route[0], **facts)
+        return True
+    return False
 
 
 def act_robots(turn, memory, nav, ledger):
@@ -204,8 +329,9 @@ def act_robots(turn, memory, nav, ledger):
     memory.observe(turn, base)
     if not turn.summon_robots:
         return
-    by_id = {u.id: u for u in turn.enemies if u.kind == "wall"}
-    by_pos = {u.pos: u for u in by_id.values()}
+    ledger.robot_known_enemies = tuple(u for uid, u in memory.buildings.items()
+                                       if uid not in memory.rejected_buildings)
+    occupied = _occupants(turn, memory)
     for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
         check_time(nav.deadline)
         if robot.id in ledger.used:
@@ -215,45 +341,21 @@ def act_robots(turn, memory, nav, ledger):
             ledger.explain(robot.id, "robot_wait_day" if turn.is_day else "robot_dizzy" if robot.abnormal_state == "dizzy"
                            else "robot_enemy_base_missing")
             continue
-        goal = memory.objectives.get(robot.id)
-        if goal is None:
-            goal = _new_objective(turn, base, robot, nav, ledger)
-            if goal is not None:
-                memory.objectives[robot.id] = goal
-        if goal is None:
-            ledger.used.add(robot.id)
-            ledger.explain(robot.id, "robot_no_reachable_entry")
+        # Recompute from observations every turn; no estimated kill, lost
+        # character sight or off-path weak wall can redirect the assault.
+        hit = _first_hit(robot.pos, _target_point(robot.pos, base), occupied, robot.id)
+        target = hit[0] if hit and hit[1] and hit[0].kind in (*CHARACTERS, *WEAPONS, "wall", "station") else base
+        if _act_toward_target(turn, memory, nav, ledger, robot, target, occupied):
             continue
-        # Walls are globally visible: absence of this exact live wall proves
-        # the breach. An estimated lethal shot never changes the phase early.
-        if goal.phase == "breach" and goal.wall_id not in by_id:
-            goal.phase, goal.wall_id = "base", None
-        rebuilt = by_pos.get(goal.entry)
-        if goal.phase == "base" and rebuilt and base_distance(base, robot.pos) >= 2:
-            goal.phase, goal.wall_id = "breach", rebuilt.id
-        target = by_id[goal.wall_id] if goal.phase == "breach" else base
-        point = _target_point(robot, target)
-        if distance(robot.pos, point) <= robot.attack_range:
-            if ledger.add(robot.id, command("attack", point)):
-                ledger.explain(robot.id, "robot_breach_wall" if goal.phase == "breach" else "robot_attack_base",
-                               phase=goal.phase, entry=goal.entry, target_id=target.id,
-                               wall_level=target.level if goal.phase == "breach" else None,
-                               observed_health=target.health)
+        if hit and not hit[1]:
+            # An unattackable NPC/friendly obstruction can require a detour
+            # through a wall when no free firing position is reachable.
+            detour = _new_objective(turn, base, robot, nav, ledger)
+            wall = next((u for u in turn.enemies if detour and u.id == detour.wall_id), None)
+            if wall and _act_toward_target(turn, memory, nav, ledger, robot, wall, occupied):
                 continue
-        route = nav.search(robot, _attack_goals(turn, target.cells, robot.attack_range), ledger.reserved)
-        if route is not None and route[1] is not None and ledger.add(robot.id, command("move", route[1])):
-            ledger.explain(robot.id, "robot_approach_weak_wall" if goal.phase == "breach" else "robot_approach_base",
-                           phase=goal.phase, entry=goal.entry, target_id=target.id, route_steps=route[0])
-            continue
-        # Clear an observed enemy character only when it prevents advancing;
-        # own units, NPCs and public robots never become attack targets.
-        blockers = [u for u in turn.enemies if u.kind in CHARACTERS
-                    and distance(robot.pos, u.pos) <= robot.attack_range]
-        blocker = min(blockers, key=lambda unit: (distance(unit.pos, point), unit.health, unit.id), default=None)
-        if blocker and ledger.add(robot.id, command("attack", blocker.pos)):
-            ledger.explain(robot.id, "robot_clear_enemy_blocker", phase=goal.phase, target_id=blocker.id)
-            continue
         ledger.used.add(robot.id)
         ledger.reserved.add(robot.pos)
-        ledger.explain(robot.id, "robot_assault_path_blocked", phase=goal.phase,
-                       entry=goal.entry, target_id=target.id)
+        ledger.explain(robot.id, "robot_assault_path_blocked", target_id=target.id,
+                       first_blocker=hit[2] if hit else None,
+                       rejected_stance=memory.rejected(robot.id, robot.pos, target.id, _target_point(robot.pos, target)))

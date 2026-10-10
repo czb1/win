@@ -506,7 +506,16 @@ class RobotCommandTests(unittest.TestCase):
                     {"neutralType": neutral_type, "pos": {"x": 8, "y": 4}}]
                 turn, _, nav, ledger = setup_case(data, layout_mode="explicit")
                 self.assertEqual(weakest_approach(turn, ledger).wall.pos, (8, 5))
-                act_robots(turn, RobotAssaultMemory(), nav, ledger)
+                memory = RobotAssaultMemory()
+                act_robots(turn, memory, nav, ledger)
+                # The diagonal shot to this wall touches the NPC cell.
+                # Reposition before firing rather than shoot through it.
+                action = ledger.commands["30000"]
+                self.assertEqual(action["action"], "move")
+                data["roundNo"] += 1
+                data["teamOur"]["summonRobotList"][0]["pos"] = action["targetPos"][0]
+                turn, _, nav, ledger = setup_case(data, layout_mode="explicit")
+                act_robots(turn, memory, nav, ledger)
                 self.assertEqual(ledger.commands["30000"], command("attack", (8, 5)))
 
     def test_expired_decision_budget_stops_even_a_direct_in_range_attack(self):
