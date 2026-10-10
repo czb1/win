@@ -137,7 +137,8 @@ class ContextFilter(logging.Filter):
             record.task_type = "长上下文类"
         if record.event is None:
             match = re.search(r"event=([\w]+)", message) if record.category == "long_context" else re.search(r"\b(task_\w+)", message)
-            record.event = match.group(1) if match else "diagnostic"
+            record.event = match.group(1) if match else (record.levelname.lower()
+                           if record.levelno != logging.INFO else "diagnostic")
         if not hasattr(record, "data"):
             # Promote existing JSON message bodies without changing old messages.
             match = re.search(r"\b\w+=(\{.*|\[.*)$", message, re.DOTALL)
@@ -151,7 +152,7 @@ class ContextFilter(logging.Filter):
 
 
 class JsonFormatter(logging.Formatter):
-    def __init__(self, compact=False):
+    def __init__(self, compact=True):
         super().__init__()
         self.compact = compact
 
@@ -167,7 +168,7 @@ class JsonFormatter(logging.Formatter):
             if result.get(key) in (None, ""):
                 result.pop(key, None)
         if self.compact:
-            result = compact_record(result)
+            result = compact_record(result, keep_session_data=True)
         return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -180,10 +181,9 @@ class WireFormatter(JsonFormatter):
             return PREFIX + raw
         pieces = [encoded[i:i + 4200] for i in range(0, len(encoded), 4200)]
         digest = sha256(encoded).hexdigest()
-        # Fragment identity is only transport framing, never part of the compact view.
-        header = {"run": record.run, "record_id": record.record_id}
-        return "\n".join(PREFIX + json.dumps({**header, "fragment": {
-            "index": index, "total": len(pieces), "sha256": digest, "encoding": "base64",
+        # The identity is needed only for reassembling long plaintext records.
+        return "\n".join(PREFIX + json.dumps({"fragment": {
+            "id": record.record_id, "index": index, "total": len(pieces), "sha256": digest, "encoding": "base64",
             "content": base64.b64encode(piece).decode("ascii")}}, ensure_ascii=False, separators=(",", ":"))
             for index, piece in enumerate(pieces))
 
@@ -237,7 +237,7 @@ def configure_logging(level="INFO", log_dir=None, log_public_key=None, plaintext
         try:
             directory = Path(log_dir)
             directory.mkdir(parents=True, exist_ok=True)
-            # events.jsonl retains internal identities for machine filters and recovery.
+            # Every sink stores the same compact record, including encrypted JSONL.
             for filename, formatter in (("game.log", WireFormatter(compact=True)), ("events.jsonl", JsonFormatter())):
                 if encryptor:
                     formatter = EncryptedFormatter(encryptor, wire=filename == "game.log")

@@ -85,7 +85,7 @@ run.bat 8080
 
 ### 按天数、昼夜和任务查日志
 
-日志面向“看录像找到回合 → 下载一个 `.log` 文件 → 本地解密并提取问题区间 → 交给智能体分析修改”的流程。比赛端统一向 stderr 输出 `FWENC {JSON}` 加密封装，无需 HTML 或平台支持多个文件。解密后的记录仍带格式版本、运行编号、请求编号、队伍、场次、全局回合、天数／昼夜及任务／单位编号；时间戳为 UTC，游戏时间按 `round_origin` 计算。回合倒退会新建场次，相同请求的缓存命中也单独记录。
+日志面向“看录像找到回合 → 下载一个 `.log` 文件 → 本地解密并提取问题区间 → 交给智能体分析修改”的流程。比赛端统一向 stderr 输出 `FWENC {JSON}` 加密封装，无需 HTML 或平台支持多个文件。默认写入精简记录，直接解密也只保留队伍、游戏回合／时间、事件、相关任务／单位、业务数据和异常；游戏时间按 `round_origin` 计算。回合倒退会记录新场次边界，相同请求的缓存命中也单独记录。
 
 自行实现 RFC 8439 的 ChaCha20-Poly1305 和 RFC 8017 的 RSA-OAEP／SHA-256。每次日志配置生成随机 256 位运行密钥，用公钥封装；每条记录压缩后完整加密，计数 nonce 在该运行密钥下不重复。外层只含协议、密钥指纹、封装密钥、nonce、密文及可选分段信息，地图、题目、回复、异常和业务身份均在密文内。每条／每段携带恢复所需的封装密钥，截取文件不依赖文件头。同一条密文可复制到 stderr 和本地文件，切换进程／重新配置会更换运行密钥。认证校验保护记录内容与外层协议字段，但公钥加密不证明日志发送者身份，也不能证明整份文件未被删除尾部；缺段与序号缺口仍按输入文件报告。
 
@@ -97,9 +97,9 @@ run.bat 8080
 
 `--log-dir` 是可选的本地副本，保存同样加密的 `game.log` 与 `events.jsonl`，每文件50MB轮转并保留5份备份；下载的单个 `.log` 文件已包含分析所需记录。轮转删除的旧副本、平台截断或手工剪切造成的缺失不能恢复，提取结果会报告缺少元数据、分段、引用或中间序号。
 
-日常输出只保留回合、事件、人物、业务数据和异常内容。`issue.txt`、`tasks.txt` 及查询输出省略 `run`、`request_id`、`level`、`logger`、`timestamp`、`source`、`session`、`record_id`、`sequence` 和 `schema_version`；`task_id`、`task_type` 仅在与任务相关且有值时显示。重复的事件消息、空字段和决策中未使用的目标也会省略，业务数据中的 `0`、`false`、时间戳及单位等级仍保留。
+所有默认写入和导出都省略 `run`、`request_id`、`level`、`logger`、`timestamp`、`source`、`session`、`record_id`、`sequence` 和 `schema_version`，包括加密记录、本地 `events.jsonl`、`issue.txt`、`tasks.txt`、`--split` 的 JSONL 和查询输出；`task_id`、`task_type` 仅在与任务相关且有值时显示。重复的事件消息、空字段和决策中未使用的目标也会省略，业务数据中的 `0`、`false`、时间戳及单位等级仍保留。
 
-关联编号、日志级别和完整性信息继续保存在原始加密记录中；`meta.json` 保存场次配置与完整性报告，`--split` 的 JSONL 保留完整记录供机器分析。使用 `--plaintext-logs` 调试时，stderr 和 `game.log` 同样精简，`events.jsonl` 保留可筛选的完整记录。按场次、运行编号或日志级别查询时使用原始加密日志或 `events.jsonl`，精简文本用于阅读。
+完整运行配置与源码指纹仅在 `session_started` 中保存一次，提取后写入 `meta.json`，普通文本只显示版本和场次开始原因。读取器通过已有加密封装识别运行、去重并检查 nonce 缺口，通过场次开始和回合边界生成本地场次／请求关联；这些关联只在读取器内存及 `meta.json` 中使用，不再随每条记录写出。新版日志的 `--session` 使用 `--list` 列出的 `scene-N`（截取日志无开始记录时为 `scene-0`），必要时同时指定运行和队伍；它不等于任务编号中的代理场次 UUID。`--level` 根据告警／错误事件和异常识别新版记录，旧日志仍按原始级别和编号筛选。明文调试没有加密运行标识；多个进程的明文文件应分别读取。
 
 ```bash
 .venv/bin/python SDK/SDK_Python/CoreGeek/main3.py 8080 --log-level INFO --log-dir artifacts/game
@@ -115,7 +115,7 @@ run.bat 8080
 .venv/bin/python tools/query_logs.py artifacts/game/events.jsonl --private-key keys/log-private.json --category long_context
 ```
 
-下载 `.log` 文件后，只需下载 [extract_logs.py](tools/extract_logs.py)，准备对应的本地私钥，用 Python 3.11+ 执行（单文件、只用标准库，无需安装依赖）。以下 `keys/log-private.json` 请替换为自己的私钥路径：
+下载 `.log` 文件后，使用同一 [Release](https://github.com/czb1/win/releases/latest) 附带的 `extract_logs.py`（或下载仓库最新版 [extract_logs.py](tools/extract_logs.py)），准备对应的本地私钥，用 Python 3.11+ 执行（单文件、只用标准库，无需安装依赖）。更新比赛包时也更新本地提取脚本，旧日志同样可用新版脚本精简导出。以下 `keys/log-private.json` 请替换为自己的私钥路径：
 
 ```bash
 # 同一 .log 文件有多个场次时先确认编号；也会列出任务编号
@@ -143,7 +143,7 @@ python extract_logs.py match.log --private-key keys/log-private.json --from-roun
 
 从 `--list` 复制任务编号后，可用 `--task-id "编号"` 查看同一次任务跨白天／黑夜的记录；自进化编号为 `session/r领取回合`（没有领取记录时用首次看到题目的回合），长上下文编号为 `session/long-context`，新闻推理为 `session/reasoning`。查询工具支持 `.log` 和 JSONL，可组合 `--from-round`、`--to-round`、`--unit-id`、`--event`、`--team`、`--session`、`--contains`、`--level` 和 `--limit`；筛选在精简前执行，`--json` 输出精简后的 JSON Lines，默认文本输出也包含业务数据和完整异常。白天70回合、黑夜60回合，阶段内回合从1计数；任务结束和 outcome 保留旧任务编号，新任务单独编号。领取失败、合法提交、任务结束和有证据的完成分别记录。
 
-工具不能给历史无结构的纯文本日志补充地图和任务编号。使用 `callback()` 的外部宿主需调用 `agent.logging_system.configure_logging("INFO")` 启用同样的 stderr 输出，也可传入日志目录。场次编号基于代理内存生命周期，不代表官方比赛 ID。运行配置和源码指纹可用于核对程序版本；打包方可通过 `FUTURE_WAR_VERSION` 附加包版本。
+工具不能给历史无结构的纯文本日志补充地图和任务编号。使用 `callback()` 的外部宿主需调用 `agent.logging_system.configure_logging("INFO")` 启用同样的 stderr 输出，也可传入日志目录。本地场次关联基于输入中的边界记录，不代表官方比赛 ID；删除场次边界后不能还原原场次分组。运行配置和源码指纹可用于核对程序版本；打包方可通过 `FUTURE_WAR_VERSION` 附加包版本。
 
 排查找矿时，可开启诊断日志：
 

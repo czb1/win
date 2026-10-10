@@ -1,4 +1,4 @@
-"""Compact log views; transport metadata stays available to readers internally.
+"""Compact records for every log sink and export.
 
 This module is embedded in the standalone extractor by sync_log_crypto.py.
 """
@@ -50,7 +50,7 @@ def task_related(record):
     return False
 
 
-def compact_record(record):
+def compact_record(record, keep_session_data=False):
     """Keep useful fields without altering the source or application payloads."""
     result = {key: value for key, value in record.items()
               if key not in HIDDEN_FIELDS and value is not None and value != ""}
@@ -63,8 +63,8 @@ def compact_record(record):
     if result.get("message") == result.get("event"):
         result.pop("message", None)
     data = result.get("data")
-    if isinstance(data, dict) and record.get("event") == "session_started":
-        # Full build/configuration details belong in meta.json and the archive.
+    if isinstance(data, dict) and record.get("event") == "session_started" and not keep_session_data:
+        # Writers retain configuration once per scene for the extractor's meta.json.
         data = {key: data[key] for key in ("version", "reason") if data.get(key) not in (None, "")}
         result["data"] = data
     if isinstance(data, dict) and record.get("event") == "previous_feedback":

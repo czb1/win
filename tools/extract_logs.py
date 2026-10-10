@@ -396,7 +396,7 @@ class LogDecryptor:
 
 PREFIX = "FWLOG "
 # BEGIN EMBEDDED LOG DISPLAY
-"""Compact log views; transport metadata stays available to readers internally.
+"""Compact records for every log sink and export.
 
 This module is embedded in the standalone extractor by sync_log_crypto.py.
 """
@@ -448,7 +448,7 @@ def task_related(record):
     return False
 
 
-def compact_record(record):
+def compact_record(record, keep_session_data=False):
     """Keep useful fields without altering the source or application payloads."""
     result = {key: value for key, value in record.items()
               if key not in HIDDEN_FIELDS and value is not None and value != ""}
@@ -461,8 +461,8 @@ def compact_record(record):
     if result.get("message") == result.get("event"):
         result.pop("message", None)
     data = result.get("data")
-    if isinstance(data, dict) and record.get("event") == "session_started":
-        # Full build/configuration details belong in meta.json and the archive.
+    if isinstance(data, dict) and record.get("event") == "session_started" and not keep_session_data:
+        # Writers retain configuration once per scene for the extractor's meta.json.
         data = {key: data[key] for key in ("version", "reason") if data.get(key) not in (None, "")}
         result["data"] = data
     if isinstance(data, dict) and record.get("event") == "previous_feedback":
@@ -507,11 +507,64 @@ class ReadReport:
                 "note": "Gaps describe this input; platform truncation and manually cut excerpts may cause them."}
 
 
+class LogRecord(dict):
+    """Reader-only associations never become fields in exported JSON records."""
+    def __init__(self, record, metadata=None):
+        super().__init__(record)
+        self.metadata = metadata or {}
+
+
+def record_value(record, key):
+    return record[key] if key in record else getattr(record, "metadata", {}).get(key)
+
+
+def record_level(record):
+    event = record.get("event")
+    if event == "critical":
+        return "CRITICAL"
+    if record.get("exception") or event in {"error", "turn_invalid", "decision_failed", "empty_response_fallback", "logging_failed"}:
+        return "ERROR"
+    if event in {"warning", "budget_reached", "client_disconnected", "lock_busy", "log_integrity", "judger_errors"}:
+        return "WARNING"
+    return "DEBUG" if event == "debug" else "INFO"
+
+
+class ReaderContext:
+    """Infer local scenes/requests from boundaries instead of repeating UUIDs."""
+    def __init__(self):
+        self.states = OrderedDict()
+        self.scenes = Counter()
+
+    def attach(self, record, run):
+        key = (run, record.get("team"), record.get("side"))
+        state = self.states.setdefault(key, {"session": "scene-0", "round": None,
+                                            "request": 0, "active": False, "started": False})
+        self.states.move_to_end(key)
+        if len(self.states) > 256:
+            self.states.popitem(last=False)
+        event, number = record.get("event"), record.get("round")
+        if event == "session_started":
+            self.scenes[run] += 1
+            state["session"] = "scene-" + str(self.scenes[run])
+        if (event == "request_received" or number is not None and number != state["round"]
+                or event in {"turn_started", "turn_snapshot"} and not state["active"]
+                or event == "turn_started" and state["started"]):
+            state.update(request=state["request"] + 1, active=True, started=False, round=number)
+        if event == "turn_started":
+            state["started"] = True
+        metadata = {"run": run, "session": state["session"],
+                    "request_id": state["request"], "level": record_level(record)}
+        if event in {"turn_response", "http_response", "client_disconnected", "empty_response_fallback"}:
+            state["active"] = state["started"] = False
+        return LogRecord(record, metadata)
+
+
 def events(path, report=None, warn=True, decryptor=None):
     report = report if report is not None else ReadReport()
     decryptor = decryptor if decryptor is not None else LogDecryptor()
     pending, emitted = OrderedDict(), OrderedDict()
     pending_bytes = 0
+    context = ReaderContext()
     decoder = json.JSONDecoder()
     with Path(path).open("rb") as source:
         prefix = source.read(4)
@@ -523,6 +576,7 @@ def events(path, report=None, warn=True, decryptor=None):
                 continue
             encrypted_line = False
             fragment_identity = None
+            header = None
             if line.startswith("{"):
                 raw = line
             elif ENCRYPTED_PREFIX in line and (PREFIX not in line or line.index(ENCRYPTED_PREFIX) < line.index(PREFIX)):
@@ -594,7 +648,7 @@ def events(path, report=None, warn=True, decryptor=None):
                         raise ValueError("invalid fragment count")
                     if fragment.get("encoding") != "base64":
                         raise ValueError("unsupported fragment encoding")
-                    identity = (record.get("run"), record["record_id"])
+                    identity = (record.get("run"), record.get("record_id", fragment.get("id")))
                     if not isinstance(identity[1], str):
                         raise ValueError("missing fragment identity")
                     part = base64.b64decode(fragment["content"], validate=True)
@@ -638,17 +692,25 @@ def events(path, report=None, warn=True, decryptor=None):
                 if warn and report.invalid_lines <= 5:
                     print(f"跳过无效日志：{path}:{line_no} ({error})", file=sys.stderr)
                 continue
-            identity = fragment_identity or (record.get("run"), record.get("record_id"))
-            if identity[1] is not None:
+            packet_identity = (("encrypted", header["key_id"], header["wrapped_key"], header["nonce"])
+                               if header is not None else None)
+            identity = fragment_identity or ((record.get("run"), record["record_id"])
+                                            if record.get("record_id") is not None else packet_identity)
+            if identity is not None:
                 if identity in emitted:
                     report.duplicate_records += 1
                     continue
                 emitted[identity] = True
                 if len(emitted) > 4096:
                     emitted.popitem(last=False)
-            sequence = record.get("sequence")
+            run = (sha256((header["key_id"] + header["wrapped_key"]).encode()).hexdigest()[:16]
+                   if header is not None else "plaintext")
+            sequence = (int.from_bytes(base64.b64decode(header["nonce"]), "big") + 1
+                        if header is not None else None)
+            record = context.attach(record, run)
+            sequence = record.get("sequence", sequence)
             if type(sequence) is int:
-                report.sequences.setdefault(record.get("run"), set()).add(sequence)
+                report.sequences.setdefault(record_value(record, "run"), set()).add(sequence)
             report.records += 1
             yield record
     for state in pending.values():
@@ -659,7 +721,7 @@ def events(path, report=None, warn=True, decryptor=None):
 
 
 def scope(record):
-    return record.get("run"), record.get("session"), record.get("team")
+    return record_value(record, "run"), record_value(record, "session"), record.get("team")
 
 
 def payload_key(record):
@@ -685,7 +747,7 @@ def anchors(record, args):
         return False
     for name in ("session", "team", "run", "day", "phase", "task_id"):
         expected = getattr(args, name)
-        if expected is not None and record.get(name) != expected:
+        if expected is not None and record_value(record, name) != expected:
             return False
     if args.from_round is not None and number < args.from_round:
         return False
@@ -764,7 +826,7 @@ def main(argv=None):
             metadata[identity] = record
         key = payload_key(record)
         if key and "content" in record.get("data", {}):
-            definitions.setdefault(key, record.get("record_id"))
+            definitions.setdefault(key, True)
         if anchors(record, args):
             groups[(identity, None if args.mode == "non-task" else record.get("task_id"))] += 1
             lower, upper = bounds.get(identity, (number, number))
@@ -794,14 +856,14 @@ def main(argv=None):
                     continue
                 if record.get("event") == "session_started":
                     continue
-                target.write(dumps(record) + "\n")
+                target.write(dumps({"record": record, "metadata": record.metadata}) + "\n")
                 selected_count += 1
                 key = payload_key(record)
                 if key:
                     requested.add(key)
                     if "content" in record.get("data", {}):
                         available.add(key)
-                request = (*identity, record.get("request_id"))
+                request = (*identity, record_value(record, "request_id"))
                 if record.get("event") == "turn_started":
                     unfinished.add(request)
                 elif record.get("event") == "turn_response":
@@ -818,7 +880,8 @@ def main(argv=None):
                 "selected_records": selected_count, "read_report": report.summary(),
                 "missing_payloads": absent, "requests_without_response": [list(key) for key in unfinished],
                 "missing_session_metadata": [list(key) for key in bounds if key not in metadata]}
-        meta["session_metadata"] = [metadata[key] for key in bounds if key in metadata]
+        meta["session_metadata"] = [{"run": key[0], "session": key[1], **metadata[key]}
+                                    for key in bounds if key in metadata]
         files = {"issue": (args.out / "issue.txt").open("w", encoding="utf-8"),
                  "tasks": (args.out / "tasks.txt").open("w", encoding="utf-8")}
         if args.split:
@@ -828,22 +891,22 @@ def main(argv=None):
         def write(record):
             encoded = dumps(compact_record(record))
             files["issue"].write("FWLOG " + encoded + "\n")
-            request = (*scope(record), record.get("request_id"))
+            request = (*scope(record), record_value(record, "request_id"))
             task = is_task(record) and (args.task_id is None or record.get("task_id") == args.task_id)
             task = task or record.get("event") in ("session_started", "log_integrity")
             task = task or record.get("included_as") == "payload_dependency" and is_task(record)
             task = task or request in task_requests and (record.get("event") in ("previous_feedback", "turn_response")
                      or record.get("event") == "unit_decision" and isinstance(record.get("data"), dict) and record["data"].get("role_type") == "pioneer"
-                     or record.get("level") in ("WARNING", "ERROR", "CRITICAL"))
+                     or record_value(record, "level") in ("WARNING", "ERROR", "CRITICAL"))
             if task and args.mode != "non-task":
                 files["tasks"].write("FWLOG " + encoded + "\n")
                 counts["task_records"] += 1
             for name, category in (("turns", "snapshot"), ("decisions", "decision"), ("feedback", "feedback")):
                 if name in files and record.get("category") == category:
-                    files[name].write(dumps(record) + "\n")
-            if "errors" in files and (record.get("level") in ("WARNING", "ERROR", "CRITICAL")
+                    files[name].write(encoded + "\n")
+            if "errors" in files and (record_value(record, "level") in ("WARNING", "ERROR", "CRITICAL")
                                        or record.get("event") in ("judger_errors", "log_integrity")):
-                files["errors"].write(dumps(record) + "\n")
+                files["errors"].write(encoded + "\n")
         try:
             if args.mode == "all":
                 issues = {key: value for key, value in {
@@ -855,16 +918,17 @@ def main(argv=None):
                            "data": {**issues, "details": "meta.json"}})
                 for identity in bounds:
                     if identity in metadata:
-                        write({**metadata[identity], "included_as": "session_metadata"})
+                        write(LogRecord({**metadata[identity], "included_as": "session_metadata"}, metadata[identity].metadata))
             supplied = set()
             for record in events(args.log, warn=False, decryptor=decryptor):
                 key = payload_key(record)
                 if key in missing and key not in supplied and "content" in record.get("data", {}):
-                    write({**record, "included_as": "payload_dependency"})
+                    write(LogRecord({**record, "included_as": "payload_dependency"}, record.metadata))
                     supplied.add(key)
             with temporary.open(encoding="utf-8") as selected:
                 for line in selected:
-                    write(json.loads(line))
+                    saved = json.loads(line)
+                    write(LogRecord(saved["record"], saved["metadata"]))
         finally:
             for target in files.values():
                 target.close()
