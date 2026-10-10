@@ -301,6 +301,7 @@ def wall_material_plan(turn, cfg, mem, nav, ledger, hero, cell, steps, amount, g
     proxy, walk, targets, best = replace(hero, pos=cell), 0, [], None
     try:
         turn.blocked = original - {hero.pos}
+        turn.ours = tuple(proxy if u.id == hero.id else u for u in original_units)
         for _ in range(goal // cfg.wall_stones):
             shadow.commands[str(hero.id)] = command('move', proxy.pos)
             options = build_options(turn, cfg, memory, nav, shadow, proxy, sites, lambda _: 'wall')
@@ -315,7 +316,8 @@ def wall_material_plan(turn, cfg, mem, nav, ledger, hero, cell, steps, amount, g
             shadow.build_claims[target] = (hero.id, 'wall')
             memory.build_targets[hero.id] = target
             turn.blocked = turn.blocked | {target}
-            turn.ours += (Unit(-100000 - len(targets), target, 'wall', 1000),)
+            turn.ours = tuple(proxy if u.id == hero.id else u for u in turn.ours) + (
+                Unit(-100000 - len(targets), target, 'wall', 1000),)
             needed = len(targets) * cfg.wall_stones - held
             if needed <= 0:
                 continue
@@ -326,7 +328,8 @@ def wall_material_plan(turn, cfg, mem, nav, ledger, hero, cell, steps, amount, g
             occupied = turn.blocked
             try:
                 if turn.tick < cfg.economy_rounds:
-                    turn.blocked = occupied - {h.pos for h in turn.heroes}
+                    # A vacated actor cell may now contain a constructed wall.
+                    turn.blocked = occupied - ({h.pos for h in turn.heroes} - set(targets))
                 back = (nav.search(proxy, home, shadow.reserved) if exact
                         else nav.approach(proxy, home, shadow.reserved))
             finally:

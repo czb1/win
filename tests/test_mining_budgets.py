@@ -112,6 +112,19 @@ class MaterialBudgetTests(unittest.TestCase):
         self.assertFalse(mine(t, c, Memory(), n, l, t.workers[0], want_stone=True))
         self.assertFalse(l.commands)
 
+    def test_wall_at_vacated_start_cell_remains_an_obstacle_for_later_walls(self):
+        p = payload(140, [unit(1, 'worker', 5, 5), unit(13, 'station', 2, 6, health=1500)] +
+                    [unit(100 + y, 'wall', 5, y, health=1000)
+                     for y in range(15) if y not in (5, 8)])
+        p['mapInfo']['zones'] = [dict(neutralType='stone', pos=dict(x=7, y=5), remain=10)]
+        t, c, n, l = setup_case(p, layout_mode='explicit', wall_cells=[[5, 5], [5, 8]])
+        self.assertTrue(mine(t, c, Memory(), n, l, t.workers[0], want_stone=True, stone_goal=2))
+        # Closing the first passage at the old actor position is legal; closing
+        # the second would seal off the base and must not count as deliverable.
+        self.assertEqual(l.work_jobs[1]['stone_goal'], 1)
+        self.assertEqual(l.notes[1]['conditions']['construction_targets'], ((5, 5),))
+        self.assertEqual(l.notes[1]['conditions']['return_steps'], 5)
+
     def test_continuation_reuses_the_construction_budget_and_shrinks_goal(self):
         for tick, accepted in ((65, True), (66, False)):
             with self.subTest(tick=tick):
