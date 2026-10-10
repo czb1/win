@@ -54,6 +54,21 @@ def trade_available(turn, mem, nav, hero):
     return bool(vendors and mines and nav.approach(hero, vendors) and nav.approach(hero, mines))
 
 
+def development_pending(turn, cfg, mem, tower_sites, wall_sites):
+    """Shared phase condition for new allocation and accepted income jobs."""
+    built_walls = {w.pos for w in turn.ours if w.kind == 'wall'}
+    return bool(any(w.id < 0 or w.level < 3 for w in planned_weapons(turn, cfg, mem, tower_sites))
+                or turn.station and turn.station.level < 3 and (
+                    turn.shop or any(h.inventory[f'StationUpgradeVoucher{turn.station.level}']
+                                     for h in turn.heroes))
+                or any(w.kind == 'wall' and w.level < wall_level_limit(turn, w.pos)
+                       and (w.level < mem.wall_rebuild_levels.get(w.pos, 1)
+                            or f'WallUpgradeVoucher{w.level}' in turn.shop
+                            or any(h.inventory[f'WallUpgradeVoucher{w.level}'] for h in turn.heroes))
+                       for w in turn.ours)
+                or any(p not in built_walls and p not in mem.build_failures for p in wall_sites))
+
+
 def preparation_start(turn, cfg, mem, nav, heroes, sites):
     weapons = planned_weapons(turn, cfg, mem, sites)
     home = {p for w in weapons for p in w.cells}

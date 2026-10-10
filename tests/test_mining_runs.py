@@ -146,7 +146,7 @@ class FirstWaveTests(unittest.TestCase):
         p = payload(63, [unit(11, "pioneer", 12, 5), unit(20, "rocket", 5, 5),
                          unit(13, "station", 3, 7)])
         p["phaseTask"] = "slow unresolved task"
-        agent = Agent(Config(layout_mode="explicit"))
+        agent = Agent(Config(layout_mode="explicit", return_margin=5))
         result = agent.decide(p)
         self.assertEqual(result["roleCommandMap"]["11"]["action"], "move")
         self.assertFalse(result["prompt"])

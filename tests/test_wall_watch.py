@@ -235,7 +235,7 @@ class WallWatchTests(unittest.TestCase):
         p['teamOur']['roles'][2].update(pos={'x': 0, 'y': 0}, backpack=['copper'] * 3)
         p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 13, 'y': 3}})
         p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
-        t, cfg, nav, ledger = setup_case(p)
+        t, cfg, nav, ledger = setup_case(p, return_margin=5)
         mem = Memory(wall_watch_id=2)
         locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertTrue(locked)
@@ -247,7 +247,7 @@ class WallWatchTests(unittest.TestCase):
         p['teamOur']['roles'][2].update(pos={'x': 0, 'y': 0}, backpack=['copper'] * 3)
         p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 13, 'y': 3}})
         p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
-        t, cfg, nav, ledger = setup_case(p)
+        t, cfg, nav, ledger = setup_case(p, return_margin=5)
         mem = Memory(wall_watch_id=2)
         locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertTrue(locked)

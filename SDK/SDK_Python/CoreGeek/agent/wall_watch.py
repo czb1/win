@@ -199,6 +199,15 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         if use_inventory(turn, nav, ledger, hero, mem=mem, name_only='WallFixer'):
             report('repair', 'pre_wave_repair')
             return True, 0
+    if held >= mem.wall_watch.stock_target(turn):
+        from .economy import use_inventory
+        from .worker_jobs import finish_wall_work
+        if use_inventory(turn, nav, ledger, hero, mem=mem):
+            report('use', 'paid_delivery_before_optional_sale')
+            return True, 0
+        if finish_wall_work(turn, cfg, mem, nav, ledger, hero, sites):
+            report('build', 'wall_work_before_optional_sale')
+            return True, 0
     # Sell the watcher's own ore before shopping, including while carrying
     # packs. Keep enough daylight for the vendor, shop and inside return.
     sale_value = sum(count * turn.prices[kind] for kind, count in ores.items())

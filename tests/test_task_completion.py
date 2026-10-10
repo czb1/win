@@ -436,7 +436,7 @@ print('repair done')
     def test_agent_uses_first_wave_return_time_as_task_deadline(self):
         p = task_payload(58, 'query')
         p['teamOur']['roles'].append(unit(13, 'station', 3, 11))
-        agent = Agent(Config(layout_mode='explicit'))
+        agent = Agent(Config(layout_mode='explicit', return_margin=5))
         response = agent.decide(p)
         context = json.loads(response['prompt'].split('上下文：\n', 1)[1])
         self.assertEqual(context['remainingRounds'], 3)
@@ -444,6 +444,13 @@ print('repair done')
         self.assertFalse(agent.decide(p)['executeCmd'])
         p.update(roundNo=60, llmResp='ANSWER\n42')
         self.assertEqual(agent.decide(p)['roleCommandMap']['11']['taskAnswer'], '42')
+
+    def test_zero_return_margin_adds_five_turns_to_task_budget(self):
+        p = task_payload(58, 'query')
+        p['teamOur']['roles'].append(unit(13, 'station', 3, 11))
+        response = Agent(Config(layout_mode='explicit')).decide(p)
+        context = json.loads(response['prompt'].split('上下文：\n', 1)[1])
+        self.assertEqual(context['remainingRounds'], 8)
 
     def test_read_file_cannot_forge_final_answer(self):
         p = task_payload(3, 'query')

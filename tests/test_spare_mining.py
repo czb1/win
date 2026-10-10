@@ -58,7 +58,7 @@ class SpareMiningTests(unittest.TestCase):
     def test_idle_empty_worker_uses_daylight_until_actual_return_deadline(self):
         for tick in (39, 40, 60, 62, 63):
             with self.subTest(tick=tick):
-                t, cfg, nav, ledger = setup_case(late_case(rno=tick))
+                t, cfg, nav, ledger = setup_case(late_case(rno=tick), return_margin=5)
                 self.assertEqual(earn(t, cfg, Memory(), nav, ledger, t.workers[0]), tick <= 62)
                 if tick <= 62:
                     self.assertEqual(ledger.commands["1"], command("collect", (6, 5)))
@@ -94,11 +94,11 @@ class SpareMiningTests(unittest.TestCase):
     def test_spare_collection_respects_return_margin(self):
         for rno, expected in ((62, True), (63, False)):
             with self.subTest(rno=rno):
-                t, cfg, nav, ledger = setup_case(late_case(rno=rno))
+                t, cfg, nav, ledger = setup_case(late_case(rno=rno), return_margin=5)
                 self.assertEqual(spare_mine(t, cfg, Memory(), nav, ledger, t.workers[0]), expected)
 
     def test_assigned_gun_controls_return_budget(self):
-        t, cfg, nav, ledger = setup_case(late_case())
+        t, cfg, nav, ledger = setup_case(late_case(), return_margin=5)
         ledger.operator_posts[1] = (14, 14)
         self.assertFalse(spare_mine(t, cfg, Memory(), nav, ledger, t.workers[0]))
 
@@ -130,7 +130,7 @@ class SpareMiningTests(unittest.TestCase):
 
     def test_carry_ore_home_before_night_and_sell_next_day(self):
         p = late_case(inventory=["iron"] * 2)
-        cfg = Config(layout_mode="explicit", llm_enabled=False)
+        cfg = Config(layout_mode="explicit", llm_enabled=False, return_margin=5)
         agent = Agent(cfg)
         actions = []
         hero = p["teamOur"]["roles"][0]

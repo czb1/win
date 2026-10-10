@@ -21,8 +21,10 @@ class SurplusBossBatchTests(unittest.TestCase):
     def data(self, gold=492, round_no=260):
         return assault_fixtures.BestRobotSummoningTests().shop_data(gold=gold, round_no=round_no)
 
-    def buy(self, data, *, reserve=0, memory=None, post=None):
+    def buy(self, data, *, reserve=0, memory=None, post=None, return_margin=None):
         turn, cfg, nav, ledger = fortified_case(data)
+        if return_margin is not None:
+            cfg.return_margin = return_margin
         if post is not None:
             ledger.operator_posts[1] = post
         memory = memory or Memory()
@@ -66,11 +68,12 @@ class SurplusBossBatchTests(unittest.TestCase):
         self.assertEqual(ledger.gold, 960)
 
     def test_each_use_requires_a_turn_before_operator_return(self):
-        # Already at both shop and exact night post: 8 turns = buy + 2 uses + margin 5.
-        result, ledger, _ = self.buy(self.data(round_no=322), post=(4, 8))
-        self.assertTrue(result)
-        self.assertEqual(ledger.commands['1']['num'], 2)
-        self.assertEqual(ledger.gold, 252)
+        # At shop and post, eight turns fit two uses with margin 5 or four with 0.
+        for margin, count in ((5, 2), (0, 4)):
+            result, ledger, _ = self.buy(self.data(round_no=322), post=(4, 8), return_margin=margin)
+            self.assertTrue(result)
+            self.assertEqual(ledger.commands['1']['num'], count)
+            self.assertEqual(ledger.gold, 492 - 120 * count)
         result, ledger, _ = self.buy(self.data(round_no=329), post=(4, 8))
         self.assertFalse(result)
         self.assertFalse(ledger.commands)

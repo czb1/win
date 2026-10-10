@@ -40,13 +40,13 @@ class DaytimeWorkerIdleTests(unittest.TestCase):
     def test_sold_worker_collects_across_forty_boundary_but_respects_return_margin(self):
         for tick, expected in ((39, True), (40, True), (64, True), (65, False), (69, False)):
             with self.subTest(tick=tick):
-                t, cfg, nav, ledger = setup_case(self.mine_case(tick), layout_mode='explicit')
+                t, cfg, nav, ledger = setup_case(self.mine_case(tick), layout_mode='explicit', return_margin=5)
                 result = earn(t, cfg, Memory(sold_workers={1}), nav, ledger, t.workers[0])
                 self.assertEqual(bool(result), expected)
                 self.assertEqual(ledger.commands.get('1'), command('collect', (3, 11)) if expected else None)
 
     def test_stockpile_uses_assigned_post_not_nearest_base(self):
-        t, cfg, nav, ledger = setup_case(self.mine_case(60), layout_mode='explicit')
+        t, cfg, nav, ledger = setup_case(self.mine_case(60), layout_mode='explicit', return_margin=5)
         ledger.operator_posts[1] = (12, 2)
         self.assertFalse(spare_mine(t, cfg, Memory(), nav, ledger, t.workers[0]))
         self.assertFalse(ledger.commands)
@@ -194,7 +194,7 @@ class DaytimeWorkerIdleTests(unittest.TestCase):
         p = self.watch_case()
         p['mapInfo']['zones'] = [z for z in p['mapInfo']['zones'] if z['neutralType'] != 'copper']
         p['mapInfo']['zones'].append({'neutralType': 'copper', 'pos': {'x': 4, 'y': 9}})
-        agent = Agent(Config(llm_enabled=False))
+        agent = Agent(Config(llm_enabled=False, return_margin=5))
         actions = []
         for tick in (40, 41, 42):
             p['roundNo'] = 3 * 130 + tick

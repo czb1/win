@@ -116,7 +116,7 @@ class DayEconomyTests(unittest.TestCase):
     def test_single_worker_cannot_assume_parallel_construction(self):
         p = self.case()
         p["mapInfo"]["zones"][2]["pos"] = {"x": 14, "y": 0}
-        t, cfg, nav, _ = setup_case(p)
+        t, cfg, nav, _ = setup_case(p, economy_rounds=69)
         sites = [(5, 7), (5, 9), (5, 11)]
         parallel = preparation_start(t, cfg, Memory(), nav, t.workers, sites)
         solo = preparation_start(t, cfg, Memory(), nav, t.workers[:1], sites)

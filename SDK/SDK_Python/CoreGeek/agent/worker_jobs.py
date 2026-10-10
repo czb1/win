@@ -2,7 +2,7 @@
 import logging
 
 from .mining import mine, spare_mine, earn, sale_inventory, return_destination
-from .economy_plan import planned_weapons, via
+from .economy_plan import planned_weapons, via, development_pending
 from .market import cashout_ores, preferred_stock
 
 LOG = logging.getLogger(__name__)
@@ -19,8 +19,13 @@ def save_daytime_jobs(turn, mem, ledger):
                             if uid in ledger.mine_claims}
 
 
-def _fits_return(turn, cfg, nav, ledger, hero, target):
+def _fits_return(turn, cfg, mem, nav, ledger, hero, target):
     home, exact = return_destination(turn, nav, ledger, hero)
+    if turn.day >= 4 and hero.id == mem.wall_watch_id:
+        from .wall_watch import geometry
+        inside, _ = geometry(turn, ledger.wall_cells)
+        post = getattr(ledger, 'daytime_gunner_post', mem.gunner_post)
+        home, exact = inside - set(ledger.operator_posts.values()) - {post}, True
     if not home:
         return False
     trip = via(nav, hero, [[target], home], ledger.reserved, final_exact=exact,
@@ -33,6 +38,9 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls):
 
     kind, target = job['kind'], job['target']
     if kind in ('mine', 'spare') and not job.get('want_stone'):
+        if (turn.tick >= min(cfg.economy_rounds, mem.preparation_tick)
+                and development_pending(turn, cfg, mem, towers, walls)):
+            return False, 'development_phase_started'
         if cashout_ores(turn, cfg, mem, hero, sale_inventory(turn, mem, hero)):
             ok = earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False)
             return ok, 'news_cashout_or_return_deadline'
@@ -69,7 +77,7 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls):
     elif kind == 'build':
         name = job['name']
         if target not in (walls if name == 'wall' else towers) or not _fits_return(
-                turn, cfg, nav, ledger, hero, target):
+                turn, cfg, mem, nav, ledger, hero, target):
             return False, 'build_site_or_return_deadline'
         if name == 'wall' and hero.inventory['stone'] < cfg.wall_stones:
             return False, 'build_materials_changed'
@@ -85,14 +93,14 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls):
             deadline = min(deadline if deadline is not None else 70, mem.preparation_tick)
             if turn.tick >= deadline or batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
                 return False, 'farming_batch_or_phase_complete'
-        if job['stockpile'] and turn.tick >= 40 and batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
+        if job['stockpile'] and turn.tick >= cfg.economy_rounds and batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
             return False, 'stockpile_batch_complete'
         if job['want_stone']:
             goal = job.get('stone_goal') or cfg.stone_batch
             missing = [p for p in walls if p not in turn.blocked and p not in mem.build_failures]
             if not missing or hero.inventory['stone'] >= min(goal, len(missing) * cfg.wall_stones):
                 return False, 'material_batch_complete'
-        if not _fits_return(turn, cfg, nav, ledger, hero, target):
+        if not _fits_return(turn, cfg, mem, nav, ledger, hero, target):
             return False, 'mining_return_deadline'
         ok = mine(turn, cfg, mem, nav, ledger, hero, want_stone=job['want_stone'],
                   stockpile=job['stockpile'], deadline=deadline,
@@ -112,6 +120,21 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls):
     else:
         return False, 'unknown_job'
     return ok, 'target_or_route_no_longer_feasible'
+
+
+def finish_wall_work(turn, cfg, mem, nav, ledger, hero, sites):
+    """Spend held stone on feasible wall work before an optional vendor trip."""
+    from .economy import build
+    if hero.inventory['stone'] < cfg.wall_stones:
+        return False
+    job = mem.daytime_jobs.get(hero.id, {})
+    if job.get('kind') == 'build' and job.get('name') == 'wall':
+        ok, _ = _continue(turn, cfg, mem, nav, ledger, hero, job, ledger.tower_cells, sites)
+        if ok:
+            return True
+    feasible = [p for p in sites if p not in turn.blocked and p not in mem.build_failures
+                and _fits_return(turn, cfg, mem, nav, ledger, hero, p)]
+    return build(turn, cfg, mem, nav, ledger, hero, feasible, lambda _: 'wall')
 
 
 def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
@@ -137,6 +160,11 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
                           target_only=turn.station.pos)
         if hero.id not in ledger.used and (not job or job['kind'] != 'use'):
             use_inventory(turn, nav, ledger, hero, mem=mem, urgent_only=True)
+        if (hero.id not in ledger.used and job
+                and (hero.inventory['WallUpgradeVoucher1'] or hero.inventory['WallUpgradeVoucher2'])
+                and (job['kind'] in ('mine', 'spare') and not job.get('want_stone')
+                     or job['kind'] == 'buy' and job['name'].startswith('WallUpgradeVoucher'))):
+            use_inventory(turn, nav, ledger, hero, mem=mem)
     # A real breach may borrow one worker, as before; it must not borrow both
     # simply because they have active income jobs. The normal allocator handles
     # first-time jobs; this early call only protects emergency preemption.

@@ -89,7 +89,7 @@ class TaskPriorityTests(unittest.TestCase):
     def test_early_arrival_waits_without_accepting_task(self):
         data = case(20, x=7)
         data['teamOur']['roles'][0]['backpack'] = ['StarSand']
-        turn, cfg, nav, ledger = setup_case(data)
+        turn, cfg, nav, ledger = setup_case(data, return_margin=5)
         mem = Memory(treasure=plan(25))
         pioneer(turn, cfg, mem, nav, ledger, turn.pioneer)
         self.assertIn(11, ledger.used)
