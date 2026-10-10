@@ -88,11 +88,10 @@ class OpeningBossSpendingTests(unittest.TestCase):
         self.assertTrue(summon_best_robot(turn, cfg, mem, nav, ledger, TOWERS, WALLS))
         self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=5))
 
-    def test_purchase_does_not_need_home_or_a_summon_position(self):
+    def test_purchase_needs_no_home_or_summon_position_with_live_enemy_base(self):
         data = self.data(round_no=270)
         data['teamOur']['roles'] = [r for r in data['teamOur']['roles']
                                     if r['roleType'] in ('worker', 'pioneer')]
-        data['teamEnemy']['roles'] = []
         turn, cfg, nav, ledger = fortified_case(data)
         with patch('agent.brain.choose_summon_position', side_effect=AssertionError('buy needs no spawn')):
             self.assertTrue(summon_best_robot(turn, cfg, Memory(), nav, ledger, TOWERS, WALLS))

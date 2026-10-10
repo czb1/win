@@ -11,6 +11,7 @@ from agent.model import distance, pos
 from agent.navigation import DeadlineExceeded, layout
 from agent.robot_assault import (RobotAssaultMemory, act_robots,
                                  choose_summon_position, enemy_entries, weakest_approach)
+from agent.worker_jobs import resume_daytime_jobs, save_daytime_jobs
 
 
 WALLS = [(6, 9), (6, 10), (7, 11)]
@@ -179,6 +180,65 @@ class BestRobotSummoningTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(ledger.commands['1'], command('buy', name='LargeRobotSummonOrder', num=1))
         self.assertEqual(ledger.gold, 49)
+
+    def test_no_live_enemy_base_blocks_every_robot_tier_day_and_night(self):
+        for health in (None, 0, -1):
+            for round_no in (0, 260, 330):
+                for gold in (15, 20, 70, 492):
+                    with self.subTest(health=health, round_no=round_no, gold=gold):
+                        data = self.shop_data(gold=gold, round_no=round_no)
+                        data['teamEnemy']['roles'] = [unit(100, 'wall', 8, 4)]
+                        if health is not None:
+                            data['teamEnemy']['roles'].append(unit(99, 'station', 10, 4, health=health))
+                        result, _, _, ledger = self.summon(data)
+                        self.assertFalse(result)
+                        self.assertFalse(ledger.commands)
+                        self.assertFalse(ledger.purchases)
+                        self.assertEqual(ledger.gold, gold)
+                        self.assertEqual(ledger.spending_plan['robot_blocked'], 'enemy_base_missing')
+
+    def test_one_health_enemy_base_still_allows_robot_purchase(self):
+        data = self.shop_data(gold=492)
+        data['teamEnemy']['roles'][0]['health'] = 1
+        result, _, _, ledger = self.summon(data)
+        self.assertTrue(result)
+        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=4))
+        self.assertEqual(ledger.gold, 12)
+
+    def test_enemy_base_destruction_releases_in_progress_robot_purchase(self):
+        for health in (None, 0):
+            for at_shop in (False, True):
+                with self.subTest(health=health, at_shop=at_shop):
+                    data = self.shop_data(gold=492)
+                    data['teamOur']['roles'][1]['pos'] = {'x': 0, 'y': 0}
+                    result, turn, mem, ledger = self.summon(data, excluded={2})
+                    self.assertTrue(result)
+                    self.assertEqual(ledger.work_jobs[1]['kind'], 'robot_buy')
+                    save_daytime_jobs(turn, mem, ledger)
+                    data['roundNo'] += 1
+                    data['teamOur']['roles'][1]['pos'] = (
+                        {'x': 4, 'y': 8} if at_shop else ledger.commands['1']['targetPos'][0])
+                    if health is None:
+                        data['teamEnemy']['roles'] = []
+                    else:
+                        data['teamEnemy']['roles'][0]['health'] = health
+                    turn, cfg, nav, ledger = fortified_case(data)
+                    resume_daytime_jobs(turn, cfg, mem, nav, ledger, TOWERS, WALLS, set())
+                    self.assertNotIn(1, mem.daytime_jobs)
+                    self.assertNotIn(1, ledger.used)
+                    self.assertFalse(ledger.commands)
+                    self.assertFalse(ledger.work_jobs)
+                    self.assertEqual(ledger.gold, 492)
+                    self.assertIsNone(mem.robot_summon_state['buyer'])
+
+    def test_owned_order_without_enemy_base_does_not_trigger_more_purchases(self):
+        data = self.shop_data(gold=492, backpack=['BossRobotSummonOrder'])
+        data['teamEnemy']['roles'][0]['health'] = 0
+        result, _, mem, ledger = self.summon(data)
+        self.assertFalse(result)
+        self.assertFalse(ledger.commands)
+        self.assertEqual(ledger.gold, 492)
+        self.assertEqual(mem.robot_summon_state['count'], 0)
 
     def test_all_tier_price_boundaries_and_insufficient_money(self):
         for gold,name,price in ((120,'BossRobotSummonOrder',120),
