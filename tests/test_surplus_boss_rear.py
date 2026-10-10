@@ -21,8 +21,10 @@ class SurplusBossBatchTests(unittest.TestCase):
     def data(self, gold=492, round_no=260):
         return assault_fixtures.BestRobotSummoningTests().shop_data(gold=gold, round_no=round_no)
 
-    def buy(self, data, *, reserve=0, memory=None, post=None):
+    def buy(self, data, *, reserve=0, memory=None, post=None, return_margin=None):
         turn, cfg, nav, ledger = fortified_case(data)
+        if return_margin is not None:
+            cfg.return_margin = return_margin
         if post is not None:
             ledger.operator_posts[1] = post
         memory = memory or Memory()
@@ -66,14 +68,13 @@ class SurplusBossBatchTests(unittest.TestCase):
         self.assertEqual(ledger.gold, 0)
 
     def test_purchase_batch_is_not_cropped_to_operator_return_time(self):
-        result, ledger, _ = self.buy(self.data(round_no=322), post=(4, 8))
-        self.assertTrue(result)
-        self.assertEqual(ledger.commands['1']['num'], 4)
-        self.assertEqual(ledger.gold, 12)
-        result, ledger, _ = self.buy(self.data(round_no=329), post=(4, 8))
-        self.assertTrue(result)
-        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=4))
-        self.assertEqual(ledger.gold, 12)
+        for margin in (0, 5):
+            for round_no in (322, 329):
+                result, ledger, _ = self.buy(self.data(round_no=round_no),
+                                             post=(4, 8), return_margin=margin)
+                self.assertTrue(result)
+                self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=4))
+                self.assertEqual(ledger.gold, 12)
 
     def test_zero_shop_price_still_obeys_daily_limit(self):
         data = self.data(gold=0)

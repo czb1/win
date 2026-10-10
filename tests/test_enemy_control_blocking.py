@@ -65,7 +65,7 @@ class EnemyControlBlockingTests(unittest.TestCase):
         for round_no, expected in ((62, False), (63, True)):
             data = sole_post(round_no)
             data['teamOur']['roles'][0]['pos'] = {'x': 7, 'y': 5}
-            turn, cfg, nav, ledger = setup_case(data, layout_mode='explicit')
+            turn, cfg, nav, ledger = setup_case(data, layout_mode='explicit', return_margin=5)
             self.assertEqual(block_enemy_controls(turn, cfg, nav, ledger, turn.pioneer,
                                                   dusk_only=True), expected)
             self.assertEqual(bool(ledger.commands), expected)

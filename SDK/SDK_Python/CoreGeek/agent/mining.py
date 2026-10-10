@@ -293,9 +293,9 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
             return True
         return allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero)
     if hero.id in mem.sold_workers and hero.id not in mem.sale_workers and not force_sale and not cashout:
-        if turn.tick < 40 and mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=True):
+        if turn.tick < cfg.economy_rounds and mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=True):
             return True
-        if allow_spare and not (turn.tick >= 40 and total) and spare_mine(turn, cfg, mem, nav, ledger, hero):
+        if allow_spare and not (turn.tick >= cfg.economy_rounds and total) and spare_mine(turn, cfg, mem, nav, ledger, hero):
             return True
         # A completed daily sale forbids another vendor visit, not useful
         # repositioning. Leave the vendor and return to a base/operator area.
@@ -360,14 +360,14 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
         return True
     # Carry an unsellable late load home before starting any new trip. Once
     # there, the final daytime pass may use adjacent work without moving out.
-    if allow_spare and turn.tick >= 40 and total and not sale_fits and home:
+    if allow_spare and turn.tick >= cfg.economy_rounds and total and not sale_fits and home:
         back = (nav.search(hero, home, ledger.reserved) if exact
                 else nav.approach(hero, home, ledger.reserved))
         if back and back[1] is not None:
             return ledger.add(hero.id, command("move", back[1]))
     # A pause before a scheduled build/shop phase is not spare time: even one
     # extra trip can change who reaches a narrow construction entrance first.
-    spare_allowed = (allow_spare and not (turn.tick >= 40 and total)
+    spare_allowed = (allow_spare and not (turn.tick >= cfg.economy_rounds and total)
                      and (deadline is None or deadline >= 70 or turn.tick >= deadline))
     if spare_allowed and spare_mine(turn, cfg, mem, nav, ledger, hero):
         return True

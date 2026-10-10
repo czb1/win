@@ -222,7 +222,7 @@ class ConstructionRegressionTests(unittest.TestCase):
         p = payload(55, roles=[unit(1, "worker", 2, 2, backpack=["stone"])])
         p["mapInfo"]["zones"] = [{"neutralType": "stone", "pos": {"x": 3, "y": 2}}]
         sites = [(10, y) for y in range(5, 11)]
-        t, c, n, l = setup_case(p, layout_mode="explicit", wall_cells=list(map(list, sites)))
+        t, c, n, l = setup_case(p, layout_mode="explicit", wall_cells=list(map(list, sites)), return_margin=5)
         worker(t, c, Memory(), n, l, t.workers[0], [], sites, True)
         self.assertEqual(l.commands["1"]["action"], "move")
 

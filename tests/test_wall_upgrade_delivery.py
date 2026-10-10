@@ -1,4 +1,4 @@
-"""Strict wall stages, replacement priority and paid delivery regressions."""
+"""Purchase stages, feasible paid delivery and replacement priority."""
 import copy
 import unittest
 
@@ -140,7 +140,8 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                     self.assertIn(front.id, l.upgrade_claims)
                     self.assertFalse(wall_upgrade_allowed(t, flank, mem))
                     t, c, n, l = self.setup(p)
-                    self.assertIsNone(Recovery().action((1, "use", flank.pos), t, c, mem, n, l))
+                    self.assertEqual(Recovery().action((1, "use", flank.pos), t, c, mem, n, l),
+                                     command("use", flank.pos, name="WallUpgradeVoucher1"))
                     p["teamOur"]["roles"][3]["level"] = 2
                     t, _, n, l = self.setup(p)
                     self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=mem))
@@ -195,19 +196,18 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
         self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 2))
 
-    def test_shop_buys_both_wall_tiers_before_delivery(self):
+    def test_shop_delivers_paid_first_tier_before_buying_next_tier(self):
         for rebuilding in (False, True):
             p = self.case()
             for w in p["teamOur"]["roles"][3:]:
                 w["level"] = 1
             p["teamOur"]["roles"].append(unit(32, "wall", 7, 4, level=2, health=1000))
             mem = Memory(wall_rebuild_levels={(7, 5): 3, (5, 4): 3} if rebuilding else {})
-            for name, count in (("WallUpgradeVoucher1", 2), ("WallUpgradeVoucher2", 3)):
-                t, c, n, l = self.setup(p)
-                workers(t, c, mem, n, l, [(4, 6)], [(7, 5), (5, 4), (7, 4)])
-                self.assertEqual(l.commands["1"], command("buy", name=name, num=count))
-                p["teamOur"]["goldNum"] -= t.shop[name] * count
-                p["teamOur"]["roles"][0]["backpack"] += [name] * count
+            t, c, n, l = self.setup(p)
+            workers(t, c, mem, n, l, [(4, 6)], [(7, 5), (5, 4), (7, 4)])
+            self.assertEqual(l.commands["1"], command("buy", name="WallUpgradeVoucher1", num=2))
+            p["teamOur"]["goldNum"] -= t.shop["WallUpgradeVoucher1"] * 2
+            p["teamOur"]["roles"][0]["backpack"] += ["WallUpgradeVoucher1"] * 2
             t, c, n, l = self.setup(p)
             workers(t, c, mem, n, l, [(4, 6)], [(7, 5), (5, 4), (7, 4)])
             self.assertIn(l.commands["1"]["action"], ("use", "move"))
@@ -252,7 +252,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                     t, _, _, _ = self.setup(p)
                     self.assertTrue(wall_upgrade_allowed(t, t.ours[-1], Memory()))
 
-    def test_front_center_beats_nearer_edge_old_target_and_recovery(self):
+    def test_front_center_beats_nearer_edge_old_target_but_recovery_can_use_paid_edge(self):
         for mirror in (False, True):
             for tick in (40, 65, 450, 455):
                 with self.subTest(mirror=mirror, tick=tick):
@@ -264,7 +264,9 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                     self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=mem))
                     self.assertEqual(mem.upgrade_targets[1], center.pos)
                     self.assertIn(center.id, l.upgrade_claims)
-                    self.assertIsNone(Recovery().action((1, "use", edge.pos), t, c, mem, n, l))
+                    t, c, n, l = self.setup(p)
+                    self.assertEqual(Recovery().action((1, "use", edge.pos), t, c, mem, n, l),
+                                     command("use", edge.pos, name="WallUpgradeVoucher2"))
                     # A claimed inner wall is still level 2 until the next observation.
                     self.assertFalse(wall_upgrade_allowed(t, edge, mem))
 
@@ -283,19 +285,20 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertEqual(plan[0], "WallUpgradeVoucher2")
         self.assertGreater(plan[2], 1)
-        # One remaining turn could use the adjacent edge, but not the center.
+        # One remaining turn uses the adjacent edge when the center cannot fit.
         p["roundNo"] = 459
         t, _, n, l = self.setup(p)
         batch = [(upgrade_order(t, w, Memory()), "WallUpgradeVoucher2", w.cells)
                  for w in t.ours if w.kind == "wall"]
         count, _ = dusk_batch(t, n, l, t.workers[0], batch, 8, 0, require_home=False)
-        self.assertEqual(count, 0)
+        self.assertEqual(count, 1)
 
-    def test_recovery_cannot_skip_front_wall_stage(self):
+    def test_recovery_can_finish_a_paid_flank_voucher(self):
         p = self.case()
         p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher2"]
         t, c, n, l = self.setup(p)
-        self.assertIsNone(Recovery().action((1, "use", (5, 4)), t, c, Memory(), n, l))
+        self.assertEqual(Recovery().action((1, "use", (5, 4)), t, c, Memory(), n, l),
+                         command("use", (5, 4), name="WallUpgradeVoucher2"))
 
     def test_shop_carrier_delivers_before_sale_or_another_purchase(self):
         for tick in (10, 40, 59):
@@ -359,7 +362,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         p = self.case(54)
         p["teamOur"]["roles"][3]["level"] = 1
         p["teamOur"]["roles"][4]["level"] = 1
-        t, c, n, l = self.setup(p)
+        t, c, n, l = self.setup(p, return_margin=5)
         l.operator_posts[1] = (14, 14)
         far = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
         l.operator_posts[1] = (5, 5)

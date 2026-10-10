@@ -310,7 +310,7 @@ class GateGuardTests(unittest.TestCase):
         self.assertNotIn(20014, ledger.used)
 
     def test_last_day_turn_stages_beside_gap_and_first_night_enters(self):
-        data, agent = gate_case(69), Agent(Config(llm_enabled=False))
+        data, agent = gate_case(69), Agent(Config(llm_enabled=False, return_margin=5))
         commands = agent.decide(data)['roleCommandMap']
         self.assertIn(pos(commands['14']['targetPos'][0]), POSTS)
         advance(data, commands)

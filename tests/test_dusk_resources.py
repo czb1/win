@@ -69,7 +69,7 @@ class DuskResourceTests(unittest.TestCase):
 
     def test_sixty_spends_affordable_wall_money_when_weapon_is_too_expensive(self):
         p = self.case(gold=30)
-        t, c, n, l = self.setup(p, economy_rounds=69)
+        t, c, n, l = self.setup(p)
         dusk_resources(t, c, Memory(), n, l, [(3, 3)])
         self.assertEqual(l.commands["1"], command("buy", name="WallUpgradeVoucher1", num=1))
 
@@ -85,10 +85,10 @@ class DuskResourceTests(unittest.TestCase):
             self.assertLessEqual(plan[2], expected_max)
 
     def test_sweep_starts_after_farming_and_resets_each_day(self):
-        for round_no, origin, active in ((169, 0, False), (170, 0, True), (189, 0, True),
-                                         (200, 0, False), (299, 0, False),
-                                         (300, 0, True), (319, 0, True),
-                                         (170, 1, False), (171, 1, True)):
+        for round_no, origin, active in ((164, 0, False), (165, 0, True), (189, 0, True),
+                                         (200, 0, False), (294, 0, False),
+                                         (295, 0, True), (319, 0, True),
+                                         (165, 1, False), (166, 1, True)):
             with self.subTest(round_no=round_no, origin=origin):
                 t, c, n, l = self.setup(self.case(round_no), round_origin=origin)
                 dusk_resources(t, c, Memory(), n, l, [(3, 3)])

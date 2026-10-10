@@ -118,7 +118,7 @@ def finish_daytime_work(turn, cfg, mem, nav, ledger, returning):
             # A locked operator or blocked watcher must not abandon a recalled
             # route. Only the empty watcher already inside may walk nearby.
             max_steps = (2 if hero.id not in returning or watcher and reason == 'empty_watch' else 0)
-            if turn.tick >= 40 and sale_inventory(turn, mem, hero):
+            if turn.tick >= cfg.economy_rounds and sale_inventory(turn, mem, hero):
                 max_steps = 0
             if spare_mine(turn, cfg, mem, nav, ledger, hero, home=home, exact=exact,
                           reserved=reserved, max_steps=max_steps,

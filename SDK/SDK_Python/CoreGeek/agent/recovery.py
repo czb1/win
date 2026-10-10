@@ -62,7 +62,7 @@ class Recovery:
             if building and building.kind == "station" and replacement_work_pending(turn, mem):
                 return None
             if (not name or not hero.inventory[name] or building.id in ledger.upgrade_claims
-                    or not wall_upgrade_allowed(turn, building, mem)):
+                    or not wall_upgrade_allowed(turn, building, mem, paid=True)):
                 return None
             action = command("use", target, name=name)
         targets = building.cells if kind == "use" else [target]

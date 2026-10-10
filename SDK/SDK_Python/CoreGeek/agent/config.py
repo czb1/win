@@ -21,8 +21,8 @@ class Config:
     stone_batch: int = 10
     sell_batch: int = 40
     sell_batch_max: int = 80
-    economy_rounds: int = 40
-    return_margin: int = 5
+    economy_rounds: int = 35
+    return_margin: int = 0
     task_min_rounds: int = 12
     task_danger_radius: int = 6
     llm_enabled: bool = True
@@ -53,7 +53,7 @@ class Config:
                 x not in ("gatling", "railgun", "rocket") for x in cfg.loadout):
             raise ValueError("loadout must contain 1..3 weapons")
         for name in ("weapon_cost", "wall_stones", "stone_batch", "sell_batch", "sell_batch_max",
-                     "return_margin", "task_min_rounds", "task_danger_radius", "max_body_bytes",
+                     "task_min_rounds", "task_danger_radius", "max_body_bytes",
                      "build_retry_rounds", "task_max_rounds", "max_python_chars"):
             if type(getattr(cfg, name)) is not int or getattr(cfg, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
@@ -61,6 +61,8 @@ class Config:
             raise ValueError("invalid deadline or round_origin")
         if type(cfg.economy_rounds) is not int or not 0 <= cfg.economy_rounds < 70:
             raise ValueError("economy_rounds must be between 0 and 69")
+        if type(cfg.return_margin) is not int or cfg.return_margin < 0:
+            raise ValueError("return_margin must be a non-negative integer")
         if cfg.sell_batch_max < cfg.sell_batch:
             raise ValueError("sell_batch_max must be at least sell_batch")
         if type(cfg.daily_llm_limit) is not int or not 0 <= cfg.daily_llm_limit <= 3:
