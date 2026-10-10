@@ -4,7 +4,7 @@ from .task_schedule import task_options, choose_task
 from collections import Counter
 from dataclasses import replace
 from .commands import command
-from .model import ORES, WEAPONS, HEROES, CHARACTERS, pos, distance, neighbours
+from .model import ORES, WEAPONS, HEROES, CHARACTERS, DEFENCE_RETURN_TICK, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, spare_mine, sale_inventory, return_destination
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit, delivery_destination, development_pending
@@ -674,6 +674,8 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
 
 
 def wall_keeps_access(turn, nav, ledger, target):
+    if not turn.is_day or turn.tick >= DEFENCE_RETURN_TICK:
+        return False
     destinations = [turn.station.cells] if turn.station else []
     for kind in ("vendor", "weaponShop", *ORES):
         cells = {p for p, k in turn.zones.items() if k == kind}
@@ -706,11 +708,11 @@ def wall_keeps_access(turn, nav, ledger, target):
         if not all(nav.approach(h, ds) is not None for h, ds in reachable):
             return False
         positions = {h.id: h for h in heroes}
-        # A late wall must leave every assigned operator time to get inside,
-        # including operators whose movement was already planned this turn.
+        # Preserve operator routes, including moves already planned this turn.
+        # The shared tick cutoff above owns timing; do not add another margin.
         return all((route := (nav.search(positions[h.id], {ledger.operator_posts[h.id]})
                              if h.id in ledger.operator_posts else nav.approach(positions[h.id], w.cells))) is not None
-                   and turn.day_left > route[0] + 2 for h, w in ledger.return_pairs)
+                   for h, w in ledger.return_pairs)
     finally:
         turn.blocked = original
 
@@ -773,7 +775,7 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
 
 def first_day_front(turn, cfg, mem, nav, ledger, wall_sites, excluded=()):
     """One active builder, no guards or waiting locks, ordinary work on failure."""
-    if not turn.is_day or turn.day != 1 or not turn.station:
+    if not turn.is_day or turn.day != 1 or not turn.station or turn.tick >= DEFENCE_RETURN_TICK:
         mem.day1_wall_worker = None
         mem.day1_wall_delivering = False
         return
@@ -837,6 +839,8 @@ def first_day_front(turn, cfg, mem, nav, ledger, wall_sites, excluded=()):
 
 def finish_preparation(turn, cfg, mem, nav, ledger, hero, tower, wall_sites):
     """Spend one local preparation action only with a checked route to a gun."""
+    if turn.tick >= DEFENCE_RETURN_TICK:
+        return False
     route = (nav.search(hero, {ledger.operator_posts[hero.id]}, ledger.reserved)
              if hero.id in ledger.operator_posts else nav.approach(hero, tower.cells, ledger.reserved))
     if route is None or turn.day_left <= route[0] + 2:

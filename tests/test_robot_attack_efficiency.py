@@ -118,9 +118,11 @@ class RobotAttackEfficiencyTests(unittest.TestCase):
         self.assertTrue(ledger.notes[31036]["conditions"]["accepted_aim"])
 
     def test_reported_99_to_100_stances_can_attack_another_base_cell(self):
-        # Relevant coordinates only: later raw snapshots were not uploaded.
-        # This establishes the model's avoidable movement, not engine damage.
+        # Relevant coordinates from r99/r100 snapshots, with no ordinary units.
+        # Hidden occupants are unreported; this checks candidate selection,
+        # not whether the engine would accept the counterfactual attack.
         data = base_corner_case()
+        data["teamOur"]["roles"] = []
         data["teamOur"]["summonRobotList"] = [
             controlled_robot(31035, 7, 18, targetTeam="challenger"),
             controlled_robot(31036, 7, 19, targetTeam="challenger")]

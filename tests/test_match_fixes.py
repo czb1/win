@@ -270,7 +270,7 @@ class TaskReliabilityTests(unittest.TestCase):
         self.assertIn("NameError", prompt)
 
     def test_second_night_gunner_overrides_task_without_own_threat(self):
-        p = task_payload(199, "query")
+        p = task_payload(196, "query")
         p["teamOur"]["roles"] += [unit(20, "rocket", 1, 1), unit(1, "worker", 1, 2), unit(13, "station", 2, 3)]
         p["robot"]["roles"] = [unit(90, "largeRobot", 7, 5, targetTeam="defender")]
         agent = Agent(Config(layout_mode="explicit"))
@@ -282,7 +282,7 @@ class TaskReliabilityTests(unittest.TestCase):
         self.assertEqual(next(iter(agent.sessions.values())).stop_reason, "night_role")
 
     def test_actual_threat_stops_task_and_logs_reason(self):
-        p = task_payload(199, "query")
+        p = task_payload(196, "query")
         p["teamOur"]["roles"] += [unit(20, "rocket", 1, 1), unit(13, "station", 2, 3)]
         agent = Agent(Config(layout_mode="explicit"))
         agent.decide(p)

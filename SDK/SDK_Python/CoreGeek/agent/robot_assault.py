@@ -1,11 +1,29 @@
 """Deploy behind the enemy frontage and clear the path toward its base."""
 from collections import deque
 from dataclasses import dataclass, field
+import re
 
 from .commands import command
 from .model import CHARACTERS, WEAPONS, distance, neighbours
 from .navigation import check_time
 from .projectiles import line_cells
+
+
+_OCCUPIED_MOVE = re.compile(
+    r"robot (\d+) wants move to \((-?\d+),\s*(-?\d+)\), "
+    r"but target is occupied \(canMove=false\)")
+
+
+def _occupied_move_errors(turn):
+    failures = set()
+    for error in turn.raw.get("errors") or []:
+        if not isinstance(error, dict) or error.get("errorCode") != 4:
+            continue
+        match = _OCCUPIED_MOVE.fullmatch(str(error.get("description", "")).strip())
+        if match:
+            uid, x, y = map(int, match.groups())
+            failures.add((uid, (x, y)))
+    return failures
 
 
 @dataclass(frozen=True)
@@ -33,14 +51,20 @@ class RobotAssaultMemory:
     accepted_shots: dict = field(default_factory=dict)
     failed_steps: dict = field(default_factory=dict)
     step_failures: dict = field(default_factory=dict)
+    occupied_steps: dict = field(default_factory=dict)
+    occupied_failures: dict = field(default_factory=dict)
+    robot_ids: set = field(default_factory=set)
     day: int | None = None
     base_id: int | None = None
+    base_pos: tuple | None = None
 
     def observe(self, turn, base):
         base_id = base.id if base else None
-        if self.base_id != base_id:
+        base_pos = base.pos if base else None
+        changed_base = self.base_id != base_id or self.base_pos != base_pos
+        if changed_base:
             self.buildings.clear()
-        if self.day != turn.day or self.base_id != base_id:
+        if self.day != turn.day or changed_base:
             self.objectives.clear()
             self.pending.clear()
             self.failed_shots.clear()
@@ -48,9 +72,12 @@ class RobotAssaultMemory:
             self.accepted_shots.clear()
             self.failed_steps.clear()
             self.step_failures.clear()
+            self.occupied_steps.clear()
+            self.occupied_failures.clear()
             self.rejected_buildings.clear()
-        self.day, self.base_id = turn.day, base_id
+        self.day, self.base_id, self.base_pos = turn.day, base_id, base_pos
         alive = turn.summon_robot_ids
+        self.robot_ids = alive.copy()
         self.objectives = {uid: goal for uid, goal in self.objectives.items() if uid in alive}
         self.failed_shots = {key for key in self.failed_shots if key[0] in alive}
         self.shot_contexts = {key: value for key, value in self.shot_contexts.items()
@@ -61,7 +88,10 @@ class RobotAssaultMemory:
                              if key[0] in alive and until > turn.round}
         self.step_failures = {key: count for key, count in self.step_failures.items()
                               if key[0] in alive}
+        self.occupied_steps = {point: until for point, until in self.occupied_steps.items()
+                               if until > turn.round}
         results = turn.raw.get("lastRoundRoleActionResults") or {}
+        occupied_errors = _occupied_move_errors(turn)
         robots = {r.id: r for r in turn.summon_robots}
         visible_ids = {u.id for u in turn.enemies}
         for uid, (issued, origin, action, point, target_id, context) in self.pending.items():
@@ -92,9 +122,18 @@ class RobotAssaultMemory:
                     count = min(3, self.step_failures.get(key, 0) + 1)
                     self.step_failures[key] = count
                     self.failed_steps[key] = turn.round + 4 * 2 ** (count - 1)
+                    if result is False and key in occupied_errors:
+                        # The engine identified an occupied destination, even
+                        # when its occupant is outside ordinary shared vision.
+                        # Share movement avoidance, not an invented attack target
+                        # or an assumed projectile blocker.
+                        count = min(3, self.occupied_failures.get(point, 0) + 1)
+                        self.occupied_failures[point] = count
+                        self.occupied_steps[point] = turn.round + 4 * 2 ** (count - 1)
                 else:
                     self.step_failures.pop(key, None)
                     self.failed_steps.pop(key, None)
+                    self._clear_occupied_step(point)
         self.pending = {uid: value for uid, value in self.pending.items()
                         if uid in alive and value[0] == turn.round}
         # Weapons do not move. Losing sight alone does not prove destruction;
@@ -109,6 +148,9 @@ class RobotAssaultMemory:
         self.rejected_buildings.intersection_update(self.buildings)
         self.rejected_buildings.difference_update(seen)
         turn.blocked.update(u.pos for u in self.buildings.values())
+        for point in tuple(self.occupied_failures):
+            if point not in turn.blocked and any(distance(point, p) <= 4 for p in observers):
+                self._clear_occupied_step(point)
         occupied = _occupants(turn, self)
         # A failed ray is evidence about that scene, not a permanent ban on
         # a firing position after a blocker moves or disappears.
@@ -120,6 +162,17 @@ class RobotAssaultMemory:
 
     def rejected(self, uid, origin, target_id, point):
         return (uid, origin, target_id, point) in self.failed_shots
+
+    def _clear_occupied_step(self, point):
+        if point not in self.occupied_failures:
+            return
+        self.occupied_steps.pop(point, None)
+        self.occupied_failures.pop(point, None)
+        self.failed_steps = {key: until for key, until in self.failed_steps.items() if key[1] != point}
+        self.step_failures = {key: count for key, count in self.step_failures.items() if key[1] != point}
+
+    def avoided_steps(self, uid):
+        return set(self.occupied_steps) | {p for robot_id, p in self.failed_steps if robot_id == uid}
 
     def remember(self, turn, robot, action, point, target_id=None, occupied=None):
         context = (_shot_context(robot.pos, point, occupied if occupied is not None else _occupants(turn, self),
@@ -268,7 +321,7 @@ def _attack_goals(turn, target_cells, reach):
             if (point := (x, y)) not in target_cells}
 
 
-def _new_objective(turn, base, robot, nav, ledger):
+def _new_objective(turn, base, robot, nav, ledger, avoided=()):
     # A rear deployment must not immediately walk around to a weaker front
     # wall. Preserve legacy weak-entry selection for a robot shifted in front.
     prefer_rear = rear_approach(turn, base, robot.pos)
@@ -282,7 +335,8 @@ def _new_objective(turn, base, robot, nav, ledger):
             return RobotObjective(entry, None, "base")
         if distance(robot.pos, wall.pos) <= robot.attack_range:
             return RobotObjective(entry, wall.id, "breach")
-        route = nav.search(robot, _attack_goals(turn, wall.cells, robot.attack_range), ledger.reserved)
+        route = nav.search(robot, _attack_goals(turn, wall.cells, robot.attack_range),
+                           ledger.reserved | set(avoided))
         if route is not None:
             return RobotObjective(entry, wall.id, "breach")
     return None
@@ -359,7 +413,7 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
         return True
     if attack_only:
         return False
-    avoided = {p for (uid, p) in memory.failed_steps if uid == robot.id}
+    avoided = memory.avoided_steps(robot.id)
     reserved = ledger.reserved | avoided
     blocked = (turn.blocked | reserved) - {robot.pos}
     goals = set()
@@ -383,7 +437,8 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
         memory.remember(turn, robot, "move", route[1])
         reason = ("robot_approach_base" if phase == "base" else "robot_approach_weak_wall"
                   if phase == "breach" else "robot_approach_path_blocker")
-        ledger.explain(robot.id, reason, route_steps=route[0], **facts)
+        ledger.explain(robot.id, reason, route_steps=route[0],
+                       occupied_avoidance_count=len(memory.occupied_steps), **facts)
         return True
     return False
 
@@ -434,7 +489,7 @@ def act_robots(turn, memory, nav, ledger):
         if hit and not hit[1]:
             # An unattackable NPC/friendly obstruction can require a detour
             # through a wall when no free firing position is reachable.
-            detour = _new_objective(turn, base, robot, nav, ledger)
+            detour = _new_objective(turn, base, robot, nav, ledger, memory.avoided_steps(robot.id))
             wall = next((u for u in turn.enemies if detour and u.id == detour.wall_id), None)
             if wall and _act_toward_target(turn, memory, nav, ledger, robot, wall, occupied):
                 continue

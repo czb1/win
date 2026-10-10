@@ -116,8 +116,9 @@ class RobotPathBlockerTests(unittest.TestCase):
 
 
 class RobotObstacleMemoryTests(unittest.TestCase):
-    def hidden_weapon(self):
+    def hidden_weapon(self, *, base_y=4):
         data = assault_payload(round_no=65)
+        data["teamEnemy"]["roles"][0]["pos"]["y"] = base_y
         data["teamOur"]["summonRobotList"] = []
         data["teamEnemy"]["roles"].append(unit(50, "rocket", 8, 4))
         _, memory = decide(data)
@@ -145,10 +146,9 @@ class RobotObstacleMemoryTests(unittest.TestCase):
         self.assertEqual(response["roleCommandMap"]["30000"], command("attack", (8, 4)))
 
     def test_repeated_invalid_hidden_target_is_bypassed_until_seen_again(self):
-        data, memory = self.hidden_weapon()
         # Keep every in-range base ray behind this weapon after the closer
-        # retry, so this test still exercises hidden-target rejection.
-        data["teamEnemy"]["roles"][0]["pos"] = {"x": 10, "y": 5}
+        # retry, without moving the base mid-match and resetting its history.
+        data, memory = self.hidden_weapon(base_y=5)
         decide(data, memory)
         data["roundNo"] += 1
         data["lastRoundRoleActionResults"] = {"30000": False}
@@ -205,7 +205,7 @@ class RobotObstacleMemoryTests(unittest.TestCase):
         data["mapInfo"].update(width=41, height=32)
         data["teamOur"]["type"] = "defender"
         data["teamEnemy"]["roles"] = [unit(10013, "station", 9, 22),
-            unit(10040, "rocket", 8, 20), unit(10041, "rocket", 8, 22), unit(10042, "rocket", 9, 20)]
+            unit(10040, "rocket", 9, 20), unit(10041, "rocket", 8, 20), unit(10042, "rocket", 8, 22)]
         _, memory = decide(data)
         data["roundNo"] = 71
         data["teamEnemy"]["roles"] = data["teamEnemy"]["roles"][:1]
