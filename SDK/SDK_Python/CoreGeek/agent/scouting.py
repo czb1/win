@@ -5,7 +5,7 @@ from .commands import command
 from .model import distance, neighbours
 from .navigation import check_time
 from .projectiles import line_cells
-from .robot_assault import base_distance, enemy_base
+from .robot_assault import base_distance, enemy_base, rear_approach
 
 
 @dataclass
@@ -27,6 +27,72 @@ def _observation_points(turn, base):
             if base_distance(base, point) <= 4:
                 points[point] = 4
     return points
+
+
+def _routes(turn, memory, nav, ledger, scout, base, reserved):
+    blocked = (turn.blocked - {scout.pos}) | reserved
+    points = _observation_points(turn, base)
+    goals = {(x, y) for x in range(max(0, base.pos[0] - 4), min(turn.width, base.pos[0] + 6))
+             for y in range(max(0, base.pos[1] - 5), min(turn.height, base.pos[1] + 5))
+             if (x, y) not in blocked and 3 <= base_distance(base, (x, y)) <= 4}
+    routes = []
+    for goal in sorted(goals):
+        route = nav.search(scout, {goal}, reserved)
+        if route is not None:
+            coverage = sum(weight for point, weight in points.items() if distance(goal, point) <= 4)
+            base_cells = sum(distance(goal, cell) <= 4 for cell in base.cells)
+            routes.append((goal, route, coverage, base_cells))
+    # Keep full base sight where possible. A far-side post is preferable only
+    # when its detour is small; don't turn a six-step arrival into eleven.
+    if routes:
+        most_base = max(row[3] for row in routes)
+        routes = [row for row in routes if row[3] == most_base]
+        shortest = min(row[1][0] for row in routes)
+        routes = [row for row in routes if row[1][0] <= shortest + 2]
+    return sorted(routes, key=lambda row: (-row[3], int(not rear_approach(turn, base, row[0])),
+                  -(row[2] + (2 if row[0] == memory.post else 0)) / (4 + row[1][0]),
+                  row[1][0], row[0]))
+
+
+def prepare_night_scout(turn, memory, nav, ledger, excluded=(), jobs=None):
+    """Leave near dusk, as late as the route permits, without taking paid work."""
+    base = enemy_base(turn)
+    if not turn.is_day or base is None or turn.tick < 50:
+        return None
+    key = turn.day, base.id, base.pos
+    if memory.key != key:
+        memory.key, memory.worker_id, memory.post = key, None, None
+    jobs = jobs or {}
+    candidates = []
+    for scout in turn.workers:
+        job = jobs.get(scout.id, {})
+        if (scout.id in ledger.used or scout.id in excluded or scout.health <= 165
+                or any('UpgradeVoucher' in item or item == 'WallFixer' for item in scout.backpack)
+                or job.get('kind') in ('sell', 'buy', 'use', 'robot_buy', 'build')):
+            continue
+        routes = _routes(turn, memory, nav, ledger, scout, base, ledger.reserved)
+        if routes:
+            goal, route, coverage, base_cells = routes[0]
+            candidates.append((scout.id != memory.worker_id, route[0], scout.id,
+                               scout, goal, route, coverage, base_cells))
+    if not candidates:
+        return None
+    _, _, _, scout, goal, route, coverage, base_cells = min(candidates)
+    # No more than the final twenty daylight moves are spent scouting. A
+    # distant worker may arrive after nightfall; ordinary income comes first.
+    if route[0] + 2 < turn.day_left and turn.tick < 68:
+        return None
+    memory.worker_id, memory.post = scout.id, goal
+    if route[1] is None:
+        ledger.used.add(scout.id)
+        ledger.reserved.add(scout.pos)
+        ledger.explain(scout.id, 'dusk_scout_hold', post=goal, post_base_cells=base_cells)
+    elif ledger.add(scout.id, command('move', route[1])):
+        ledger.explain(scout.id, 'dusk_scout_approach', post=goal, route_steps=route[0],
+                       coverage=coverage, post_base_cells=base_cells)
+    else:
+        return None
+    return scout
 
 
 def act_night_scout(turn, memory, nav, ledger, home_roles=()):
@@ -75,40 +141,20 @@ def act_night_scout(turn, memory, nav, ledger, home_roles=()):
             target = min(base.cells, key=lambda p: (distance(robot.pos, p), p))
             lanes.update(line_cells(robot.pos, target))
     reserved = ledger.reserved | danger | lanes
-    blocked = (turn.blocked - {scout.pos}) | reserved
-    points = _observation_points(turn, base)
-    goals = {(x, y) for x in range(max(0, base.pos[0] - 4), min(turn.width, base.pos[0] + 6))
-             for y in range(max(0, base.pos[1] - 5), min(turn.height, base.pos[1] + 5))
-             if (x, y) not in blocked and 3 <= base_distance(base, (x, y)) <= 4}
-    coverage = {p: sum(weight for point, weight in points.items() if distance(p, point) <= 4)
-                for p in goals}
-    routes = []
-    for goal in sorted(goals):
-        route = nav.search(scout, {goal}, reserved)
-        if route is not None:
-            routes.append((coverage[goal], goal, route))
+    routes = _routes(turn, memory, nav, ledger, scout, base, reserved)
     if routes:
-        # Establish useful sight soon instead of crossing the entire frontage
-        # for a marginally larger footprint. Prefer full base coverage when
-        # available, then discount corridor coverage by travel time. Four turns
-        # keep nearby gains useful without abandoning an established post for
-        # small improvements; the existing two-point retention bonus remains.
-        base_coverage = {p: sum(distance(p, cell) <= 4 for cell in base.cells) for p in goals}
-        choice = min(routes, key=lambda row: (-base_coverage[row[1]],
-                     -(row[0] + (2 if row[1] == memory.post else 0)) / (4 + row[2][0]),
-                     row[2][0], row[1]))
-        score, goal, route = choice
+        goal, route, score, base_cells = routes[0]
         memory.post = goal
         if route[1] is None:
             ledger.used.add(scout.id)
             ledger.reserved.add(scout.pos)
             ledger.explain(scout.id, 'night_scout_hold', post=goal, coverage=score,
-                           post_base_cells=base_coverage[goal])
+                           post_base_cells=base_cells)
             return scout
         if ledger.add(scout.id, command('move', route[1])):
             ledger.explain(scout.id, 'night_scout_approach', post=goal,
                            coverage=score, route_steps=route[0],
-                           post_base_cells=base_coverage[goal])
+                           post_base_cells=base_cells)
             return scout
 
     # If a wave closes the safe route, retain this worker's role. A threatened
