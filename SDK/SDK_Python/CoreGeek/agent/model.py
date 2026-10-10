@@ -157,11 +157,27 @@ class Turn:
         return p[1] * (self.width - 1) - p[0] * (self.height - 1)
 
     def enemy_mine(self, p):
+        """Live ore in the enemy base corner, outside the central 20% bands."""
         if (not self.station or not self.inside(p) or self.zones.get(p) not in ORES
                 or self.mine_remain.get(p) is not None and self.mine_remain[p] <= 0):
             return False
         home = sum(self.mine_half(cell) for cell in self.station.cells)
-        return home * self.mine_half(p) < 0
+        if home * self.mine_half(p) >= 0:
+            return False
+        enemy = next((u for u in self.enemies if u.kind == "station"), None)
+        base = enemy or self.station
+        # Use the 2x2 footprint centre, not the team label or imp position.
+        dx = 2 * base.pos[0] + 1 - (self.width - 1)
+        dy = 2 * base.pos[1] - 1 - (self.height - 1)
+        if enemy is None:
+            # Compatibility with incomplete fixtures: v2 bases occupy opposite
+            # corners, so infer the enemy corner from our actual base.
+            dx, dy = -dx, -dy
+        if dx < 0 < dy:
+            return 5 * p[0] <= 2 * (self.width - 1) and 5 * p[1] >= 3 * (self.height - 1)
+        if dy < 0 < dx:
+            return 5 * p[0] >= 3 * (self.width - 1) and 5 * p[1] <= 2 * (self.height - 1)
+        return False
 
     def threatens_us(self, robot):
         if robot.id in self.summon_robot_ids:
