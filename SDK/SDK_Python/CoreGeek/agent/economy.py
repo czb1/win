@@ -1,5 +1,6 @@
 import logging
-from .logging_system import update_context
+from .logging_system import update_context, emit_event
+from .task_schedule import task_options, choose_task
 from collections import Counter
 from dataclasses import replace
 from .commands import command
@@ -1275,43 +1276,7 @@ def prepare_treasure(turn, cfg, mem, nav, ledger, hero):
 
 
 def pioneer_task_options(turn, cfg, mem, nav, ledger, hero):
-    options = []
-    # Every night the pioneer returns to our rocket battery.
-    for task in turn.tasks:
-        if not task.get("isValid") or int(task.get("coldDownRounds", 0)) > 0:
-            continue
-        cells = turn.task_cells(task)
-        route = nav.approach(hero, cells, ledger.reserved)
-        # Include a conservative return-distance estimate when accepting distant tasks.
-        home = [w.pos for w in turn.weapons] or (list(turn.station.cells) if turn.station else [])
-        return_estimate = min((distance(p, q) for p in cells for q in home), default=0)
-        duration = min(int(task.get("timeoutRounds", cfg.task_max_rounds)), cfg.task_max_rounds)
-        observed = [s["rounds"] for s in mem.skills if s.get("point") == pos(task["taskPosition"])
-                    and s.get("workflow") == "check_token" and not s.get("disabled")
-                    and type(s.get("rounds")) is int]
-        if observed:
-            duration = min(duration, max(observed[-3:]) + 2)
-        work = cfg.task_min_rounds
-        t = mem.treasure
-        if (route and t and not mem.treasure_done and not mem.treasure_attempted
-                and turn.round <= t["endRound"] and t["startRound"] < turn.round + turn.day_left):
-            altar = nav.approach(hero, [tuple(t["position"])], ledger.reserved)
-            if altar and turn.round + altar[0] <= t["endRound"]:
-                distances = nav.distances_to([tuple(t["position"])], {hero.pos}, ledger.reserved)
-                onward = max((distances[q] for p in cells for q in neighbours(p)
-                              if q not in cells and q in distances), default=None)
-                # Use the timeout, not past best-case completion, to protect the opening.
-                timeout = min(int(task.get("timeoutRounds", cfg.task_max_rounds)), cfg.task_max_rounds)
-                if (Counter(t["items"]) - hero.inventory or onward is None
-                        or turn.round + route[0] + timeout + onward + 2 + cfg.return_margin >= t["startRound"]):
-                    mem.trace_treasure(turn, "treasure_task_gate", dedupe=True,
-                                       reason="opening_priority", task=pos(task["taskPosition"]),
-                                       start=t["startRound"], timeout=timeout)
-                    continue
-        if route and turn.day_left > route[0] + work + return_estimate + cfg.return_margin:
-            value = (int(task.get("scoreReward", 0)) + .5*int(task.get("goldReward", 0))) / max(1, route[0]+duration)
-            options.append((-value, route[0], pos(task["taskPosition"]), task, route))
-    return options
+    return task_options(turn, cfg, mem, nav, ledger, hero)
 
 
 def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
@@ -1374,10 +1339,23 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
     if not cfg.llm_enabled:
         return
     options = pioneer_task_options(turn, cfg, mem, nav, ledger, hero)
-    if options:
-        _, _, point, task, route = min(options, key=lambda x: x[:3])
+    previous = mem.task_target
+    selected = choose_task(options, mem)
+    if selected:
+        point, task, route = selected['point'], selected['task'], selected['route']
+        reason = ('task_travel' if route[1] is not None else
+                  'task_cooldown_wait' if selected['cooldown'] else 'task_ready')
+        details = {k: selected[k] for k in ('point', 'cell', 'cooldown', 'start', 'finish',
+                   'return_steps', 'budget', 'count', 'horizon', 'next_point')}
+        details.update(day_left=turn.day_left, route_steps=route[0], target_changed=previous != point)
+        # One compact scheduling record; task contents never enter this planner.
+        emit_event('task_plan', dict(reason=reason, **details), 'evolution')
         if route[1] is not None:
-            ledger.add(hero.id, command("move", route[1]))
+            if ledger.add(hero.id, command("move", route[1])):
+                ledger.explain(hero.id, reason, **details)
+        elif selected['cooldown'] or not task.get('isValid'):
+            ledger.used.add(hero.id)
+            ledger.explain(hero.id, 'task_cooldown_wait', **details)
         elif (cfg.llm_enabled and mem.news and
               ((mem.pending and mem.pending[0] == "news")
                or (mem.news_dirty and mem.calls < cfg.daily_llm_limit))):
@@ -1391,5 +1369,11 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
             mem.log_task_type = task.get("taskType", "自进化类")
             update_context(task_id=mem.log_task_id, task_type=mem.log_task_type)
             logging.getLogger(__name__).info("task_accept point=%s", point)
-    elif shopping:
-        prepare_treasure(turn, cfg, mem, nav, ledger, hero)
+    else:
+        ledger.explain(hero.id, 'no_task_fits_daylight', day_left=turn.day_left,
+                       previous_target=previous)
+        if previous is not None:
+            emit_event('task_plan', dict(reason='target_unavailable_or_budget',
+                       previous_target=previous, day_left=turn.day_left), 'evolution')
+        if shopping:
+            prepare_treasure(turn, cfg, mem, nav, ledger, hero)
