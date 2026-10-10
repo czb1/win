@@ -82,7 +82,7 @@ print(json.dumps(values, ensure_ascii=False, allow_nan=False))
 '''
 
 _RUNNER = r'''
-import json, os, re, shlex, subprocess, sys, tempfile, traceback
+import hashlib, json, os, re, shlex, subprocess, sys, tempfile, traceback
 from pathlib import Path
 base = Path(CONFIG['workspace']).resolve(strict=True)
 os.chdir(base)
@@ -133,6 +133,46 @@ def classify(expected, actual, evidence):
     if evidence.get('missing_count') or evidence.get('extra_count'):
         return 'record_membership_or_mixed'
     return 'value_or_structure'
+
+def distance(expected, actual):
+    # Structural, scalar and ordering differences, independent of business fields.
+    if type(expected) is not type(actual):
+        return [1, 0, 0]
+    if expected == actual:
+        return [0, 0, 0]
+    if unordered(expected) == unordered(actual):
+        return [0, 0, 1]
+    if isinstance(expected, dict):
+        result = [len(expected.keys() ^ actual.keys()), 0, 0]
+        pairs = ((expected[k], actual[k]) for k in expected.keys() & actual.keys())
+    elif isinstance(expected, list):
+        result = [abs(len(expected) - len(actual)), 0, 0]
+        pairs = list(zip(expected, actual))
+        # Align only when all candidate unique fields agree on correspondence.
+        mappings = []
+        if expected and actual and all(isinstance(r, dict) for r in expected + actual):
+            for key in sorted(set.intersection(*(set(r) for r in expected + actual))):
+                left, right = [r[key] for r in expected], [r[key] for r in actual]
+                if (all(type(v) in (str, int) for v in left + right)
+                        and len(set(left)) == len(left) and len(set(right)) == len(right)):
+                    mapping = [(i, right.index(v)) for i, v in enumerate(left) if v in right]
+                    if mapping:
+                        mappings.append(mapping)
+        if mappings and all(m == mappings[0] for m in mappings):
+            mapping = mappings[0]
+            order = [j for _, j in mapping]
+            result = [len(expected) + len(actual) - 2 * len(mapping), 0,
+                      int(order != sorted(order))]
+            pairs = [(expected[i], actual[j]) for i, j in mapping]
+    else:
+        return [0, 1, 0]
+    for a, b in pairs:
+        result = [x+y for x,y in zip(result, distance(a,b))]
+    return result
+
+def fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                    separators=(',', ':')).encode()).hexdigest()
 
 def emit_diagnostic(detail):
     # Keep complete, machine-readable evidence accessible even for large cases.
@@ -197,7 +237,17 @@ def record_evidence(records, expected, actual):
         return {'alignment': 'unavailable: no unambiguous preserved unique field; do not infer a filter'}
     key, kept, produced = candidates[0]
     missing, extra = set(kept)-set(produced), set(produced)-set(kept)
+    contrasts = []
+    for index in sorted(missing | extra)[:2]:
+        record = records[index]
+        opposite = [i for i in range(len(records)) if (i in kept) != (index in kept)]
+        if opposite:
+            other = max(opposite, key=lambda i: sum(
+                k != key and k in records[i] and records[i][k] == v for k, v in record.items()))
+            contrasts.append({'record': record, 'expected_kept': index in kept,
+                              'contrast': records[other], 'contrast_expected_kept': other in kept})
     return {'alignment': 'unique input field preserved in output', 'identity_field': key,
+            'contrasts': bounded(contrasts),
             'missing_count': len(missing), 'extra_count': len(extra),
             'input_order': bounded([r[key] for r in records]),
             'expected_order': bounded([o[key] for o in objects(expected) if key in o]),
@@ -264,17 +314,21 @@ try:
     if not isinstance(values, list) or len(values) != len(cases) + 1:
         raise ValueError('invalid transform output')
     stage = 'samples'
-    failures = []
+    failures, quality = [], []
     for i, case in enumerate(cases):
         expected = case['expected'] if 'expected' in case else case['output']
         mismatch = diff(expected, values[i])
+        evidence = record_evidence(case['input'], expected, values[i]) if mismatch else {}
+        quality.append([int(bool(mismatch)), *distance(expected, values[i]),
+                        evidence.get('missing_count', 0) + evidence.get('extra_count', 0)])
         if mismatch:
-            evidence = record_evidence(case['input'], expected, values[i])
             failures.append({'case': i, 'difference': mismatch, 'input': case['input'], 'expected': expected, 'actual': values[i],
                              'classification': classify(expected, values[i], evidence), 'record_evidence': evidence})
     if failures:
         emit_diagnostic({'stage': 'samples', 'case_count': len(cases),
-                         'failed_count': len(failures), 'failures': failures})
+                         'failed_count': len(failures), 'failures': failures,
+                         'sample_fingerprint': fingerprint(cases),
+                         'output_fingerprint': fingerprint(values[:-1]), 'quality': quality})
         raise SystemExit(1)
     stage = 'output'
     encoded = json.dumps(values[-1], ensure_ascii=False, allow_nan=False)

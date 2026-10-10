@@ -17,7 +17,7 @@ from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status
 from .wall_watch_state import WallWatchState
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
 from .task_inputs import input_context, preview_code, zero_without_coverage
-from .task_transform_feedback import diagnosis as transform_diagnosis, metadata as transform_metadata, prompt as transform_prompt
+from .task_transform_feedback import diagnosis as transform_diagnosis, metadata as transform_metadata, prompt as transform_prompt, observe as observe_transform, repair_direction
 from .task_transform import transform_config, transform_method, transform_code, case_page_code
 from .task_runtime import runtime_code, runtime_result, command_output
 from .task_evidence import computed_answer, evidence_matches, parsing_rules, inherited_rules
@@ -301,6 +301,9 @@ class Memory:
     failed_python: set = field(default_factory=set)
     rejected_transform: dict = field(default_factory=dict)
     transform_attempt: dict = field(default_factory=dict)
+    transform_best: dict = field(default_factory=dict)
+    transform_progress: dict = field(default_factory=dict)
+    transform_outputs: set = field(default_factory=set)
     failure_fingerprints: dict = field(default_factory=dict)
     output_fingerprints: dict = field(default_factory=dict)
     diagnosed_outputs: set = field(default_factory=set)
@@ -626,6 +629,9 @@ class Memory:
             self.failed_python.clear()
             self.rejected_transform.clear()
             self.transform_attempt.clear()
+            self.transform_best.clear()
+            self.transform_progress.clear()
+            self.transform_outputs.clear()
             self.failure_fingerprints.clear()
             self.output_fingerprints.clear()
             self.diagnosed_outputs.clear()
@@ -745,6 +751,7 @@ class Memory:
                     self.last_attempt['runtimeError'] = ''
                 self.rejected_transform.clear()
                 self.transform_attempt = dict(self.last_attempt)
+                observe_transform(self, self.transform_attempt)
             if status == "ok":
                 if tool.get('kind') in ('discover', 'read', 'inspect'):
                     self.inputs = input_context(body) or self.inputs
@@ -826,7 +833,10 @@ class Memory:
                 self.fail_skill("execution_failed")
                 shapes = self.last_attempt.get("jsonShapes") or []
                 repeats = self.last_attempt.get("failureRepeatCount", 0)
-                if status == 'input_failed' and report.get('logs'):
+                if tool.get('kind') == 'transform':
+                    self.reject(repair_direction(self.last_attempt.get('diagnosis'),
+                                                 self.task_timeout - (turn.round - self.task_started)))
+                elif status == 'input_failed' and report.get('logs'):
                     self.reject(('同类失败重复，检查调用方并允许完整修复。' if repeats >= 2 else '') + '解析校验失败：' + json.dumps(report['logs'].get('errors', []), ensure_ascii=False)[:1800]
                                 + '。修复失败解析及必要调用方。正常行也返回 {system,timestamp,is_fault:false}；'
                                   '故障行标记true，None只表示未知格式；禁止吞掉时间解析异常。')
@@ -952,6 +962,7 @@ class Memory:
                     try:
                         code = transform_method(code)
                     except (ValueError, SyntaxError, TypeError) as error:
+                        self.rejected_transform = {'reason': str(error), 'executed': False}
                         self.reject(str(error))
                         return
                 if len(code) > cfg.max_python_chars:

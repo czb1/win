@@ -61,36 +61,132 @@ def history_methods(skills, current):
     return [item[2] for item in candidates[:2]]
 
 
+def dominates(a, b):
+    """Sample-distance dominance is a repair hint, never proof of correct rules."""
+    if not a or not b or not a.get('sample_fingerprint') or a.get('sample_fingerprint') != b.get('sample_fingerprint'):
+        return False
+    qa, qb = a.get('quality'), b.get('quality')
+    if not qa or not qb or len(qa) != len(qb):
+        return False
+    if any(len(x) != len(y) for x, y in zip(qa, qb)):
+        return False
+    pairs = [(x, y) for ra, rb in zip(qa, qb) for x, y in zip(ra, rb)]
+    return all(x <= y for x, y in pairs) and any(x < y for x, y in pairs)
+
+
+def observe(mem, attempt):
+    detail = attempt.get('diagnosis') or {}
+    mem.transform_progress = {}
+    if detail.get('stage') != 'samples' or not detail.get('sample_fingerprint'):
+        return
+    sample = detail['sample_fingerprint']
+    key = (sample, detail.get('output_fingerprint'))
+    repeated = key in mem.transform_outputs
+    mem.transform_outputs.add(key)
+    prior = mem.transform_best.get('diagnosis') or {}
+    if not prior or prior.get('sample_fingerprint') != sample:
+        mem.transform_best = dict(attempt)
+        relation = 'first'
+    elif dominates(detail, prior):
+        mem.transform_best = dict(attempt)
+        relation = 'improved'
+    elif dominates(prior, detail):
+        relation = 'regressed'
+    else:
+        relation = 'equal_or_incomparable'
+    mem.transform_progress = {'comparison': relation, 'same_sample_outputs': repeated}
+
+
+def compact(detail):
+    if not detail:
+        return detail
+    result = dict(detail)
+    failures = []
+    for original in detail.get('failures', []):
+        item = dict(original)
+        evidence = dict(item.get('record_evidence', {}))
+        for key in ('expected_kept', 'expected_dropped', 'input_order'):
+            evidence.pop(key, None)
+        if item.get('classification') != 'order_only':
+            evidence.pop('expected_order', None)
+            evidence.pop('actual_order', None)
+        if evidence:
+            item['record_evidence'] = evidence
+        failures.append(item)
+    if 'failures' in detail:
+        result['failures'] = failures
+    return result
+
+
+def focus(detail):
+    return [{'case': f['case'], 'classification': f.get('classification'),
+             'difference': f.get('difference'),
+             **{k: f.get('record_evidence', {})[k] for k in ('missing_count', 'extra_count')
+                if k in f.get('record_evidence', {})}}
+            for f in (detail or {}).get('failures', [])]
+
+
+def repair_direction(detail, remaining):
+    stage = (detail or {}).get('stage')
+    if stage == 'samples':
+        action = '程序已运行，但公开样例不匹配。依据具体反例修正规则；允许同时修复多个有证据的问题。'
+    elif stage == 'checker':
+        action = '公开样例已通过，正式checker未通过。依据原始反馈核对规则与边界，不按差额修改答案。'
+    elif stage:
+        action = '执行或输入处理失败。依据原始异常及traceback修复对应步骤。'
+    else:
+        action = '依据题目和完整公开样例确定规则，再输出完整函数。'
+    if remaining > 4:
+        action += '证据充分时直接修复；关键证据缺失时才用READ及诊断读取入口补充。'
+    else:
+        action += '临近截止，使用现有证据直接给出修复代码。'
+    return action
+
+
 def prompt(mem, remaining):
     attempt = mem.transform_attempt or (mem.last_attempt if mem.last_attempt.get('tool') == 'transform' else {})
     detail = attempt.get('diagnosis')
+    best = getattr(mem, 'transform_best', {})
+    use_best = dominates(best.get('diagnosis'), detail)
+    base = best if use_best else attempt
+    base_detail = base.get('diagnosis')
+    rejected = getattr(mem, 'rejected_transform', {})
     context = {'remainingRounds': remaining, 'stage': detail.get('stage') if detail else 'initial',
+               'nextAction': repair_direction(detail, remaining),
+               'progress': getattr(mem, 'transform_progress', {}),
+               'focus': focus(base_detail),
+               'repairBase': {'source': 'better_observed_candidate' if use_best else 'last_attempt',
+                              'python': base.get('python', ''),
+                              'note': '仅为公开样例上的修复起点，不证明业务规则正确，不限制修改范围。'},
+               'lastAttempt': {k: attempt[k] for k in ('status',) if k in attempt},
+               'rejections': [rejected['reason']] if rejected else [],
+               'rejectedCandidate': {k: rejected[k] for k in ('reason', 'executed') if k in rejected},
                'documents': [{**d, 'output': d.get('output', '').partition('\nTASK_INPUTS ')[0]}
                              for d in mem.documents if d.get('kind') != 'read'],
                'inputPreview': {**mem.inputs, 'files': []},
-               'lastAttempt': {k: attempt[k] for k in ('python', 'status', 'diagnosis', 'failureRepeatCount') if k in attempt},
-               'rejectedCandidate': getattr(mem, 'rejected_transform', None),
-               'rejections': [item['error'] for item in list(mem.history)[-3:] if 'error' in item],
-               'verifiedMethods': history_methods(mem.skills, metadata(mem.inputs, mem.contract))}
+               'verifiedMethods': [] if attempt else history_methods(mem.skills, metadata(mem.inputs, mem.contract))}
+    if detail:
+        context['lastAttempt']['diagnosis'] = compact(detail)
+    if use_best:
+        context['repairBase']['diagnosis'] = compact(base_detail)
+        context['lastAttempt']['diagnosis'] = {k: detail[k] for k in
+            ('stage', 'case_count', 'failed_count', 'quality', 'read_command') if k in detail}
     if attempt and not detail:
-        # Transport/protocol failure without our marker: retain the actual evidence.
         context['lastAttempt']['sandbox'] = attempt.get('sandbox', '')
         context['lastAttempt']['runtimeError'] = attempt.get('runtimeError', '')
-    failed = {f['case'] for f in (detail or {}).get('failures', []) if 'input' in f}
+    failed = {f['case'] for f in (base_detail or {}).get('failures', []) if 'input' in f}
     for entry in mem.inputs.get('files', []):
         clean = dict(entry)
         if 'case_samples' in clean:
             clean.pop('sample', None)
             clean['case_samples'] = [c for c in clean['case_samples'] if c.get('case') not in failed]
         context['inputPreview']['files'].append(clean)
-    # Explicitly requested supplementary evidence is retained once, outside the preview.
     context['additionalReads'] = [d for d in mem.documents if d.get('kind') == 'read']
-    return ("第一行 PYTHON，后面只定义 transform(records) 和必要辅助函数，返回题目要求的数据。\n"
-            "不要读取/写入文件、打印、运行checker或定义主程序。框架验证全部公开样例，通过后才写产物并运行独立checker；只提交真实token。\n"
-            "按题目与完整样例推断过滤、排序、相同键顺序、分组及输出字段；保留排序字段到最后。不得硬编码样例答案、字段映射或特殊回合。\n"
-            "order_only表示内容及数量一致，仅顺序不同：核对排序方向、多级排序与稳定性；record_membership_or_mixed表示缺失/多余记录，也可能同时有内容错误；value_or_structure核对字段、类型和数值。不得把混合错误当作单纯排序。\n"
-            "execution异常先看traceback；checker失败说明公开样例不能唯一确定规则，结合反馈及边界证据修复，不按差额改答案。无法关联记录时不猜过滤。\n"
-            "lastAttempt是最近实际执行；rejectedCandidate是未再次执行的失败AST。不要重发已拒绝代码，在本次回答直接给出有证据的修复，不额外花一回合只做分析。\n"
-            "verifiedMethods仅是历史参考；output_adaptation_required需按当前输出适配，所有方法必须重新通过本题样例及checker。未知结构的旧方法未列入。\n"
-            "剩余回合>4时可输出 READ 路径 偏移，样例文件偏移为case编号；大反例或长异常使用diagnosis.read_command，继续按NEXT_READ翻页。\n"
+    return ("第一行 PYTHON，后面只定义 transform(records) 和必要辅助函数。框架负责样例验证、写文件、checker及真实token提交。\n"
+            "先根据题目和样例确定规则，再输出完整函数；核对每条推断已落实到代码，并用反例检查矛盾。不要在代码注释中展开长篇试探。\n"
+            "不得硬编码样例答案或特殊回合；字段和条件必须来自本题证据。无法可靠关联记录时不要猜过滤。\n"
+            "按nextAction执行。focus索引指向诊断中的完整反例；混合错误可能同时涉及成员、数值和排序。\n"
+            "repairBase只提供一份修复代码。same_sample_outputs=true表示已测样例输出重复，不代表程序在所有输入上等价。请改变有证据的规则，不只改写法。\n"
+            "rejectedCandidate表示同一失败AST未再执行。verifiedMethods仅为历史参考，仍须通过本题验证。\n"
+            "READ 路径 偏移：样例偏移为case编号，其他文件按读取入口和NEXT_READ继续。\n"
             "上下文：" + json.dumps(context, ensure_ascii=False))
