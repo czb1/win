@@ -95,6 +95,19 @@ def parsing_rules(documents):
     return '\n\n'.join(blocks)
 
 
+def inherited_rules(skills):
+    """Keep chronological source evidence; a reference cannot erase definitions."""
+    blocks = []
+    for skill in skills:
+        if skill.get('rules_snapshot'):
+            blocks = []
+        for block in skill.get('rules', '').split('\n\n'):
+            if block and block not in blocks:
+                blocks.append(block)
+    text = '\n\n'.join(blocks)
+    return text if len(text) <= 12000 else text[:12000] + '\n[规则省略；请读取来源文档补全]'
+
+
 # Injected only for log tasks. No model code or local task file runs on the host.
 LOG_AUDIT = r'''
 import builtins
@@ -131,12 +144,17 @@ class LogReader:
         line = self.stream.readline(*args)
         if line.strip():
             self.entry['read_lines'] += 1
+            if len(self.entry.setdefault('sample', [])) < 3:
+                self.entry['sample'].append(line[:240])
         if not line or self.eof():
             self.entry['complete'] = True
         return line
     def read(self, *args):
         value = self.stream.read(*args)
         self.entry['read_lines'] += sum(bool(line.strip()) for line in value.splitlines())
+        for line in value.splitlines():
+            if line.strip() and len(self.entry.setdefault('sample', [])) < 3:
+                self.entry['sample'].append(line[:240])
         if not args or args[0] == -1 or not value or self.eof():
             self.entry['complete'] = True
         return value
@@ -182,6 +200,7 @@ def audited_function(function):
         name = function.__name__
         entry = log_report['parsers'].setdefault(name, {'calls': 0, 'returned_records': 0})
         entry['calls'] += 1
+        before = {path: info['read_lines'] for path, info in log_report['files'].items()}
         try:
             value = function(*args, **kwargs)
         except Exception as error:
@@ -233,9 +252,21 @@ def audited_function(function):
             if isinstance(value, (list, tuple)) and all(valid_record(row) for row in value):
                 if value:
                     entry['record_contract'] = 'structured-v1'
+                entry['normal'] = entry.get('normal', 0) + sum(not (r['is_fault'] if isinstance(r, dict) else r[2]) for r in value)
+                entry['failures'] = entry.get('failures', 0) + sum(bool(r['is_fault'] if isinstance(r, dict) else r[2]) for r in value)
+                reads = {path: info['read_lines'] - before.get(path, 0)
+                         for path, info in log_report['files'].items()
+                         if info['read_lines'] > before.get(path, 0)}
+                entry['files'] = list(reads)
+                if reads and not value:
+                    entry['coverage_gap'] = 'nonempty input returned no structured records'
+                    log_error('parser_coverage', name + ': ' + entry['coverage_gap'])
             else:
                 entry['invalid_return'] = type(value).__name__
-                log_error('parser_contract', name + ': expected structured record list; got ' + type(value).__name__)
+                element = next((r for r in value if not valid_record(r)), None) if isinstance(value, (list, tuple)) else value
+                entry['invalid_element'] = type(element).__name__
+                log_error('parser_contract', name + ': expected records with system/timestamp/is_fault; container='
+                          + type(value).__name__ + ', invalid element=' + type(element).__name__)
         return value
     return observed
 

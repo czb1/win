@@ -181,7 +181,8 @@ def learned_method(point, contract, recipe=None, calls=(), parser=None, rules=''
     if transform:
         method.update(transform=transform, family=contract.get('family'), transform_metadata=transform_metadata or {})
     if parser or rules:
-        method.update(parser=parser, rules=rules, family=contract.get('family'))
+        method.update(parser=parser, rules=rules, family=contract.get('family'),
+                      rule_sources=[contract['source']] if contract.get('source') else [])
     if parser and parser_evidence and parser_method(parser, parser_evidence):
         method['parser_contract'] = 'structured-v1'
     if contract.get('kind') == 'check_token' and not contract.get('repair_spec', True):

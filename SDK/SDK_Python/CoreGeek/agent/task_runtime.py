@@ -212,6 +212,9 @@ def parser_exception(name):
     if isinstance(error, Exception):
         detail = type(error).__name__ + ": " + str(error)
         log_report['parsers'].setdefault(name, {})['error'] = detail[:240]
+        trace = traceback.format_exc()
+        log_report['parsers'][name]['exception_location'] = (
+            '[traceback head omitted]\n' + trace[-2000:] if len(trace) > 2000 else trace)
         log_error("caught_parser_error", name + ": " + detail)
 
 def instrument(tree):

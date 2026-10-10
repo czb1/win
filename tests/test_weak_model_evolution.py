@@ -179,7 +179,8 @@ class WeakModelTests(unittest.TestCase):
 
     def test_deadline_prompt_does_not_override_answer_only(self):
         mem=Memory(task_text='query',task_started=1,task_timeout=15,bootstrap_done=True,
-                   contract={'input_kind':'logs','example':{'count':0}})
+                   contract={'input_kind':'logs','example':{'count':0}},
+                   supported_output='{"count":0}', supported_python='task_result({"count":0})')
         prompt,cmd,_=step(mem,14)
         self.assertIn('只允许：第一行 ANSWER',prompt)
         self.assertNotIn('第一行必须写 PYTHON',prompt)
