@@ -1,4 +1,4 @@
-"""Place controllable robots at a weak entrance, breach it, then attack base."""
+"""Deploy behind the enemy frontage, breach a weak entry, then attack base."""
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -61,6 +61,29 @@ def weakness(wall):
     return (1, wall.level, wall.health) if wall else (0, 0, 0)
 
 
+def rear_approach(turn, base, point):
+    """Behind the enemy base relative to our base, mirrored with the map.
+
+    This is a geometry preference, not knowledge of unseen enemy weapons.
+    Without our base, use the map centre as the incoming-wave direction.
+    Doubled centres avoid rounding the 2x2 station footprint.
+    """
+    xs, ys = zip(*base.cells)
+    centre = min(xs) + max(xs), min(ys) + max(ys)
+    if turn.station:
+        hx, hy = zip(*turn.station.cells)
+        front = min(hx) + max(hx), min(hy) + max(hy)
+    else:
+        front = turn.width - 1, turn.height - 1
+    return sum((2 * point[i] - centre[i]) * (front[i] - centre[i])
+               for i in (0, 1)) < 0
+
+
+def _entry_rank(turn, base, entry, wall, prefer_rear):
+    rank = weakness(wall)
+    return (int(not rear_approach(turn, base, entry)), *rank) if prefer_rear else rank
+
+
 def legal_summon_position(turn, point):
     return turn.summon_position_legal(point)
 
@@ -75,7 +98,7 @@ def _entry_walls(turn, base):
     return [(point, walls.get(point)) for point in enemy_entries(turn, base) if point not in fixed]
 
 
-def _spawn_at_entry(turn, ledger, base, entry, wall, deadline):
+def _spawn_at_entry(turn, ledger, base, entry, wall, deadline, rear_only=False):
     blocked = turn.blocked | ledger.reserved
     pending = ledger.summon_pending_positions
     if wall:
@@ -106,7 +129,8 @@ def _spawn_at_entry(turn, ledger, base, entry, wall, deadline):
         if deadline is not None and visited % 32 == 0:
             check_time(deadline)
         visited += 1
-        if legal_summon_position(turn, point) and point not in pending:
+        if (legal_summon_position(turn, point) and point not in pending
+                and (not rear_only or rear_approach(turn, base, point))):
             candidate = length, base_distance(base, point), distance(point, entry), point
             if best is None or candidate < best:
                 best = candidate
@@ -118,16 +142,18 @@ def _spawn_at_entry(turn, ledger, base, entry, wall, deadline):
     return best
 
 
-def weakest_approach(turn, ledger, deadline=None):
+def weakest_approach(turn, ledger, deadline=None, *, prefer_rear=False):
     base = enemy_base(turn)
     if base is None:
         return None
-    entries = sorted((weakness(wall), point, wall) for point, wall in _entry_walls(turn, base))
+    entries = sorted((_entry_rank(turn, base, point, wall, prefer_rear), point, wall)
+                     for point, wall in _entry_walls(turn, base))
     chosen, chosen_key = None, None
     for rank, entry, wall in entries:
-        if chosen_key is not None and rank > chosen_key[:3]:
+        if chosen_key is not None and rank > chosen_key[:len(rank)]:
             break
-        spawn = _spawn_at_entry(turn, ledger, base, entry, wall, deadline)
+        spawn = _spawn_at_entry(turn, ledger, base, entry, wall, deadline,
+                                rear_only=prefer_rear and rear_approach(turn, base, entry))
         if spawn is None:
             continue
         key = (*rank, *spawn[:3], entry, spawn[3])
@@ -138,7 +164,7 @@ def weakest_approach(turn, ledger, deadline=None):
 
 
 def choose_summon_position(turn, ledger, deadline=None):
-    plan = weakest_approach(turn, ledger, deadline)
+    plan = weakest_approach(turn, ledger, deadline, prefer_rear=True)
     return plan.position if plan else None
 
 
@@ -150,7 +176,11 @@ def _attack_goals(turn, target_cells, reach):
 
 
 def _new_objective(turn, base, robot, nav, ledger):
-    entries = sorted((weakness(wall), distance(robot.pos, point), point, wall)
+    # A rear deployment must not immediately walk around to a weaker front
+    # wall. Preserve legacy weak-entry selection for a robot shifted in front.
+    prefer_rear = rear_approach(turn, base, robot.pos)
+    entries = sorted((_entry_rank(turn, base, point, wall, prefer_rear),
+                      distance(robot.pos, point), point, wall)
                      for point, wall in _entry_walls(turn, base))
     for _, _, entry, wall in entries:
         check_time(nav.deadline)

@@ -76,7 +76,7 @@ def _robot_medical_gold(turn, ledger):
 
 
 def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), reserve=0,
-                      item_only=None, shop_only=None):
+                      item_only=None, shop_only=None, quantity_limit=None):
     """Use carried orders or prepare the strongest affordable surplus order."""
     state = observe_robot_summons(turn, mem)
     if (not turn.is_day or not defenses_ready(turn, cfg, towers, walls, mem, ledger)
@@ -125,31 +125,42 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         return False
     buyers = []
     for name in names:
+        price = turn.shop[name]
+        quantity = 1
+        if name == "BossRobotSummonOrder":
+            slots = DAILY_SUMMON_LIMIT - state["count"]
+            quantity = min(slots, available // price if price else slots)
+        if quantity_limit is not None:
+            quantity = min(quantity, quantity_limit)
         for hero in free:
-            plan = robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only)
+            plan = robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only, quantity)
             if plan:
-                _, shop, route = plan
-                buyers.append((hero.id != state["buyer"], route[0], hero.kind != "worker",
+                count, shop, route = plan
+                buyers.append((hero.id != state["buyer"], -count, route[0], hero.kind != "worker",
                                hero.id, hero, route, shop))
         if buyers:
             break
     if not buyers:
         ledger.spending_plan['robot_blocked'] = 'no_free_buyer_or_return_deadline'
         return False
-    _, _, _, _, hero, route, shop = min(buyers)
+    _, negative_count, _, _, _, hero, route, shop = min(buyers)
+    quantity = -negative_count
     price = turn.shop[name]
     if route[1] is None:
-        accepted = ledger.add(hero.id, command("buy", name=name, num=1))
+        accepted = ledger.add(hero.id, command("buy", name=name, num=quantity))
     else:
         accepted = ledger.add(hero.id, command("move", route[1]))
         if accepted:
-            ledger.gold -= price
+            ledger.gold -= price * quantity
             ledger.purchases.add(name)
-            ledger.remember_work(hero, 'robot_buy', shop, name=name, quantity=1)
+            ledger.remember_work(hero, 'robot_buy', shop, name=name, quantity=quantity)
     if accepted:
         state["buyer"] = hero.id
         ledger.explain(hero.id, "prepare_highest_robot", item=name,
-                       price=price, route_steps=route[0])
+                       price=price, quantity=quantity, total_cost=price * quantity,
+                       route_steps=route[0])
+        ledger.spending_plan['robot_purchase'] = dict(actor=hero.id, item=name, quantity=quantity,
+                                                     unit_price=price, total_cost=price * quantity)
     return accepted
 
 

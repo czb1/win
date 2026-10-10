@@ -64,7 +64,8 @@ def plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded=()):
     return actors, reserve
 
 
-def robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only=None):
+def robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only=None, quantity=1):
+    """Fit buying, every individual summon use, and the actual return trip."""
     if (not hero.space or (hero.id, name) in mem.buy_failures
             or any(hero.inventory[item] for item in SUMMON_ORDERS)):
         return None
@@ -82,6 +83,11 @@ def robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only=None)
             continue
         trip = via(nav, hero, [[shop], home], ledger.reserved, final_exact=exact,
                    future_return=turn.tick < cfg.economy_rounds)
-        if trip is not None and trip + 2 + cfg.return_margin <= turn.day_left:
-            options.append((route[0], shop, route))
-    return min(options) if options else None
+        if trip is not None:
+            count = min(quantity, hero.space, turn.day_left - trip - 1 - cfg.return_margin)
+            if count > 0:
+                options.append((-count, route[0], shop, route))
+    if not options:
+        return None
+    negative_count, _, shop, route = min(options)
+    return -negative_count, shop, route
