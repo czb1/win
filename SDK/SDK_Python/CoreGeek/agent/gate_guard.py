@@ -7,10 +7,11 @@ from .sabotage import escape, exposed, threats
 
 
 class GateGuard:
-    def __init__(self, turn, nav, ledger, hero, gate, inward, posts, state):
+    def __init__(self, turn, nav, ledger, hero, gate, inward, posts, state, catches=()):
         self.turn, self.nav, self.ledger = turn, nav, ledger
         self.hero, self.gate, self.inward = hero, gate, inward
         self.posts, self.state = posts, state
+        self.catches = catches
         self.initial_blocked = set(turn.blocked)
         self.requests = {}
 
@@ -67,13 +68,16 @@ class GateGuard:
         try:
             for point in dict.fromkeys(points):
                 if (not self.turn.inside(point) or point in forbidden or point in self.ledger.reserved
-                        or point in original and point != self.hero.pos):
+                        or point in original and point != self.hero.pos
+                        or self.state.get('traffic_only') and exposed(point, self.catches)):
                     continue
                 route = self.nav._search(self.hero, {point}, self.ledger.reserved | forbidden)
                 if route is None:
                     continue
                 # A side step must leave the waiting worker's route open, too.
                 landing = route[1] or self.hero.pos
+                if self.state.get('traffic_only') and exposed(landing, self.catches):
+                    continue
                 self.turn.blocked = (original - {self.hero.pos}) | {landing}
                 if any(goals and self.nav._search(self.turn.units[uid], goals,
                                                 self.ledger.reserved) is None
@@ -104,7 +108,7 @@ class GateGuard:
         if traffic:
             self.state['yield_until'] = self.turn.round + 2
         yielding = (bool(traffic) or self.state.get('yield_until', -1) >= self.turn.round
-                    or self.gate in self.ledger.reserved)
+                    or self.gate in self.ledger.reserved or self.state.get('traffic_only'))
         reason = ('imp_daytime_gate_yield' if self.turn.is_day and not self.state.get('recalling') else
                   'imp_dusk_staging' if self.turn.is_day else
                   'imp_yielding_gate' if yielding else 'imp_guarding_gate')
@@ -126,6 +130,8 @@ class GateGuard:
             # global search budget expires after the worker requests arrived.
             if self.hero.pos == self.gate and (self.turn.is_day or yielding):
                 for point in self.posts:
+                    if self.state.get('traffic_only') and exposed(point, self.catches):
+                        continue
                     if point not in self.ledger.operator_posts.values() and self.ledger.add(
                             self.hero.id, command('move', point)):
                         self.state['post'] = point
@@ -150,15 +156,11 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
         mem.sabotage.gate_states.pop(hero.id, None)
         return None
     gate = next(iter(gates))
-    if not turn.is_day and not any(
+    quiet_night = not turn.is_day and not any(
             robot.id not in turn.summon_robot_ids
             and min(distance(gate, robot.pos), turn.base_distance(robot.pos))
             <= max(cfg.task_danger_radius, robot.attack_range + 2)
-            for robot in turn.robots):
-        # Release recall/yield memory too, so it cannot suppress sabotage on
-        # later quiet turns. Keep any valid mine target and channel progress.
-        mem.sabotage.gate_states.pop(hero.id, None)
-        return None
+            for robot in turn.robots)
     xs, ys = zip(*walls)
     if gate[0] == min(xs):
         inward = (1, 0)
@@ -176,6 +178,15 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     posts = [p for p in posts if turn.inside(p)]
     if not posts:
         return None
+    # With a smaller sabotage region there may be no target. An idle imp at
+    # the doorway must still use the shared traffic clearance, without being
+    # recalled from elsewhere or holding the gate on a quiet night.
+    traffic_only = ((turn.is_day or quiet_night) and hero.pos in {gate, *posts}
+                    and not any(turn.enemy_mine(p) for p in turn.zones))
+    if quiet_night and not traffic_only:
+        # Keep any valid mine target and channel progress when releasing guard.
+        mem.sabotage.gate_states.pop(hero.id, None)
+        return None
     state = mem.sabotage.gate_states.get(hero.id, {})
     returning = state.get('day') == turn.day and state.get('recalling', False)
     yielding = state.get('day') == turn.day and state.get('yield_until', -1) >= turn.round
@@ -191,8 +202,12 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
         # Standing in the gate is still daytime work, not an implicit recall.
         # Otherwise staging and the mine route can alternate across the gap.
         if turn.day_left > (route[0] if route is not None else 0) + cfg.return_margin:
-            return None
-        returning = True
+            if not traffic_only:
+                if state.get('traffic_only'):
+                    mem.sabotage.gate_states.pop(hero.id, None)
+                return None
+        else:
+            returning = True
     catches = [t for t in threats(turn, mem.sabotage) if t.catch]
     if exposed(hero.pos, catches):
         # Robot damage is intentional while guarding. Catching is instant
@@ -202,11 +217,12 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
         escape(turn, nav, ledger, hero, catches)
         return None
     state.update(day=turn.day, gate=gate, recalling=returning,
+                 traffic_only=traffic_only,
                  yield_until=state.get('yield_until', -1))
     mem.sabotage.gate_states[hero.id] = state
     if returning or not turn.is_day:
         mem.sabotage.targets.pop(hero.id, None)
     mem.sabotage.progress.pop(hero.id, None)
     ledger.used.add(hero.id)  # Suppress the daytime sabotage action for this imp.
-    return GateGuard(turn, nav, ledger, hero, gate, inward, posts, state)
+    return GateGuard(turn, nav, ledger, hero, gate, inward, posts, state, catches)
 

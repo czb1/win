@@ -1,4 +1,4 @@
-"""Enemy-half mining disruption, with survival taking precedence over channeling."""
+"""Enemy-corner mining disruption, with survival taking precedence over channeling."""
 from dataclasses import dataclass, field
 from heapq import heappop, heappush
 from .commands import command
@@ -192,7 +192,8 @@ def act_imps(turn, memory, nav, ledger):
             return nav.search(hero, goals, ledger.reserved | avoided)
 
         choice = None
-        if target and not (nav.memory and nav.memory.avoids(hero.id, target[0])):
+        if (target and turn.enemy_mine(target[0])
+                and not (nav.memory and nav.memory.avoids(hero.id, target[0]))):
             route = route_to(target[0], remaining if turn.adjacent(hero.pos, target[0]) else DESTROY_ROUNDS)
             if route is not None:
                 choice = target[0], route
