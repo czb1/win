@@ -84,7 +84,8 @@ class EconomyRegressionTests(unittest.TestCase):
         self.assertEqual(l.commands["1"]["action"], "collect")
 
     def test_builder_collects_batch_before_leaving_mine(self):
-        p = payload(roles=[unit(1, "worker", 2, 2, backpack=["stone"])])
+        p = payload(roles=[unit(1, "worker", 2, 2, backpack=["stone"]),
+                           unit(13, "station", 0, 4)])
         p["teamOur"]["goldNum"] = 0
         p["mapInfo"]["zones"] = [{"neutralType": "stone", "pos": {"x": 3, "y": 2}}]
         sites = [[10, y] for y in range(5, 11)]
@@ -131,3 +132,4 @@ class EconomyRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

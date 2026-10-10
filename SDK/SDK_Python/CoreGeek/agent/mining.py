@@ -1,14 +1,24 @@
 """Persistent mining, safe night runs and budgeted daytime batch sales."""
 import logging
 from collections import Counter
+from copy import copy
 from dataclasses import dataclass, replace
 from math import isclose
 from .commands import command
 from .market import hold_inventory, preferred_stock, cashout_ores
-from .model import ORES, distance, neighbours
+from .model import ORES, Unit, DEFENCE_RETURN_TICK, distance, neighbours
 from .economy_plan import via
 
 LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MaterialPlan:
+    amount: int
+    goal: int
+    construction_steps: int
+    return_steps: int
+    targets: tuple
 
 
 @dataclass(frozen=True)
@@ -20,6 +30,7 @@ class MineOption:
     claimants: tuple
     return_steps: int = 0
     cell: tuple | None = None
+    material: MaterialPlan | None = None
 
 
 def remaining_ore(turn, mem, target):
@@ -81,7 +92,12 @@ def mining_home(turn, nav, hero, reserved=()):
     return list(turn.station.cells) if turn.station else []
 
 
-def return_destination(turn, nav, ledger, hero):
+def return_destination(turn, nav, ledger, hero, mem=None):
+    if mem is not None and turn.is_day and turn.day >= 4 and hero.id == mem.wall_watch_id:
+        from .wall_watch import geometry
+        inside, _ = geometry(turn, ledger.wall_cells)
+        post = getattr(ledger, 'daytime_gunner_post', mem.gunner_post)
+        return inside - set(ledger.operator_posts.values()) - {post}, True
     if hero.id in ledger.operator_posts:
         return [ledger.operator_posts[hero.id]], True
     tower = next((w for h, w in ledger.return_pairs if h.id == hero.id), None)
@@ -265,8 +281,68 @@ def sale_inventory(turn, mem, hero):
     return {k: counts[k] for k in ORES if counts[k] and turn.prices.get(k, 0) > 0}
 
 
+def wall_material_plan(turn, cfg, mem, nav, ledger, hero, cell, steps, amount, goal, sites):
+    """Forecast a complete, possibly smaller, collect/build/return batch."""
+    if not turn.is_day or turn.tick >= DEFENCE_RETURN_TICK:
+        return None
+    home, exact = return_destination(turn, nav, ledger, hero, mem)
+    if not home:
+        return None
+    from .economy import build_options, wall_keeps_access
+
+    held = hero.inventory['stone']
+    goal = min(goal if goal is not None else cfg.stone_batch, held + amount)
+    shadow = copy(ledger)
+    shadow.commands, shadow.build_claims = dict(ledger.commands), dict(ledger.build_claims)
+    memory = copy(mem)
+    memory.build_targets = dict(mem.build_targets)
+    original, original_units = turn.blocked, turn.ours
+    guard, nav.gate_guard = nav.gate_guard, None
+    proxy, walk, targets, best = replace(hero, pos=cell), 0, [], None
+    try:
+        turn.blocked = original - {hero.pos}
+        for _ in range(goal // cfg.wall_stones):
+            shadow.commands[str(hero.id)] = command('move', proxy.pos)
+            options = build_options(turn, cfg, memory, nav, shadow, proxy, sites, lambda _: 'wall')
+            target = next((p for _, _, _, _, p, _ in options
+                           if wall_keeps_access(turn, nav, shadow, p)), None)
+            if target is None:
+                break
+            leg = nav.approach(proxy, [target], shadow.reserved, with_endpoint=True)
+            walk += leg[0]
+            proxy = replace(proxy, pos=leg[2])
+            targets.append(target)
+            shadow.build_claims[target] = (hero.id, 'wall')
+            memory.build_targets[hero.id] = target
+            turn.blocked = turn.blocked | {target}
+            turn.ours += (Unit(-100000 - len(targets), target, 'wall', 1000),)
+            needed = len(targets) * cfg.wall_stones - held
+            if needed <= 0:
+                continue
+            construction = walk + len(targets)
+            work = steps + needed + construction
+            if work > DEFENCE_RETURN_TICK - turn.tick:
+                break
+            occupied = turn.blocked
+            try:
+                if turn.tick < cfg.economy_rounds:
+                    turn.blocked = occupied - {h.pos for h in turn.heroes}
+                back = (nav.search(proxy, home, shadow.reserved) if exact
+                        else nav.approach(proxy, home, shadow.reserved))
+            finally:
+                turn.blocked = occupied
+            if back is not None and work + back[0] + cfg.return_margin <= turn.day_left:
+                best = MaterialPlan(needed, len(targets) * cfg.wall_stones,
+                                    construction, back[0], tuple(targets))
+        return best
+    finally:
+        turn.blocked, turn.ours = original, original_units
+        nav.gate_guard = guard
+
+
 def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
-         deadline=None, stockpile=False, dedicated=False, target_only=None, stone_goal=None):
+         deadline=None, stockpile=False, dedicated=False, target_only=None, stone_goal=None,
+         stone_sites=None):
     hero = reserve_watch_space(turn, mem, hero, ledger)
     if not hero.space:
         LOG.debug("round=%s worker=%s mining=backpack_full", turn.round, hero.id)
@@ -320,11 +396,11 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         if not value:
             skipped["no_positive_price"] += 1
             continue
-        route = nav.approach(hero, [p], ledger.reserved)
-        if route is None:
+        arrival = nav.approach(hero, [p], ledger.reserved, with_endpoint=True)
+        if arrival is None:
             skipped["unreachable"] += 1
             continue
-        cells = [q for q in neighbours(p) if q in sale_dist]
+        route, cell = arrival[:2], arrival[2]
         capacity = hero.space
         if want_stone and stone_goal is not None:
             capacity = min(capacity, max(0, stone_goal - hero.inventory['stone']))
@@ -332,9 +408,19 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         if amount <= 0:
             skipped["other_worker_exhausts_mine"] += 1
             continue
-        sale_walk = min((sale_dist[q] for q in cells), default=None)
+        # The sale and home legs must start where this outbound walk ends.
+        sale_walk = sale_dist.get(cell)
+        material = None
+        if want_stone:
+            material = wall_material_plan(turn, cfg, mem, nav, ledger, hero, cell, route[0],
+                                          amount, stone_goal,
+                                          list(stone_sites) if stone_sites is not None else sorted(ledger.wall_cells))
+            if material is None:
+                skipped['wall_material_deadline'] += 1
+                continue
+            amount = material.amount
         if stockpile and home and not dedicated and (turn.is_day or wave_budget is not None):
-            home_walk = min((home_dist[q] for q in neighbours(p) if q in home_dist), default=None)
+            home_walk = home_dist.get(cell)
             if home_walk is None:
                 continue
             budget = turn.day_left - cfg.return_margin if turn.is_day else wave_budget
@@ -356,7 +442,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         batch = min(hero.capacity, cfg.sell_batch_max)
         score = value * amount / (amount + route[0] +
                                  (amount * (sale_walk + 1) / max(1, batch) if sale_walk is not None else 0))
-        options.append(MineOption(p, route, score, amount, claimants))
+        options.append(MineOption(p, route, score, amount, claimants, cell=cell, material=material))
     if not options:
         ledger.explain(hero.id, "no_mining_candidate", skipped=dict(skipped),
                        day_left=turn.day_left, deadline=deadline, free_space=hero.space)
@@ -388,14 +474,22 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
                        free_space=hero.space, day_left=turn.day_left, deadline=deadline,
                        return_margin=cfg.return_margin, mining_sector=mining_sector(turn, hero),
                        target_sector=target_sector(turn, target), remaining_ore=remaining_ore(turn, mem, target),
-                       expected_units=chosen.amount, claimed_by=chosen.claimants)
+                       expected_units=chosen.amount, claimed_by=chosen.claimants,
+                       collection_cell=chosen.cell,
+                       construction_steps=chosen.material.construction_steps if chosen.material else None,
+                       return_steps=chosen.material.return_steps if chosen.material else None,
+                       construction_targets=chosen.material.targets if chosen.material else ())
         changed = mem.mine_targets.get(hero.id) != target
         mem.mine_targets[hero.id] = target
         ledger.mine_claims[hero.id] = target
         ledger.mine_plans[hero.id] = route[0], chosen.amount
+        material_details = ({'stone_sites': tuple(stone_sites) if stone_sites is not None
+                             else tuple(sorted(ledger.wall_cells))} if want_stone else {})
         ledger.remember_work(hero, 'mine', target, ore=turn.zones[target],
                              want_stone=want_stone, stockpile=stockpile,
-                             deadline=deadline, stone_goal=stone_goal)
+                             deadline=deadline,
+                             stone_goal=chosen.material.goal if chosen.material else stone_goal,
+                             **material_details)
         record_target(turn, hero, target, route,
                       "wall_material" if want_stone else "carry_for_later" if stockpile else "sell_today", changed)
         return True
@@ -541,3 +635,4 @@ def night_mine(turn, cfg, mem, nav, ledger, hero, dedicated=False):
         return mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, dedicated=dedicated)
     finally:
         turn.blocked = original
+
