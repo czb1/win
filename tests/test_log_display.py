@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from test_agent import ROOT
 from test_log_encryption import encrypted_logging, PRIVATE
+from agent.log_crypto import load_log_key
 from agent import logging_system as logs
 from agent.log_display import compact_record, HIDDEN_FIELDS
 
@@ -86,7 +87,7 @@ class LogDisplayTests(unittest.TestCase):
         self.assertEqual(compact_record(metadata)["data"], {"reason": "round_rewind"})
         self.assertIn("config", metadata["data"])
 
-    def test_plaintext_stream_and_game_file_are_compact_but_archive_is_searchable(self):
+    def test_all_plaintext_sinks_store_the_same_compact_record(self):
         root = logging.getLogger()
         handlers, level, mode = list(root.handlers), root.level, logs._encrypted_logging
         stream = io.StringIO()
@@ -104,9 +105,8 @@ class LogDisplayTests(unittest.TestCase):
                 self.assertEqual(visible["data"]["reason"], "mine_for_sale")
                 self.assertEqual(stream.getvalue(), Path(directory, "game.log").read_text())
                 stored = json.loads(Path(directory, "events.jsonl").read_text())
-                self.assertEqual(stored["session"], "display-session")
-                self.assertEqual(stored["level"], "INFO")
-                self.assertTrue(stored["request_id"])
+                self.assertEqual(stored, visible)
+                self.assertFalse(HIDDEN_FIELDS & stored.keys())
         finally:
             for handler in list(root.handlers):
                 if handler not in handlers:
@@ -128,6 +128,7 @@ class LogDisplayTests(unittest.TestCase):
         lines = logs.WireFormatter(compact=True).format(record).splitlines()
         self.assertGreater(len(lines), 1)
         self.assertTrue(all(len(line.encode("utf-8")) < 8192 for line in lines))
+        self.assertTrue(all(not HIDDEN_FIELDS & json.loads(line.removeprefix("FWLOG ")).keys() for line in lines))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory, "match.log")
             path.write_text("\n".join(list(reversed(lines)) * 2), encoding="utf-8")
@@ -176,7 +177,7 @@ class LogDisplayTests(unittest.TestCase):
             path, output = Path(directory, "match.log"), Path(directory, "out")
             path.write_text(stream.getvalue(), encoding="utf-8")
             with redirect_stdout(io.StringIO()):
-                status = extract_logs.main([str(path), "--private-key", str(PRIVATE), "--session", "compact-example",
+                status = extract_logs.main([str(path), "--private-key", str(PRIVATE), "--session", "scene-1",
                     "--mode", "evolution", "--from-round", "50", "--to-round", "50", "--context", "0", "--out", str(output)])
             self.assertEqual(status, 0)
             for filename in ("issue.txt", "tasks.txt"):
@@ -188,6 +189,118 @@ class LogDisplayTests(unittest.TestCase):
             meta = json.loads((output / "meta.json").read_text())
             self.assertEqual(meta["missing_payloads"], [])
             self.assertEqual(meta["session_metadata"][0]["data"]["config"], {"round_origin": 0})
+
+    def test_encrypted_source_is_compact_even_with_a_direct_decryptor(self):
+        stream = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            with encrypted_logging(stream, directory), logs.request_context():
+                logs.update_context(round=0, team="A", session="native-session", task_id="S/r1", task_type="自进化类1")
+                logs.emit_event("turn_snapshot", {"level": 0, "timestamp": "business value", "valid": False}, "snapshot")
+                logs.emit_event("task_outcome", {"completed": False}, "evolution")
+                logging.error("request failed")
+            decryptor = extract_logs.LogDecryptor([load_log_key(PRIVATE, True)])
+            for text in (stream.getvalue(), Path(directory, "game.log").read_text(),
+                         Path(directory, "events.jsonl").read_text()):
+                result = [decryptor.open(json.loads(line.removeprefix("FWENC "))) for line in text.splitlines()]
+                self.assertTrue(all(not HIDDEN_FIELDS & record.keys() for record in result))
+                self.assertNotIn("task_id", result[0])
+                self.assertEqual(result[0]["data"], {"level": 0, "timestamp": "business value", "valid": False})
+                self.assertEqual(result[1]["task_id"], "S/r1")
+                self.assertEqual(result[2]["event"], "error")
+                self.assertEqual(result[2]["message"], "request failed")
+
+    def test_split_exports_and_level_queries_are_compact(self):
+        stream = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            with encrypted_logging(stream), logs.request_context():
+                logs.update_context(team="A", round=3, session="native-session")
+                logs.emit_event("session_started", {"config": {"round_origin": 0}}, "runtime")
+                logs.emit_event("turn_started", {}, "runtime")
+                logs.emit_event("turn_snapshot", {"valid": False}, "snapshot")
+                logs.emit_event("unit_decision", {"role_type": "worker", "reason": "mine"}, "decision", unit_id=0)
+                logs.emit_event("previous_feedback", {"feedback_for_round": 2, "correlated": False}, "feedback")
+                logging.warning("budget warning")
+                logs.emit_event("turn_response", {"roleCommandMap": {}, "cached": False}, "response")
+            path, output = Path(directory, "match.log"), Path(directory, "out")
+            path.write_text(stream.getvalue(), encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(extract_logs.main([str(path), "--private-key", str(PRIVATE), "--split", "--out", str(output)]), 0)
+            for name in ("turns", "decisions", "feedback", "errors"):
+                result = [json.loads(line) for line in (output / (name + ".jsonl")).read_text().splitlines()]
+                self.assertTrue(result, name)
+                self.assertTrue(all(not HIDDEN_FIELDS & record.keys() for record in result), name)
+            self.assertEqual(json.loads((output / "meta.json").read_text())["requests_without_response"], [])
+            process = subprocess.run([sys.executable, str(ROOT / "tools/query_logs.py"), str(path),
+                                      "--private-key", str(PRIVATE), "--session", "scene-1", "--level", "WARNING", "--json"],
+                                     capture_output=True, text=True, timeout=10)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(json.loads(process.stdout)["message"], "budget warning")
+            process = subprocess.run([sys.executable, str(ROOT / "tools/query_logs.py"), str(path),
+                                      "--private-key", str(PRIVATE), "--contains", "turn_snapshot", "--json"],
+                                     capture_output=True, text=True, timeout=10)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            self.assertEqual(json.loads(process.stdout)["data"], {"valid": False})
+
+    def test_compact_epochs_deduplicate_and_report_missing_nonce(self):
+        from agent.log_crypto import LogEncryptor, packet_lines
+        key = load_log_key(PRIVATE, True)
+        writer = LogEncryptor(key)
+        first = writer.seal(b'{"round":1,"event":"turn_started","team":"A"}')
+        writer.seal(b'{"round":1,"event":"turn_snapshot","team":"A"}')
+        last = writer.seal(b'{"round":1,"event":"turn_response","team":"A"}')
+        other = LogEncryptor(key).seal(b'{"round":1,"event":"turn_started","team":"A"}')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "match.log")
+            path.write_text("\n".join(line for packet in (first, last, first, other) for line in packet_lines(packet)))
+            report = extract_logs.ReadReport()
+            result = list(extract_logs.events(path, report, decryptor=extract_logs.LogDecryptor([key])))
+        self.assertEqual(len(result), 3)
+        self.assertEqual(report.duplicate_records, 1)
+        self.assertEqual(len({extract_logs.scope(record)[0] for record in result}), 2)
+        gap = report.summary()["sequence_gaps"]
+        self.assertEqual([(item["from"], item["to"]) for item in gap], [(2, 2)])
+        self.assertTrue(all(not HIDDEN_FIELDS & record.keys() for record in result))
+
+    def test_scene_boundaries_keep_payloads_and_repeated_round_requests_separate(self):
+        stream = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            with encrypted_logging(stream):
+                for scene in ("first", "second"):
+                    with logs.request_context():
+                        logs.update_context(team="A", session=scene, round=1, task_id=scene + "/r1")
+                        logs.emit_event("session_started", {"reason": "round_rewind", "config": {"scene": scene}}, "runtime")
+                        logs.emit_event("turn_started", {}, "runtime")
+                        logs.emit_payload("task_description", "same question", "evolution")
+                        logs.emit_event("turn_response", {}, "response")
+                    with logs.request_context():
+                        logs.update_context(team="A", session=scene, round=50, task_id=scene + "/r1")
+                        logs.emit_event("turn_started", {}, "runtime")
+                        logs.emit_payload("task_description", "same question", "evolution")
+                        logs.emit_event("turn_response", {}, "response")
+                    with logs.request_context():
+                        logs.update_context(team="A", session=scene, round=50, task_id=scene + "/r1")
+                        logs.emit_event("turn_snapshot", {}, "snapshot")
+                        logs.emit_event("cache_hit", {}, "runtime")
+                        logs.emit_event("turn_response", {}, "response")
+            path, output = Path(directory, "match.log"), Path(directory, "out")
+            path.write_text(stream.getvalue(), encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(extract_logs.main([str(path), "--private-key", str(PRIVATE), "--session", "scene-2",
+                    "--from-round", "50", "--to-round", "50", "--context", "0", "--out", str(output)]), 0)
+            result = list(extract_logs.events(output / "issue.txt"))
+            questions = [record for record in result if record.get("event") == "task_description"]
+            self.assertEqual(len(questions), 2)
+            self.assertTrue(all(record["task_id"] == "second/r1" for record in questions))
+            self.assertTrue(any(record.get("data", {}).get("content") == "same question" for record in questions))
+            meta = json.loads((output / "meta.json").read_text())
+            self.assertEqual(meta["missing_payloads"], [])
+            self.assertEqual(meta["requests_without_response"], [])
+            self.assertEqual(meta["session_metadata"][0]["data"]["config"], {"scene": "second"})
+            raw = list(extract_logs.events(path, decryptor=extract_logs.LogDecryptor([load_log_key(PRIVATE, True)])))
+            responses = [record for record in raw if extract_logs.record_value(record, "session") == "scene-2"
+                         and record.get("round") == 50 and record.get("event") == "turn_response"]
+            self.assertNotEqual(extract_logs.record_value(responses[0], "request_id"),
+                                extract_logs.record_value(responses[1], "request_id"))
 
 
 if __name__ == "__main__":

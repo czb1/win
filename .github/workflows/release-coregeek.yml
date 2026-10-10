@@ -82,6 +82,7 @@ jobs:
 
           archive="CoreGeek-${RELEASE_TAG}.tar.gz"
           python3 tools/check_log_key_packaging.py "$source_dir"
+          python3 tools/sync_log_crypto.py --check
           tar --create --gzip --file "$archive" \
             --directory "SDK/SDK_Python" \
             "CoreGeek"
@@ -110,7 +111,7 @@ jobs:
               exit 1
             fi
 
-            gh release upload "$RELEASE_TAG" "$ARCHIVE_PATH" \
+            gh release upload "$RELEASE_TAG" "$ARCHIVE_PATH" "tools/extract_logs.py" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
           else
@@ -133,7 +134,7 @@ jobs:
               text = text.replace(source, target)
           path.write_text(text)
           PYNOTES
-            gh release create "$RELEASE_TAG" "$ARCHIVE_PATH" \
+            gh release create "$RELEASE_TAG" "$ARCHIVE_PATH" "tools/extract_logs.py" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$SOURCE_SHA" \
               --title "$RELEASE_TAG" \

@@ -22,7 +22,8 @@ def capture():
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     handler.addFilter(ContextFilter())
-    handler.setFormatter(JsonFormatter())
+    # Attribution is an internal concern; production sinks use compact defaults.
+    handler.setFormatter(JsonFormatter(compact=False))
     root = logging.getLogger()
     previous = root.level
     root.setLevel(logging.INFO)
