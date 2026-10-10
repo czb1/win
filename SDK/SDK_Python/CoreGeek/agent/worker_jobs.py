@@ -61,7 +61,8 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls):
         _, reserve = plan_day_spending(turn, cfg, mem, nav, ledger, towers)
         ok = summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls,
                                excluded={h.id for h in turn.heroes if h.id != hero.id},
-                               reserve=reserve, item_only=job['name'], shop_only=target)
+                               reserve=reserve, item_only=job['name'], shop_only=target,
+                               quantity_limit=job['quantity'])
     elif kind == 'use':
         ok = use_inventory(turn, nav, ledger, hero, mem=mem,
                            target_only=target, name_only=job['name'])
