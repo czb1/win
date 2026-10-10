@@ -14,7 +14,7 @@ def repair_context(code, diagnostics):
     parsers = diagnostics.get('logs', {}).get('parsers', {})
     targets = [name for name, evidence in parsers.items()
                if name in functions and (evidence.get('unmatched_count') or evidence.get('error')
-                                         or evidence.get('invalid_return'))]
+                                         or evidence.get('invalid_return') or evidence.get('coverage_gap'))]
     if not targets:
         return None
     selected = set(targets)
@@ -44,6 +44,9 @@ def repair_context(code, diagnostics):
     if len(source) > 9000 or len(targets) > 8:
         return None  # Fall back to the existing complete-program workflow.
     return {'targets': targets, 'source': source,
+            'requires_full': any(parsers[name].get('invalid_return') for name in targets),
+            'callers': '\n\n'.join(ast.get_source_segment(code, n) or ast.unparse(n)
+                                      for n in tree.body if n not in dependencies),
             'failed_parser': diagnostics.get('failed_parser'),
             'parsers': {name: parsers[name] for name in targets},
             'systems': dict(list(diagnostics.get('systems', {}).items())[:8]),
@@ -77,16 +80,33 @@ def merge_repair(original, replacement, context):
             if (getattr(node, 'level', 0) or any(m.split('.')[0] not in sys.stdlib_module_names or m == '__future__' for m in modules)
                     or any(n.name == '*' for n in node.names)):
                 raise ValueError('修复只允许必要的标准库显式导入。')
-            # New aliases must not overwrite original globals used by aggregation.
-            aliases = {n.asname or (n.name.split('.')[0] if isinstance(node, ast.Import) else n.name) for n in node.names}
-            existing = {n.id for n in ast.walk(base) if isinstance(n, ast.Name)}
-            existing.update(n.name for n in base.body if isinstance(n, (ast.FunctionDef, ast.ClassDef)))
-            for old in base.body:
+            # Compare bindings individually: split/subset imports are equivalent.
+            def bindings(statement):
+                for alias in statement.names:
+                    local = alias.asname or (alias.name.split('.')[0] if isinstance(statement, ast.Import) else alias.name)
+                    origin = ('module', alias.name) if isinstance(statement, ast.Import) else (statement.module, alias.name)
+                    yield local, origin, alias
+            known, rebound = {}, set()
+            for old in base.body + imports:
                 if isinstance(old, (ast.Import, ast.ImportFrom)):
-                    existing.update(n.asname or (n.name.split('.')[0] if isinstance(old, ast.Import) else n.name) for n in old.names)
-            if ast.dump(node) not in untouched:
-                if aliases & existing:
-                    raise ValueError('新增导入不能覆盖原程序名称；请复用已有导入。')
+                    known.update((local, origin) for local, origin, _ in bindings(old))
+                    rebound.difference_update(local for local, _, _ in bindings(old))
+                else:
+                    # Do not treat function-local variables as module bindings.
+                    if isinstance(old, (ast.FunctionDef, ast.ClassDef)):
+                        rebound.add(old.name)
+                    else:
+                        rebound.update(n.id for n in ast.walk(old)
+                                       if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store))
+            fresh = []
+            for local, origin, alias in bindings(node):
+                if local in rebound or local in known and known[local] != origin:
+                    raise ValueError('导入名称冲突：%s；原来源=%s，新来源=%s；语句=%s。请复用原绑定或使用新别名。'
+                                     % (local, '程序变量' if local in rebound else known.get(local), origin, ast.unparse(node)))
+                if local not in known:
+                    fresh.append(alias)
+            if fresh:
+                node.names = fresh
                 imports.append(node)
         else:
             raise ValueError('只输出失败解析函数的完整定义；不输出主程序、聚合或 task_result。')
