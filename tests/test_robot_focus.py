@@ -3,14 +3,15 @@ import unittest
 
 from test_agent import unit
 from test_robot_assault import assault_payload, controlled_robot
-from test_robot_path_blockers import decide
+from test_robot_path_blockers import decide, seal_base
 from agent.commands import command
 
 
 def split_blockers():
     data = assault_payload(robot=controlled_robot(x=6, y=3))
-    data['teamOur']['summonRobotList'].append(controlled_robot(30001, 6, 5))
+    data['teamOur']['summonRobotList'].append(controlled_robot(30001, 5, 5))
     data['teamEnemy']['roles'] += [unit(70, 'wall', 8, 3), unit(71, 'rocket', 8, 5)]
+    seal_base(data)
     return data
 
 

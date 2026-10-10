@@ -88,19 +88,27 @@ def act_night_scout(turn, memory, nav, ledger, home_roles=()):
         if route is not None:
             routes.append((coverage[goal], goal, route))
     if routes:
-        # Keep a useful observation post through small changes in robot stance.
-        choice = min(routes, key=lambda row: (-(row[0] + (2 if row[1] == memory.post else 0)),
+        # Establish useful sight soon instead of crossing the entire frontage
+        # for a marginally larger footprint. Prefer full base coverage when
+        # available, then discount corridor coverage by travel time. Four turns
+        # keep nearby gains useful without abandoning an established post for
+        # small improvements; the existing two-point retention bonus remains.
+        base_coverage = {p: sum(distance(p, cell) <= 4 for cell in base.cells) for p in goals}
+        choice = min(routes, key=lambda row: (-base_coverage[row[1]],
+                     -(row[0] + (2 if row[1] == memory.post else 0)) / (4 + row[2][0]),
                      row[2][0], row[1]))
         score, goal, route = choice
         memory.post = goal
         if route[1] is None:
             ledger.used.add(scout.id)
             ledger.reserved.add(scout.pos)
-            ledger.explain(scout.id, 'night_scout_hold', post=goal, coverage=score)
+            ledger.explain(scout.id, 'night_scout_hold', post=goal, coverage=score,
+                           post_base_cells=base_coverage[goal])
             return scout
         if ledger.add(scout.id, command('move', route[1])):
             ledger.explain(scout.id, 'night_scout_approach', post=goal,
-                           coverage=score, route_steps=route[0])
+                           coverage=score, route_steps=route[0],
+                           post_base_cells=base_coverage[goal])
             return scout
 
     # If a wave closes the safe route, retain this worker's role. A threatened

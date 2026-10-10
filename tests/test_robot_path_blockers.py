@@ -8,7 +8,17 @@ from agent.commands import command
 from agent.brain import Agent
 from agent.config import Config
 from agent.model import distance, pos
-from agent.robot_assault import RobotAssaultMemory, act_robots
+from agent.robot_assault import RobotAssaultMemory, act_robots, enemy_base, enemy_entries
+
+
+def seal_base(data, openings=()):
+    """Keep clearance fixtures unavoidable under the new bypass-first policy."""
+    turn, _, _, _ = setup_case(data)
+    occupied = {u.pos for u in turn.enemies} | set(openings)
+    data['teamEnemy']['roles'] += [unit(500+i, 'wall', *p, health=1000)
+                                 for i, p in enumerate(enemy_entries(turn, enemy_base(turn)))
+                                 if p not in occupied]
+    return data
 
 
 def decide(data, memory=None):
@@ -19,11 +29,12 @@ def decide(data, memory=None):
 
 
 class RobotPathBlockerTests(unittest.TestCase):
-    def test_each_enemy_building_or_character_on_the_ray_is_attacked_first(self):
+    def test_each_unavoidable_enemy_building_or_character_is_attacked_first(self):
         for kind in ("gatling", "railgun", "rocket", "wall", "worker", "pioneer", "imp"):
             with self.subTest(kind=kind):
                 data = assault_payload(robot=controlled_robot(x=7))
                 data["teamEnemy"]["roles"].append(unit(50, kind, 8, 4))
+                seal_base(data)
                 ledger, _ = decide(data)
                 self.assertEqual(ledger.commands["30000"], command("attack", (8, 4)))
                 self.assertEqual(ledger.notes[30000]["conditions"]["target_id"], 50)
@@ -32,15 +43,17 @@ class RobotPathBlockerTests(unittest.TestCase):
         data = assault_payload(robot=controlled_robot(x=6))
         data["teamEnemy"]["roles"] += [unit(50, "rocket", 7, 4, health=1000),
                                        unit(51, "wall", 8, 4, health=1)]
+        seal_base(data)
         ledger, _ = decide(data)
         self.assertEqual(ledger.commands["30000"], command("attack", (7, 4)))
 
-    def test_clear_worker_wall_tower_then_advance_and_attack_base(self):
+    def test_clear_unavoidable_worker_wall_then_bypass_tower_and_attack_base(self):
         data = assault_payload(robot=controlled_robot(x=6))
         data["teamEnemy"]["roles"] += [unit(50, "worker", 7, 4),
                                        unit(51, "wall", 8, 4), unit(52, "rocket", 9, 4)]
+        seal_base(data)
         memory = RobotAssaultMemory()
-        for uid, point in ((50, (7, 4)), (51, (8, 4)), (52, (9, 4))):
+        for uid, point in ((50, (7, 4)), (51, (8, 4))):
             ledger, _ = decide(data, memory)
             self.assertEqual(ledger.commands["30000"], command("attack", point))
             next(r for r in data["teamEnemy"]["roles"] if r["id"] == uid)["health"] = 0
@@ -48,7 +61,9 @@ class RobotPathBlockerTests(unittest.TestCase):
         ledger, _ = decide(data, memory)
         action = ledger.commands["30000"]
         self.assertEqual(action["action"], "move")
-        data["teamOur"]["summonRobotList"][0]["pos"] = action["targetPos"][0]
+        self.assertEqual(ledger.notes[30000]['conditions']['target_id'], 99)
+        # A later observed firing stance bypasses the still-live inner tower.
+        data["teamOur"]["summonRobotList"][0]["pos"] = {'x': 9, 'y': 3}
         data["roundNo"] += 1
         ledger, _ = decide(data, memory)
         self.assertEqual(ledger.commands["30000"]["action"], "attack")
@@ -58,6 +73,7 @@ class RobotPathBlockerTests(unittest.TestCase):
     def test_expected_lethal_damage_does_not_skip_a_live_blocker(self):
         data = assault_payload(robot=controlled_robot(x=7))
         data["teamEnemy"]["roles"].append(unit(50, "wall", 8, 4, health=1))
+        seal_base(data)
         ledger, memory = decide(data)
         data["roundNo"] += 1
         data["lastRoundRoleActionResults"] = {"30000": True}
@@ -76,6 +92,7 @@ class RobotPathBlockerTests(unittest.TestCase):
             with self.subTest(flip_x=flip_x, flip_y=flip_y):
                 data = assault_payload(robot=controlled_robot(x=7))
                 data["teamEnemy"]["roles"].append(unit(50, "rocket", 8, 4))
+                seal_base(data)
                 expected = (14 - 8 if flip_x else 8, 14 - 4 if flip_y else 4)
                 for roles in (data["teamOur"]["roles"], data["teamEnemy"]["roles"],
                               data["teamOur"]["summonRobotList"]):
@@ -129,6 +146,7 @@ class RobotObstacleMemoryTests(unittest.TestCase):
 
     def test_previously_seen_hidden_weapon_can_be_cleared(self):
         data, memory = self.hidden_weapon()
+        seal_base(data, openings={(8, 4)})
         ledger, _ = decide(data, memory)
         self.assertEqual(ledger.commands["30000"], command("attack", (8, 4)))
         self.assertEqual(ledger.notes[30000]["conditions"]["target_source"], "last_seen_building")
@@ -137,30 +155,28 @@ class RobotObstacleMemoryTests(unittest.TestCase):
         data = assault_payload(round_no=65)
         data["teamOur"]["summonRobotList"] = []
         data["teamEnemy"]["roles"].append(unit(50, "rocket", 8, 4))
+        seal_base(data)
         agent = Agent(Config(layout_mode="explicit", llm_enabled=False))
         agent.decide(data)
         data["roundNo"] = 71
         data["teamOur"]["summonRobotList"] = [controlled_robot(x=6)]
-        data["teamEnemy"]["roles"] = data["teamEnemy"]["roles"][:1]
+        data["teamEnemy"]["roles"] = [r for r in data["teamEnemy"]["roles"] if r['id'] != 50]
         response = agent.decide(data)
         self.assertEqual(response["roleCommandMap"]["30000"], command("attack", (8, 4)))
 
     def test_repeated_invalid_hidden_target_is_bypassed_until_seen_again(self):
-        # Keep every in-range base ray behind this weapon after the closer
-        # retry, without moving the base mid-match and resetting its history.
+        # Consume historical failed shots independently of today's route
+        # preference; a hidden obstacle must still be retained but not retried.
         data, memory = self.hidden_weapon(base_y=5)
-        decide(data, memory)
-        data["roundNo"] += 1
-        data["lastRoundRoleActionResults"] = {"30000": False}
-        ledger, _ = decide(data, memory)
-        self.assertEqual(ledger.commands["30000"]["action"], "move")
-        data["teamOur"]["summonRobotList"][0]["pos"] = ledger.commands["30000"]["targetPos"][0]
-        data["roundNo"] += 1
-        data["lastRoundRoleActionResults"] = {"30000": True}
-        ledger, _ = decide(data, memory)
-        self.assertEqual(ledger.commands["30000"], command("attack", (8, 4)))
-        data["roundNo"] += 1
-        data["lastRoundRoleActionResults"] = {"30000": False}
+        for x in (6, 7):
+            data['teamOur']['summonRobotList'][0]['pos'] = {'x': x, 'y': 4}
+            turn, _, _, _ = setup_case(data)
+            memory.observe(turn, enemy_base(turn))
+            memory.remember(turn, turn.summon_robots[0], 'attack', (8, 4), 50)
+            data['roundNo'] += 1
+            data['lastRoundRoleActionResults'] = {'30000': False}
+            turn, _, _, _ = setup_case(data)
+            memory.observe(turn, enemy_base(turn))
         ledger, _ = decide(data, memory)
         self.assertIn(50, memory.rejected_buildings)
         self.assertIn(50, memory.buildings)  # Failure is not proof of death.
@@ -171,9 +187,8 @@ class RobotObstacleMemoryTests(unittest.TestCase):
         data["teamEnemy"]["roles"].append(unit(50, "rocket", 8, 4, health=120))
         ledger, _ = decide(data, memory)
         self.assertNotIn(50, memory.rejected_buildings)
-        # The old rejected stance remains excluded, but the visible target
-        # can again be cleared from a new firing position.
-        self.assertEqual(ledger.notes[30000]["conditions"]["target_id"], 50)
+        self.assertEqual(memory.buildings[50].health, 120)
+        self.assertEqual(ledger.notes[30000]["conditions"]["target_id"], 99)
 
     def test_reported_death_or_absence_in_shared_vision_removes_cached_weapon(self):
         for evidence in ("death", "vision"):
@@ -213,12 +228,12 @@ class RobotObstacleMemoryTests(unittest.TestCase):
                                                     targetTeam="challenger") for i in range(3)]
         data["robot"]["roles"] = copy.deepcopy(data["teamOur"]["summonRobotList"])
         ledger, _ = decide(data, memory)
-        # The first robot has no clear base-directed target. The second can
-        # clear a tower on another ray without moving through the third robot;
-        # the third now concentrates on that same reachable path obstruction.
-        self.assertEqual(ledger.commands["31035"]["action"], "move")
-        self.assertEqual(ledger.commands["31036"], command("attack", (8, 20)))
-        self.assertEqual(ledger.commands["31037"], command("attack", (8, 20)))
+        # The towers remain obstacles, but all robots have an open detour.
+        for uid in (31035, 31036, 31037):
+            self.assertEqual(ledger.commands[str(uid)]['action'], 'move')
+            self.assertEqual(ledger.notes[uid]['conditions']['target_id'], 10013)
+            self.assertNotIn(pos(ledger.commands[str(uid)]['targetPos'][0]),
+                             {(8, 20), (8, 22), (9, 20)})
         action = ledger.commands["31035"]
         self.assertEqual(distance(pos(action["targetPos"][0]), (6, 18)), 1)
         self.assertTrue(all("controllerId" not in action for action in ledger.commands.values()))
