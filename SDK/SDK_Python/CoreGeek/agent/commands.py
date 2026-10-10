@@ -26,6 +26,9 @@ class Ledger:
         self.purchases = set()
         self.summon_pending_positions = set()
         self.summon_daily_count = 0
+        # Only previously observed, stationary enemy weapons may be added by
+        # robot assault memory. They remain estimates, not current visibility.
+        self.robot_known_enemies = ()
         self.upgrade_claims = set()
         self.repair_claims = set()
         self.mine_claims = {}
@@ -141,7 +144,7 @@ class Ledger:
             elif action == "attack":
                 if (unit.attack_range <= 0 or distance(unit.pos, target) > unit.attack_range
                         or not any(target in enemy.cells and enemy.kind in (*CHARACTERS, *WEAPONS, "wall", "station")
-                                   for enemy in self.turn.enemies)):
+                                   for enemy in (*self.turn.enemies, *self.robot_known_enemies))):
                     return self._reject("robot_attack_requires_enemy_in_range")
             else:
                 return self._reject("robot_action_unsupported")
