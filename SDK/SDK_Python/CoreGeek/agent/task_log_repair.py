@@ -44,6 +44,7 @@ def repair_context(code, diagnostics):
     if len(source) > 9000 or len(targets) > 8:
         return None  # Fall back to the existing complete-program workflow.
     return {'targets': targets, 'source': source,
+            'failed_parser': diagnostics.get('failed_parser'),
             'parsers': {name: parsers[name] for name in targets},
             'systems': dict(list(diagnostics.get('systems', {}).items())[:8]),
             'errors': diagnostics.get('logs', {}).get('errors', [])[:8]}

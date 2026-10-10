@@ -102,3 +102,34 @@ def front_sites(turn, sites):
 def wall_level_limit(turn, position, sites=None):
     """Every side can reach level three; upgrade order controls the stages."""
     return 3
+
+
+def delivery_destination(turn, nav, ledger, hero):
+    """Return to an actual night job, or a safe inner-wall work position.
+
+    Maxed firepower does not release an assigned operator from its post.
+    Unassigned couriers need shelter, not a trip to an arbitrary turret.
+    Sparse layouts keep the existing weapon/base return destination.
+    """
+    from .mining import return_destination
+    if hero.id in ledger.operator_posts:
+        return [ledger.operator_posts[hero.id]], True
+    sites = ledger.wall_cells
+    if turn.day >= 4 and turn.is_day and turn.weapons and all(w.level >= 3 for w in turn.weapons):
+        from .wall_watch import geometry
+        if sites and turn.station:
+            xs, ys = zip(*sites)
+            bx, by = zip(*turn.station.cells)
+            enclosed = (min(xs) < min(bx) and max(xs) > max(bx)
+                        and min(ys) < min(by) and max(ys) > max(by))
+            built = {w.pos for w in turn.ours if w.kind == 'wall'}
+            if enclosed and set(sites) <= built:
+                inside, _ = geometry(turn, sites)
+                danger = {p for p in inside for r in turn.robots
+                          if turn.threatens_us(r) and max(abs(p[0]-r.pos[0]), abs(p[1]-r.pos[1]))
+                          <= r.attack_range + 1}
+                goals = inside - danger - set(ledger.operator_posts.values())
+                if nav.search(hero, goals, ledger.reserved):
+                    return goals, True
+    return return_destination(turn, nav, ledger, hero)
+

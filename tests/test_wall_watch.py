@@ -280,9 +280,9 @@ class WallWatchTests(unittest.TestCase):
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(wall_watch_id=2)
         locked, reserved = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
-        self.assertFalse(locked)
-        self.assertEqual(reserved, 30)
-        ledger.gold -= reserved
+        self.assertTrue(locked)
+        self.assertEqual(reserved, 0)
+        self.assertEqual(ledger.commands['2'], {'action': 'buy', 'name': 'WallFixer', 'num': 3})
         self.assertEqual(ledger.gold, t.shop['WallUpgradeVoucher1'])
         self.assertTrue(any(wall_purchase_allowed(t, w, mem)
                             for w in t.ours if w.kind == 'wall'))
@@ -450,3 +450,4 @@ class WallWatchTests(unittest.TestCase):
         self.assertIn(2, ledger.used)
         destination = ledger.commands['2']['targetPos'][0]
         self.assertNotIn((destination['x'], destination['y']), corridor)
+

@@ -75,7 +75,11 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         return False, 0
     held = hero.inventory['WallFixer']
     price = turn.shop.get('WallFixer')
-    target = min(mem.wall_watch.stock_target(turn), hero.capacity)
+    from .wall_health import needs_day_repair
+    # Buy planned daylight repairs in addition to the adaptive night reserve.
+    repairs = [w for w in walls if needs_day_repair(w, turn) and w.health >= 500
+               and w.level == 3 and watch_route(turn, nav, ledger, mem, hero, sites, w)]
+    target = min(mem.wall_watch.stock_target(turn) + len(repairs), hero.capacity)
     need = max(0, target - held)
     # Guarantee up to three packs first. Optional stock must leave money for
     # missing weapons, the next firepower upgrade and a needed wall voucher.
@@ -151,7 +155,8 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     shop = min(feasible_shops, key=lambda o: (o[2] != previous_shop, o[0]), default=None)
     if shop is None:
         shop = min(shops, key=lambda o: o[0], default=None)
-    if shop is None:
+    feasible_stock_trip = bool(shop and shop[0] + cfg.return_margin < turn.day_left)
+    if not feasible_stock_trip:
         funds = 0
     else:
         ledger.watch_pack_slots[hero.id] = quota
@@ -170,7 +175,12 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     sale_trip = min((trip for trip in trips if trip is not None), default=None)
     if sale_trip is not None:
         budget = max(budget, sale_trip + len(ores) + int(bool(quota)) + cfg.return_margin + 1)
-    if turn.tick < cfg.economy_rounds and turn.day_left > budget:
+    # A funded stock trip starts immediately once firepower is ready. Before
+    # that, recall is determined by this complete trip, including sale, not a
+    # fixed tick 60 switch. Keep two turns before the last feasible departure.
+    firepower_ready = bool(turn.weapons and all(w.level >= 3 for w in turn.weapons))
+    if (turn.tick < cfg.economy_rounds and turn.day_left > budget + 2
+            and not (quota and feasible_stock_trip and firepower_ready)):
         report('reserve', 'daytime_production')
         return False, funds
     if hero.health <= 165 and hero.inventory['Medicine']:
@@ -183,6 +193,11 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         from .economy import use_inventory
         if use_inventory(turn, nav, ledger, hero, mem=mem):
             report('repair', 'daytime_low_wall')
+            return True, 0
+    if held > mem.wall_watch.stock_target(turn) and repairs:
+        from .economy import use_inventory
+        if use_inventory(turn, nav, ledger, hero, mem=mem, name_only='WallFixer'):
+            report('repair', 'pre_wave_repair')
             return True, 0
     # Sell the watcher's own ore before shopping, including while carrying
     # packs. Keep enough daylight for the vendor, shop and inside return.
@@ -222,6 +237,10 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
                     ledger.watch_pack_slots[hero.id] = 0
                 elif route[1] is not None:
                     ledger.remember_work(hero, 'buy', shop[2], name='WallFixer', quantity=count)
+                    ledger.purchases.add('WallFixer')
+                    funds = count * price if price is not None and price > 0 else 0
+                if added:
+                    ledger.watch_pack_slots[hero.id] = count
                 report('move' if route[1] else 'buy', 'restock' if added else 'command_rejected', count=count)
                 return True, funds if route[1] else 0
     ledger.watch_pack_slots[hero.id] = 0
@@ -233,6 +252,10 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         ledger.daytime_waits[hero.id] = 'empty_watch'
         report('work', 'resume_local_production', steps=home[0])
         return True, 0
+    if (held >= mem.wall_watch.stock_target(turn)
+            and turn.day_left > home[0] + 2 * cfg.return_margin):
+        report('work', 'stock_ready_use_remaining_daylight', steps=home[0])
+        return False, 0
     if home[1] is not None:
         if not ledger.add(hero.id, command('move', home[1])):
             ledger.daytime_waits[hero.id] = 'command_rejected'
@@ -299,3 +322,4 @@ def repair_watch(turn, mem, nav, ledger, hero, sites):
     mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, action=action,
                             reason=reason, held=held, critical=[w.id for w in critical])
     return True
+

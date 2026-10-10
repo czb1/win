@@ -207,10 +207,12 @@ else:
 
 # LOG_AUDIT_SETUP
 
-def parser_exception():
+def parser_exception(name):
     error = sys.exc_info()[1]
-    if isinstance(error, (ValueError, OSError)):
-        log_error("caught_parser_error", type(error).__name__ + ": " + str(error))
+    if isinstance(error, Exception):
+        detail = type(error).__name__ + ": " + str(error)
+        log_report['parsers'].setdefault(name, {})['error'] = detail[:240]
+        log_error("caught_parser_error", name + ": " + detail)
 
 def instrument(tree):
     for node in tree.body:
@@ -222,7 +224,7 @@ def instrument(tree):
                 node.decorator_list.append(ast.Name(id="_task_audit_parser", ctx=ast.Load()))
                 for handler in ast.walk(node):
                     if isinstance(handler, ast.ExceptHandler):
-                        handler.body.insert(0, ast.Expr(value=ast.Call(func=ast.Name(id="_task_parser_exception", ctx=ast.Load()), args=[], keywords=[])))
+                        handler.body.insert(0, ast.Expr(value=ast.Call(func=ast.Name(id="_task_parser_exception", ctx=ast.Load()), args=[ast.Constant(value=node.name)], keywords=[])))
             if TASK_LOG and node.name.startswith("merge_") and "event" in node.name:
                 node.decorator_list.append(ast.Name(id="_task_audit_merge", ctx=ast.Load()))
     ast.fix_missing_locations(tree)

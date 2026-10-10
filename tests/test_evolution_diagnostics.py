@@ -117,7 +117,7 @@ task_result({'count':0})
         from agent.task_skills import learned_method
         contract = {'input_kind':'logs','family':'sensor/task#.md','example':{'count':0}}
         code = "def parse_sensor_line(line):\n return ('sensor',line,'BAD' in line)"
-        skill = learned_method((6,5), contract, parser=code, rules='故障定义：BAD')
+        skill = learned_method((6,5), contract, parser=code, rules='故障定义：BAD', parser_evidence={'parse_sensor_line':{'record_contract':'structured-v1'}})
         mem = Memory(task_point=(6,5), contract=contract, skills=[skill],
                      documents=[{'output':'复用解析。\n\n故障定义：WARN'}])
         self.assertIsNone(mem.reusable_parser())

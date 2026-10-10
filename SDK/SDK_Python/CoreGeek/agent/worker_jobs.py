@@ -55,6 +55,13 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls):
         ok = buy_supply(turn, ledger, hero, plan)
         if ok:
             mem.supply_worker = hero.id
+    elif kind == 'robot_buy':
+        from .brain import summon_best_robot
+        from .spending import plan_day_spending
+        _, reserve = plan_day_spending(turn, cfg, mem, nav, ledger, towers)
+        ok = summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls,
+                               excluded={h.id for h in turn.heroes if h.id != hero.id},
+                               reserve=reserve, item_only=job['name'], shop_only=target)
     elif kind == 'use':
         ok = use_inventory(turn, nav, ledger, hero, mem=mem,
                            target_only=target, name_only=job['name'])
@@ -140,7 +147,7 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
     # A builder spending first would make the buyer reserve the same missing
     # gun again and needlessly cancel an already accepted shopping journey.
     for hero in sorted(turn.workers, key=lambda h: (
-            mem.daytime_jobs.get(h.id, {}).get('kind') != 'buy', h.id)):
+            {'buy': 0, 'robot_buy': 2}.get(mem.daytime_jobs.get(h.id, {}).get('kind'), 1), h.id)):
         job = mem.daytime_jobs.get(hero.id)
         if not job:
             continue
@@ -155,3 +162,4 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
         mem.daytime_jobs.pop(hero.id, None)
         LOG.info('round=%s worker=%s daytime_job=release kind=%s target=%s reason=%s',
                  turn.round, hero.id, job['kind'], job['target'], reason)
+
