@@ -107,7 +107,8 @@ class WallDaylightPriorityTests(unittest.TestCase):
 
     def test_released_income_worker_starts_upgrade_preparation_at_thirty_five(self):
         case = test_daytime_task_continuity.DaytimeTaskContinuityTests()
-        p = case.case(35)
+        # Main now defers weapon upgrades until day two.
+        p = case.case(130 + 35)
         t, cfg, nav, ledger = case.setup(p)
         mem = Memory(daytime_jobs={1: dict(kind='mine', target=(8, 8), ore='copper',
                                           want_stone=False, stockpile=True, deadline=None)})

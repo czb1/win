@@ -370,7 +370,6 @@ class Memory:
     mine_collected: dict = field(default_factory=dict)
     supply_worker: int | None = None
     build_targets: dict = field(default_factory=dict)
-    front_wall_job: dict = field(default_factory=dict)
     upgrade_targets: dict = field(default_factory=dict)
     recovery: Recovery = field(default_factory=Recovery)
     stone_reserves: dict = field(default_factory=dict)

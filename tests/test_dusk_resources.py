@@ -12,7 +12,9 @@ from agent.intelligence import Memory
 
 class DuskResourceTests(unittest.TestCase):
     def case(self, tick=60, gold=600):
-        p = payload(tick, [unit(1, "worker", 2, 2, health=220),
+        # Ordinary upgrade shopping begins on day two.
+        round_no = 130 + tick if tick < 70 else tick
+        p = payload(round_no, [unit(1, "worker", 2, 2, health=220),
                            unit(13, "station", 0, 2, health=1500),
                            unit(20, "rocket", 3, 3, level=2),
                            unit(30, "wall", 3, 2, health=1000)])
@@ -72,7 +74,7 @@ class DuskResourceTests(unittest.TestCase):
         self.assertEqual(l.commands["1"], command("buy", name="WallUpgradeVoucher1", num=1))
 
     def test_wall_batch_policy_starts_on_day_four(self):
-        # The new late-cash sweep must not change the first three days. On
+        # The late-cash wall batching policy is unchanged on days two/three. On
         # day 3 a wall purchase remains the established single-voucher path;
         # day 4 may batch only when the complete route fits before night.
         for round_no, expected_max in ((320, 1), (450, 2)):
@@ -83,10 +85,10 @@ class DuskResourceTests(unittest.TestCase):
             self.assertLessEqual(plan[2], expected_max)
 
     def test_sweep_starts_after_farming_and_resets_each_day(self):
-        for round_no, origin, active in ((34, 0, False), (35, 0, True), (59, 0, True),
-                                         (70, 0, False), (164, 0, False),
-                                         (165, 0, True), (189, 0, True),
-                                         (35, 1, False), (36, 1, True)):
+        for round_no, origin, active in ((164, 0, False), (165, 0, True), (189, 0, True),
+                                         (200, 0, False), (294, 0, False),
+                                         (295, 0, True), (319, 0, True),
+                                         (165, 1, False), (166, 1, True)):
             with self.subTest(round_no=round_no, origin=origin):
                 t, c, n, l = self.setup(self.case(round_no), round_origin=origin)
                 dusk_resources(t, c, Memory(), n, l, [(3, 3)])
@@ -101,7 +103,7 @@ class DuskResourceTests(unittest.TestCase):
         mem = Memory()
         dusk_resources(t, c, mem, n, l, [(3, 3)])
         self.assertEqual(l.commands['1']['action'], 'sell')
-        p['roundNo'] = 41
+        p['roundNo'] = 171
         p['teamOur']['roles'][0]['backpack'] = []
         p['teamOur']['goldNum'] = 160
         t, c, n, l = self.setup(p)
@@ -239,7 +241,7 @@ class DuskResourceTests(unittest.TestCase):
             cfg = Config(layout_mode="explicit", loadout=["rocket"], llm_enabled=False)
             agent = Agent(cfg)
             for tick in range(60, 70):
-                p["roundNo"] = tick
+                p["roundNo"] = 130 + tick
                 t, _, _, ledger = setup_case(p, layout_mode="explicit", loadout=["rocket"])
                 response = agent.decide(p)
                 for uid, cmd in response["roleCommandMap"].items():

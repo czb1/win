@@ -903,7 +903,8 @@ def main(argv=None):
                 files["tasks"].write("FWLOG " + encoded + "\n")
                 counts["task_records"] += 1
             for name, category in (("turns", "snapshot"), ("decisions", "decision"), ("feedback", "feedback")):
-                if name in files and record.get("category") == category:
+                if name in files and (record.get("category") == category
+                                      or name == "decisions" and record.get("event") == "spending_plan"):
                     files[name].write(encoded + "\n")
             if "errors" in files and (record_value(record, "level") in ("WARNING", "ERROR", "CRITICAL")
                                        or record.get("event") in ("judger_errors", "log_integrity")):

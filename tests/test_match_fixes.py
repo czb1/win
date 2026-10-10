@@ -94,7 +94,7 @@ class SuppliesTests(unittest.TestCase):
         self.assertTrue(response["roleCommandMap"])
 
     def case(self, **kw):
-        p = payload(roles=[unit(1, "worker", 5, 5, backpack=["Medicine"], **kw),
+        p = payload(131, roles=[unit(1, "worker", 5, 5, backpack=["Medicine"], **kw),
                            unit(20, "rocket", 4, 5)])
         p["teamOur"]["goldNum"] = 200
         p["mapInfo"]["zones"] = [{"neutralType": "weaponShop", "pos": {"x": 6, "y": 5}},
@@ -132,8 +132,8 @@ class SuppliesTests(unittest.TestCase):
 
     def test_buy_failure_backs_off_and_still_works(self):
         p = self.case()
-        p.update(roundNo=2, lastRoundRoleActionResults={"1": False})
-        mem = Memory(last_round=1, last_commands={"1": command("buy", name="WeaponUpgradeVoucher1", num=1)})
+        p.update(roundNo=132, lastRoundRoleActionResults={"1": False})
+        mem = Memory(last_round=131, last_commands={"1": command("buy", name="WeaponUpgradeVoucher1", num=1)})
         mem.observe(Turn(p, Config()), Config())
         self.assertNotEqual(self.decide_worker(p, mem)["action"], "buy")
 
@@ -148,7 +148,7 @@ class SuppliesTests(unittest.TestCase):
 
     def test_no_shop_trip_without_time_to_deliver(self):
         p = self.case()
-        p["roundNo"] = 69
+        p["roundNo"] = 199
         self.assertNotEqual(self.decide_worker(p)["action"], "buy")
 
     def test_station_and_damaged_wall_vouchers_have_real_purchase_paths(self):
@@ -201,7 +201,7 @@ class SuppliesTests(unittest.TestCase):
         self.assertEqual(result["early_station_purchases"], 0)
         self.assertEqual(result["dusk_vouchers"], [0] * 5)
         self.assertGreater(result["purchases"]["Medicine"], 0)
-        self.assertLess(result["first_rounds"]["used_WeaponUpgradeVoucher2"], 70)
+        self.assertGreaterEqual(result["first_rounds"]["used_WeaponUpgradeVoucher2"], 130)
         # Count gold converted into wall health alongside cash: the previous
         # floor accidentally rewarded never buying level-3 wall upgrades.
         wall_spend = sum(result["purchases"].get(f"WallUpgradeVoucher{level}", 0) * price

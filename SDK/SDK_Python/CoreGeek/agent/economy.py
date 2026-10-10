@@ -288,6 +288,8 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
         return ledger.add(hero.id, command("use", name="Medicine"))
     upgrades = []
     for building in turn.ours:
+        if turn.day == 1 and building.kind in WEAPONS:
+            continue
         if target_only is not None and building.pos != target_only:
             continue
         if urgent_only and not (building.kind == 'station' and critical_station(turn, building, mem)
@@ -380,6 +382,14 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     emptied by the worker before buying, and duplicate walking buyers reserve
     both their item and the shared gold for this decision.
     """
+    # First-day construction is followed by BOSS shopping. Do not let normal
+    # buying or a continued voucher job spend that opening surplus.
+    if turn.day == 1:
+        from .spending import first_day_boss_phase
+        if first_day_boss_phase(turn, cfg) or item_only and item_only != 'Medicine':
+            ledger.supply_reports.setdefault(hero.id, {'reasons': []})['reasons'].append(
+                {'reason': 'first_day_boss_priority'})
+            return None
     dusk = turn.is_day and turn.tick >= DUSK_SPEND_TICK
     # Ordinary dusk items remain single purchases. Walls may share one trip
     # only after the complete batch's delivery/return budget has been checked.
@@ -401,7 +411,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     wounded = hero.health <= (165 if hero.kind == "worker" else 150)
     if not hero.inventory["Medicine"] and wounded:
         candidates.append(((-2 if hero.health <= 110 else -.5,), "Medicine", hero.cells))
-    if not urgent_only:
+    if not urgent_only and turn.day > 1:
         carried = Counter(item for h in turn.heroes for item in h.backpack)
         own_carried = hero.inventory.copy()
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
@@ -662,7 +672,7 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
         buy_supply(turn, ledger, hero, plan)
 
 
-def wall_keeps_access(turn, nav, ledger, target, max_gun_detour=0):
+def wall_keeps_access(turn, nav, ledger, target):
     destinations = [turn.station.cells] if turn.station else []
     for kind in ("vendor", "weaponShop", *ORES):
         cells = {p for p, k in turn.zones.items() if k == kind}
@@ -687,9 +697,9 @@ def wall_keeps_access(turn, nav, ledger, target, max_gun_detour=0):
         gun_routes = [(h, p, r[0]) for h in heroes for p in unfinished_guns
                       if (r := nav.approach(h, {p})) is not None]
         turn.blocked = turn.blocked | {target}
-        # Ordinary walls must not lengthen unfinished-gun routes. The opening
-        # batch can explicitly allow a small detour, never lost connectivity.
-        if any((r := nav.approach(h, {p})) is None or r[0] > length + max_gun_detour
+        # A wall must not lengthen access to a gun still under construction.
+        # Reachability alone allows huge detours and courier/builder oscillation.
+        if any((r := nav.approach(h, {p})) is None or r[0] > length
                for h, p, length in gun_routes):
             return False
         if not all(nav.approach(h, ds) is not None for h, ds in reachable):
@@ -704,7 +714,7 @@ def wall_keeps_access(turn, nav, ledger, target, max_gun_detour=0):
         turn.blocked = original
 
 
-def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None, max_gun_detour=0):
+def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
     options = []
     wall_chain = {w.pos for w in turn.ours if w.kind == "wall" and w.pos in ledger.wall_cells}
     wall_chain.update(pos(c["targetPos"][0]) for c in ledger.commands.values()
@@ -742,7 +752,7 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None, ma
             options.append((priority, route[0], continuity, index, target, route))
     for _, _, _, index, target, route in sorted(options):
         name = name_for(index)
-        if name == "wall" and not wall_keeps_access(turn, nav, ledger, target, max_gun_detour):
+        if name == "wall" and not wall_keeps_access(turn, nav, ledger, target):
             continue
         action = command("move", route[1]) if route[1] is not None else command("build", target, name=name)
         if ledger.add(hero.id, action):
@@ -1234,13 +1244,13 @@ def pioneer_task_options(turn, cfg, mem, nav, ledger, hero):
     return options
 
 
-def pioneer(turn, cfg, mem, nav, ledger, hero):
+def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
     if use_inventory(turn, nav, ledger, hero, mem=mem):
         if mem.treasure:
             mem.trace_treasure(turn, "treasure_progress", dedupe=True, reason="use_inventory")
         return
     # The pioneer can carry its own medicine; there is no transfer action.
-    if not hero.inventory["Medicine"] and hero.health <= 150:
+    if shopping and not hero.inventory["Medicine"] and hero.health <= 150:
         plan = supplies(turn, cfg, mem, nav, ledger, hero, urgent_only=True)
         if buy_supply(turn, ledger, hero, plan):
             if mem.treasure:
@@ -1272,7 +1282,7 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
             if missing:
                 name = next(iter(missing))
                 num = missing[name]
-                if name in turn.shop and hero.space >= num and ledger.gold >= turn.shop[name]*num:
+                if shopping and name in turn.shop and hero.space >= num and ledger.gold >= turn.shop[name]*num:
                     if visit(turn, nav, ledger, hero, "weaponShop", command("buy", name=name, num=num)):
                         return
             elif turn.round + route[0] + cfg.return_margin >= t["startRound"]:
@@ -1311,5 +1321,5 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
             mem.log_task_type = task.get("taskType", "自进化类")
             update_context(task_id=mem.log_task_id, task_type=mem.log_task_type)
             logging.getLogger(__name__).info("task_accept point=%s", point)
-    else:
+    elif shopping:
         prepare_treasure(turn, cfg, mem, nav, ledger, hero)
