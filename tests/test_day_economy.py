@@ -28,14 +28,9 @@ class DayEconomyTests(unittest.TestCase):
                                    ("WeaponUpgradeVoucher2", 150), ("StationUpgradeVoucher1", 100))]
         return p
 
-    def test_initial_gold_is_preserved_while_front_builder_collects_stone(self):
-        agent = Agent(Config(llm_enabled=False))
-        r = agent.decide(self.case())
-        commands = r["roleCommandMap"]
-        self.assertEqual(commands['1'], command('collect', (7, 6)))
-        # The nearby second worker temporarily reserves the front wall site.
-        self.assertEqual(commands['2']['action'], 'move')
-        self.assertFalse(any(c['action'] in ('buy', 'build') for c in commands.values()))
+    def test_initial_gold_is_not_spent_before_farming(self):
+        r = Agent(Config(llm_enabled=False)).decide(self.case())
+        self.assertEqual([c["action"] for c in r["roleCommandMap"].values()], ["collect", "collect"])
 
     def test_no_permanent_builder_when_nothing_needs_work(self):
         p = self.case(45)
