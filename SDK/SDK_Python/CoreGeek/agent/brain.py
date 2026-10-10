@@ -17,6 +17,7 @@ from .combat import (assignments, fixed_gatling_crew, operator_posts, return_pla
 from .projectiles import wall_gates
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .economy import reserve_treasure_gold
+from .economy import first_day_front
 from .economy_plan import via
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
@@ -515,6 +516,7 @@ class Agent:
                 if watch_locked:
                     returning.add(watcher.id)
                 ledger.gold -= min(watch_gold, ledger.gold)
+                first_day_front(turn, self.cfg, mem, nav, ledger, walls, returning)
                 resume_daytime_jobs(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
                 if not opening_boss:
                     _, priority_gold = plan_day_spending(

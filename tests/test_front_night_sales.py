@@ -174,8 +174,8 @@ class PerimeterTests(unittest.TestCase):
         target = next(iter(ledger.build_claims))
         self.assertEqual(abs(target[0]-6) + abs(target[1]-11), 1)
 
-    def test_moving_builder_does_not_seed_a_second_wall(self):
-        p = payload(45, [unit(13, 'station', 3, 11),
+    def test_after_first_day_moving_builder_does_not_seed_a_second_wall(self):
+        p = payload(175, [unit(13, 'station', 3, 11),
                          unit(1, 'worker', 0, 0, backpack=['stone']),
                          unit(2, 'worker', 0, 2, backpack=['stone'])])
         t, cfg, nav, ledger = setup_case(p)
