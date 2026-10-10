@@ -520,8 +520,8 @@ class Memory:
         self.build_failures = {p: r for p, r in self.build_failures.items() if r > turn.round}
         self.collect_failures = {p: r for p, r in self.collect_failures.items() if r > turn.round}
         self.buy_failures = {p: r for p, r in self.buy_failures.items() if r > turn.round}
-        # The protocol exposes no remaining-deposit field. Count only confirmed
-        # collections and forget estimates when a deposit disappears/changes.
+        # Legacy requests may omit remain. Keep a fallback count of confirmed
+        # collections; live v2 mining uses the authoritative remaining amount.
         mines = {p: k for p, k in turn.zones.items() if k in ORES}
         self.mine_collected = {p: n for p, n in self.mine_collected.items()
                                if mines.get(p) == self.mine_kinds.get(p)}
