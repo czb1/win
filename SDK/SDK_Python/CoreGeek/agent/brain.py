@@ -26,6 +26,7 @@ from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position, enemy_base
 from .spending import first_day_boss_phase, plan_day_spending, robot_purchase_plan
+from .scouting import act_night_scout
 
 LOG = logging.getLogger(__name__)
 
@@ -344,16 +345,24 @@ class Agent:
                            "hold_task": hold_task, "stop_reason": mem.stop_reason}, "evolution")
             if not turn.is_day:
                 emergency_items(turn, ledger)
-            pioneer_gunner = bool(h and turn.weapons and (not turn.is_day or not hold_task))
             mixed = (self.cfg.loadout.count("rocket") == 2 and self.cfg.loadout.count("gatling") == 1
                      and (any(w.kind == "gatling" for w in turn.weapons)
                           or mem.gatling_operator_id is not None))
+            if not turn.is_day and mixed:
+                # Establish the existing gunner before choosing a new scout.
+                # Prefer releasing the other worker's watch over this operator.
+                fixed_gatling_crew(turn, mem, nav, ledger)
+            scout = act_night_scout(turn, mem.night_scout, nav, ledger,
+                                    home_roles=(mem.gatling_operator_id, mem.wall_watch_id))
+            pioneer_gunner = bool(h and turn.weapons and (not turn.is_day or not hold_task))
             if not turn.is_day and pioneer_gunner:
                 hold_task = False
                 if turn.phase_task and not mem.stop_reason:
                     mem.stop_reason = "defence_threat" if danger else "night_role"
                     LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             excluded = ({h.id} if h and hold_task else set())
+            if scout:
+                excluded.add(scout.id)
             alive = {hero.id for hero in turn.heroes}
             mem.operator_yields = {uid: state for uid, state in mem.operator_yields.items()
                                   if not turn.is_day and uid in alive and state["until"] >= turn.round}
@@ -364,7 +373,8 @@ class Agent:
             mem.return_posts = {uid: post for uid, post in mem.return_posts.items() if uid not in excluded}
             shared = shared_crew(turn, self.cfg, mem, nav, towers, walls, excluded=excluded)
             if mixed:
-                gatling_pairs = fixed_gatling_crew(turn, mem, nav, ledger)
+                gatling_pairs = fixed_gatling_crew(turn, mem, nav, ledger,
+                                                  excluded={scout.id} if scout else ())
             if shared is not None:
                 pairs, posts = shared
                 if mixed:
@@ -431,7 +441,8 @@ class Agent:
             # A released gatling operator goes mining, rather than inheriting
             # the other worker's wall-watch role when the local wave clears.
             watcher = select_watch(turn, mem, pairs + gatling_pairs,
-                                   fixed_operator=mem.gatling_operator_id if mixed else None)
+                                   fixed_operator=mem.gatling_operator_id if mixed else None,
+                                   excluded={scout.id} if scout else ())
             ledger.return_pairs = pairs
             ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
             for actor, weapon in pairs:

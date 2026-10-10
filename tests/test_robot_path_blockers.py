@@ -214,10 +214,11 @@ class RobotObstacleMemoryTests(unittest.TestCase):
         data["robot"]["roles"] = copy.deepcopy(data["teamOur"]["summonRobotList"])
         ledger, _ = decide(data, memory)
         # The first robot has no clear base-directed target. The second can
-        # clear a tower on another ray without moving through the third robot.
+        # clear a tower on another ray without moving through the third robot;
+        # the third now concentrates on that same reachable path obstruction.
         self.assertEqual(ledger.commands["31035"]["action"], "move")
         self.assertEqual(ledger.commands["31036"], command("attack", (8, 20)))
-        self.assertEqual(ledger.commands["31037"], command("attack", (8, 22)))
+        self.assertEqual(ledger.commands["31037"], command("attack", (8, 20)))
         action = ledger.commands["31035"]
         self.assertEqual(distance(pos(action["targetPos"][0]), (6, 18)), 1)
         self.assertTrue(all("controllerId" not in action for action in ledger.commands.values()))

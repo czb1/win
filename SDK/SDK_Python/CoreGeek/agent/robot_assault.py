@@ -57,6 +57,7 @@ class RobotAssaultMemory:
     day: int | None = None
     base_id: int | None = None
     base_pos: tuple | None = None
+    focus_target_id: int | None = None
 
     def observe(self, turn, base):
         base_id = base.id if base else None
@@ -65,6 +66,7 @@ class RobotAssaultMemory:
         if changed_base:
             self.buildings.clear()
         if self.day != turn.day or changed_base:
+            self.focus_target_id = None
             self.objectives.clear()
             self.pending.clear()
             self.failed_shots.clear()
@@ -400,7 +402,7 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
     phase = "base" if target.kind == "station" else "breach" if target.kind == "wall" else "clear"
     facts = dict(phase=phase, target_id=target.id, target_kind=target.kind,
                  target_source="visible" if target in turn.enemies else "last_seen_building",
-                 observed_health=target.health)
+                 observed_health=target.health, focus_target_id=memory.focus_target_id)
     point = _firing_point(robot.pos, robot, target, memory, occupied)
     if point is not None and ledger.add(robot.id, command("attack", point)):
         memory.objectives[robot.id] = RobotObjective(point, target.id if target.kind == "wall" else None, phase)
@@ -443,14 +445,41 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
     return False
 
 
+def _focus_blocker(turn, memory, ledger, base, occupied):
+    """Coordinate exposed obstacles on base-directed rays, never hunt gunners."""
+    blocked = []
+    candidates = {}
+    for robot in turn.summon_robots:
+        if robot.id in ledger.used or robot.abnormal_state == 'dizzy':
+            continue
+        if _firing_point(robot.pos, robot, base, memory, occupied) is not None:
+            continue
+        blocked.append(robot)
+        for point in _target_points(robot.pos, base):
+            hit = _first_hit(robot.pos, point, occupied, robot.id)
+            if hit and hit[1] and hit[0].kind in (*CHARACTERS, *WEAPONS, 'wall'):
+                candidates[hit[0].id] = hit[0]
+    viable = []
+    for target in candidates.values():
+        shooters = sum(_firing_point(r.pos, r, target, memory, occupied) is not None for r in blocked)
+        if shooters:
+            viable.append((target.id != memory.focus_target_id, -shooters,
+                           min(distance(r.pos, target.pos) for r in blocked), target.id, target))
+    target = min(viable, key=lambda row: row[:-1])[-1] if viable else None
+    memory.focus_target_id = target.id if target else None
+    return target
+
+
 def act_robots(turn, memory, nav, ledger):
     base = enemy_base(turn)
     memory.observe(turn, base)
     if not turn.summon_robots:
+        memory.focus_target_id = None
         return
     ledger.robot_known_enemies = tuple(u for uid, u in memory.buildings.items()
                                        if uid not in memory.rejected_buildings)
     occupied = _occupants(turn, memory)
+    focus = _focus_blocker(turn, memory, ledger, base, occupied) if base and not turn.is_day else None
     for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
         check_time(nav.deadline)
         if robot.id in ledger.used:
@@ -468,6 +497,9 @@ def act_robots(turn, memory, nav, ledger):
         hits = [_first_hit(robot.pos, point, occupied, robot.id)
                 for point in _target_points(robot.pos, base)]
         hit = hits[0]
+        if (focus is not None and any(h and h[1] and h[0].id != base.id for h in hits)
+                and _act_toward_target(turn, memory, nav, ledger, robot, focus, occupied, attack_only=True)):
+            continue
         target = hit[0] if hit and hit[1] and hit[0].kind in (*CHARACTERS, *WEAPONS, "wall", "station") else base
         # With no base shot, a reachable enemy on another base-directed ray
         # can be cleared now instead of idling behind an unattackable obstacle.
