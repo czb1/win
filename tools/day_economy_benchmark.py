@@ -24,7 +24,7 @@ def role(uid, kind, x, y, **kw):
 
 
 def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, damage_walls=False,
-             profile="sample", seed=0, mines_per_kind=2):
+             profile="sample", seed=0, mines_per_kind=2, include_imp=False):
     if profile not in ("sample", "random", "controlled"):
         raise ValueError("unknown economy profile")
     if days < 1:
@@ -105,6 +105,9 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
         # Exclude both entire inferred building rings, including the bases.
         forbidden = {flip((x, y)) for bx, by in ((10, 24), (30, 10))
                      for x in range(bx-2, bx+4) for y in range(by-3, by+3)}
+    if include_imp:
+        roles.append(make(4, "imp", (4, 12) if profile == "controlled" else (9, 21),
+                          health=500, backPackCapability=0))
     neutral_cells = {p for _, p in neutral_zones}
 
     def respawn(kind, old=None):
@@ -133,6 +136,7 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
              "weaponShopList": [{"name": n, "price": p} for n, p in products.items()],
              "vendorShopList": [{"name": n, "price": p} for n, p in prices.items()]}
     invalid, income, spent, worst = 0, 0, 0, 0
+    invalid_before_70 = 0
     checkpoints, early_actions, first = {}, Counter(), {}
     worker_actions, mined_by_kind = Counter(), Counter()
     daily_worker_actions = {}
@@ -256,6 +260,7 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
                 first.setdefault(action + ("_"+name if name else ""), rno)
             else:
                 invalid += 1
+                invalid_before_70 += int(rno < 70)
             results[uid] = bool(legal)
         for p, n in collected.items():
             active[p][1] -= n
@@ -299,6 +304,7 @@ def simulate(Agent, Config, case="near", mirror=False, days=1, trace=False, dama
             "early_worker_actions": dict(early_actions), "actions": dict(actions),
             "purchases": dict(purchases), "first": first, "invalid_actions": invalid,
             "worker_actions_before_70": dict(worker_actions),
+            "invalid_actions_before_70": invalid_before_70,
             "mined_before_70": dict(mined_by_kind), "worker_reversals_before_70": reversals,
             "daily_worker_actions": {d: dict(c) for d, c in daily_worker_actions.items()},
             "destroyed_walls": destroyed_walls,
@@ -364,4 +370,3 @@ if __name__ == "__main__":
         args.output.write_text(output, encoding="utf-8")
     else:
         print(output, end="")
-
