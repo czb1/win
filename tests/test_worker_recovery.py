@@ -36,6 +36,7 @@ class WorkerRecoveryTests(unittest.TestCase):
 
     def test_preparation_buys_affordable_base_when_weapon_too_expensive(self):
         p = self.case()
+        p['roundNo'] += 130
         p['teamOur']['roles'][2]['level'] = 1
         p['teamOur']['goldNum'] = 25
         p['weaponShopList'].append({'name': 'WeaponUpgradeVoucher1', 'price': 100})

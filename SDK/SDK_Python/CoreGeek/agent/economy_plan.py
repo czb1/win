@@ -62,7 +62,7 @@ def preparation_start(turn, cfg, mem, nav, heroes, sites):
     vendors = [p for p, k in turn.zones.items() if k == "vendor"]
     shops = [p for p, k in turn.zones.items() if k == "weaponShop"]
     missing = sum(w.id < 0 for w in weapons)
-    upgrades = sum(w.level < 3 for w in weapons)
+    upgrades = sum(w.level < 3 for w in weapons) if turn.day > 1 else 0
     walls = [w for w in turn.ours if w.kind == "wall" and w.level < wall_level_limit(turn, w.pos)] if not upgrades else []
     front = set(front_sites(turn, [w.pos for w in turn.ours if w.kind == "wall"]))
     walls.sort(key=lambda w: (w.level, w.pos not in front, w.health, w.id))

@@ -20,7 +20,9 @@ import test_daytime_worker_idle
 
 class DaytimeTaskContinuityTests(unittest.TestCase):
     def case(self, tick=10, backpack=()):
-        p = payload(tick, [unit(13, 'station', 0, 12, level=3, health=1500),
+        # Upgrade jobs are available from day two; later absolute rounds stay intact.
+        round_no = 130 + tick if tick < 70 else tick
+        p = payload(round_no, [unit(13, 'station', 0, 12, level=3, health=1500),
                            unit(1, 'worker', 4, 8, health=220, backpack=list(backpack)),
                            unit(20, 'rocket', 3, 11), unit(21, 'rocket', 10, 11)])
         p['teamOur']['goldNum'] = 1000

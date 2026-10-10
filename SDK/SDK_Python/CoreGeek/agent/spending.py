@@ -1,9 +1,15 @@
-"""Allocate executable defensive work before spending surplus on offense."""
-from .economy_plan import front_sites, planned_weapons, delivery_destination, via
+"""Reserve construction/upgrades and spend the remaining gold on robots."""
+from .economy_plan import front_sites, planned_weapons
 from .model import SUMMON_ORDERS
 
 
+def first_day_boss_phase(turn, cfg):
+    """Opening gold funds the configured guns first, then only BOSS orders."""
+    return turn.day == 1 and len(turn.weapons) >= min(3, len(cfg.loadout))
+
+
 def defenses_ready(turn, cfg, towers, walls, mem=None, ledger=None):
+    """Observed readiness diagnostic; robot shopping does not require it."""
     built = {w.pos: w for w in turn.ours if w.kind == 'wall'}
     count = min(len(towers), len(cfg.loadout), 3)
     if not (turn.station and turn.weapons and built
@@ -36,7 +42,8 @@ def plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded=()):
     construction = sum(w.id < 0 for w in planned) * cfg.weapon_cost
     actors, purchases = set(), {}
     free = [h for h in turn.workers if h.id not in ledger.used and h.id not in excluded]
-    for hero in free:
+    # Opening surplus belongs to BOSS orders, not vouchers or night stock.
+    for hero in (free if turn.day > 1 else ()):
         if not hero.space:
             continue
         options = [supplies(turn, cfg, mem, nav, ledger, hero, construction,
@@ -65,12 +72,8 @@ def plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded=()):
 
 
 def robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only=None, quantity=1):
-    """Fit buying, every individual summon use, and the actual return trip."""
-    if (not hero.space or (hero.id, name) in mem.buy_failures
-            or any(hero.inventory[item] for item in SUMMON_ORDERS)):
-        return None
-    home, exact = delivery_destination(turn, nav, ledger, hero)
-    if not home:
+    """Buy any affordable batch with space and a reachable shop."""
+    if not hero.space or (hero.id, name) in mem.buy_failures:
         return None
     options = []
     for shop, kind in turn.zones.items():
@@ -81,12 +84,9 @@ def robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only=None,
         route = nav.approach(hero, [shop], ledger.reserved)
         if route is None:
             continue
-        trip = via(nav, hero, [[shop], home], ledger.reserved, final_exact=exact,
-                   future_return=turn.tick < cfg.economy_rounds)
-        if trip is not None:
-            count = min(quantity, hero.space, turn.day_left - trip - 1 - cfg.return_margin)
-            if count > 0:
-                options.append((-count, route[0], shop, route))
+        count = min(quantity, hero.space)
+        if count > 0:
+            options.append((-count, route[0], shop, route))
     if not options:
         return None
     negative_count, _, shop, route = min(options)

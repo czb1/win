@@ -206,15 +206,14 @@ class BestRobotSummoningTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(ledger.commands['1']['name'], 'LargeRobotSummonOrder')
 
-    def test_critical_hero_medical_budget_precedes_boss_purchase(self):
+    def test_critical_hero_health_does_not_gate_unreserved_boss_purchase(self):
         data = self.shop_data()
         next(r for r in data["teamOur"]["roles"] if r["id"] == 1)["health"] = 50
         data["weaponShopList"].append({"name": "Medicine", "price": 10})
         result, _, _, ledger = self.summon(data)
         self.assertTrue(result)
-        self.assertNotIn('1', ledger.commands)
-        self.assertEqual(ledger.notes[2]['conditions']['item'], 'LargeRobotSummonOrder')
-        self.assertGreaterEqual(ledger.gold, 10)
+        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=1))
+        self.assertEqual(ledger.gold, 0)
 
     def test_purchase_respects_gold_already_reserved_by_defense(self):
         result, _, _, ledger = self.summon(self.shop_data(gold=200), gold=119)
@@ -232,12 +231,13 @@ class BestRobotSummoningTests(unittest.TestCase):
         self.assertTrue(turn.inside(pos(action["targetPos"][0])))
         self.assertEqual(ledger.gold, 120)
 
-    def test_unfinished_defense_prevents_using_owned_boss(self):
+    def test_unfinished_defense_does_not_prevent_using_owned_boss(self):
         data = self.shop_data(backpack=["BossRobotSummonOrder"])
         next(r for r in data["teamOur"]["roles"] if r["id"] == 32)["level"] = 2
         result, _, _, ledger = self.summon(data)
-        self.assertFalse(result)
-        self.assertFalse(ledger.commands)
+        self.assertTrue(result)
+        self.assertEqual(ledger.commands['1']['action'], 'use')
+        self.assertEqual(ledger.commands['1']['name'], 'BossRobotSummonOrder')
 
     def test_full_backpacks_and_protected_actors_prevent_purchase(self):
         data = self.shop_data()
@@ -251,17 +251,27 @@ class BestRobotSummoningTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertFalse(ledger.commands)
 
-    def test_daytime_only_and_daily_limit_do_not_spend_gold(self):
+    def test_night_and_daily_use_limit_do_not_gate_purchases(self):
         result, _, _, ledger = self.summon(self.shop_data(round_no=330))
-        self.assertFalse(result)
-        self.assertFalse(ledger.commands)
+        self.assertTrue(result)
+        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=1))
         mem = Memory()
         mem.robot_summon_state = {"day": 3, "count": 10, "positions": set(),
                                   "pending": None, "observed_round": 260}
         result, _, _, ledger = self.summon(self.shop_data(), mem=mem)
+        self.assertTrue(result)
+        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=1))
+        self.assertEqual(ledger.gold, 0)
+        self.assertEqual(mem.robot_summon_state['count'], 10)
+
+    def test_daily_limit_still_prevents_using_an_owned_order(self):
+        mem = Memory()
+        mem.robot_summon_state = {'day': 3, 'count': 10, 'positions': set(),
+                                  'pending': None, 'observed_round': 260}
+        result, _, _, ledger = self.summon(self.shop_data(gold=0, backpack=['BossRobotSummonOrder']), mem=mem)
         self.assertFalse(result)
         self.assertFalse(ledger.commands)
-        self.assertEqual(ledger.gold, 120)
+        self.assertEqual(mem.robot_summon_state['count'], 10)
 
     def test_failed_use_releases_pending_position_and_daily_quota(self):
         data = self.shop_data(backpack=["BossRobotSummonOrder"])

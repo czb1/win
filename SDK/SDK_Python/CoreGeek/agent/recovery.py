@@ -57,6 +57,8 @@ class Recovery:
             from .economy import voucher_for, wall_upgrade_allowed, replacement_work_pending
             building = next((b for b in turn.ours if b.pos == target), None)
             name = voucher_for(building) if building else None
+            if turn.day == 1 and name and name.startswith('WeaponUpgradeVoucher'):
+                return None
             if building and building.kind == "station" and replacement_work_pending(turn, mem):
                 return None
             if (not name or not hero.inventory[name] or building.id in ledger.upgrade_claims

@@ -51,7 +51,7 @@ class SurplusBossBatchTests(unittest.TestCase):
         self.assertEqual(ledger.commands['1']['num'], 3)
         self.assertEqual(ledger.gold, 132)
 
-    def test_batch_fits_backpack_and_remaining_daily_uses(self):
+    def test_batch_fits_backpack_but_can_stock_orders_beyond_daily_uses(self):
         data = self.data()
         data['teamOur']['roles'][1]['backPackCapability'] = 2
         result, ledger, _ = self.buy(data)
@@ -62,19 +62,18 @@ class SurplusBossBatchTests(unittest.TestCase):
                                          observed_round=260, buyer=None)
         result, ledger, _ = self.buy(self.data(gold=1200), memory=memory)
         self.assertTrue(result)
-        self.assertEqual(ledger.commands['1']['num'], 2)
-        self.assertEqual(ledger.gold, 960)
+        self.assertEqual(ledger.commands['1']['num'], 10)
+        self.assertEqual(ledger.gold, 0)
 
-    def test_each_use_requires_a_turn_before_operator_return(self):
-        # Already at both shop and exact night post: 8 turns = buy + 2 uses + margin 5.
+    def test_purchase_batch_is_not_cropped_to_operator_return_time(self):
         result, ledger, _ = self.buy(self.data(round_no=322), post=(4, 8))
         self.assertTrue(result)
-        self.assertEqual(ledger.commands['1']['num'], 2)
-        self.assertEqual(ledger.gold, 252)
+        self.assertEqual(ledger.commands['1']['num'], 4)
+        self.assertEqual(ledger.gold, 12)
         result, ledger, _ = self.buy(self.data(round_no=329), post=(4, 8))
-        self.assertFalse(result)
-        self.assertFalse(ledger.commands)
-        self.assertEqual(ledger.gold, 492)
+        self.assertTrue(result)
+        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=4))
+        self.assertEqual(ledger.gold, 12)
 
     def test_zero_shop_price_still_obeys_daily_limit(self):
         data = self.data(gold=0)

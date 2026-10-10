@@ -16,7 +16,9 @@ from agent.recovery import Recovery
 
 class WallUpgradeDeliveryTests(unittest.TestCase):
     def case(self, tick=40):
-        p = payload(tick, [unit(1, "worker", 5, 5, health=220),
+        # Paid upgrades start on day two; absolute night/later-day rounds remain unchanged.
+        round_no = 130 + tick if tick < 70 else tick
+        p = payload(round_no, [unit(1, "worker", 5, 5, health=220),
                            unit(13, "station", 1, 5, health=1500),
                            unit(20, "rocket", 4, 6, level=3),
                            unit(30, "wall", 7, 5, health=1000, level=2),
@@ -383,7 +385,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
             p["teamOur"]["roles"][3].update(id=99, level=1)
             used = []
             for tick in range(41, 70):
-                p["roundNo"] = tick
+                p["roundNo"] = 130 + tick
                 t, _, _, ledger = setup_case(p, layout_mode="explicit", loadout=["rocket"])
                 result = agent.decide(copy.deepcopy(p))["roleCommandMap"]
                 for uid, cmd in result.items():
