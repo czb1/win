@@ -145,7 +145,7 @@ class DaylightSpendingTests(unittest.TestCase):
         plan=supplies(turn,cfg,Memory(),nav,ledger,turn.workers[1],item_only='StationUpgradeVoucher1')
         self.assertEqual(plan[0],'StationUpgradeVoucher1')
 
-    def test_rear_level_two_does_not_block_offense_but_front_or_breach_does(self):
+    def test_defense_diagnostic_tracks_front_levels_and_breaches(self):
         data,cfg=case()
         turn,cfg,nav,ledger=setup(data,cfg)
         self.assertTrue(defenses_ready(turn,cfg,[(7,4)],list(ledger.wall_cells)))
@@ -158,7 +158,7 @@ class DaylightSpendingTests(unittest.TestCase):
             t,c,n,l=setup(p,cfg)
             self.assertFalse(defenses_ready(t,c,[(7,4)],list(l.wall_cells),mem,l))
 
-    def test_missing_night_stock_blocks_offense(self):
+    def test_defense_diagnostic_tracks_missing_night_stock(self):
         data,cfg=case(packs=1)
         turn,cfg,nav,ledger=setup(data,cfg);mem=Memory(wall_watch_id=1)
         self.assertFalse(defenses_ready(turn,cfg,[(7,4)],list(ledger.wall_cells),mem,ledger))
@@ -206,7 +206,7 @@ class DaylightSpendingTests(unittest.TestCase):
         self.assertTrue(use_inventory(turn,nav,ledger,turn.workers[1],mem=Memory()))
         self.assertEqual(ledger.commands['2'],command('use',(8,5),name='WallUpgradeVoucher2'))
 
-    def test_robot_uses_only_unreserved_money_and_operator_return_budget(self):
+    def test_robot_uses_only_unreserved_money_without_operator_return_deadline(self):
         from test_robot_assault import BestRobotSummoningTests,fortified_case,WALLS,TOWERS
         data=BestRobotSummoningTests().shop_data(gold=200)
         turn,cfg,nav,ledger=fortified_case(data)
@@ -215,8 +215,9 @@ class DaylightSpendingTests(unittest.TestCase):
         self.assertEqual(ledger.gold,130)
         data['roundNo']=329
         turn,cfg,nav,ledger=fortified_case(data)
-        self.assertFalse(summon_best_robot(turn,cfg,Memory(),nav,ledger,TOWERS,WALLS))
-        self.assertFalse(ledger.commands)
+        self.assertTrue(summon_best_robot(turn,cfg,Memory(),nav,ledger,TOWERS,WALLS))
+        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=1))
+        self.assertEqual(ledger.gold,80)
 
     def test_medicine_budget_is_preserved_and_only_counted_once(self):
         from test_robot_assault import BestRobotSummoningTests,fortified_case,WALLS,TOWERS

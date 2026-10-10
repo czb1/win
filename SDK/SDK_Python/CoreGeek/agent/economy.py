@@ -289,6 +289,8 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
         return ledger.add(hero.id, command("use", name="Medicine"))
     upgrades = []
     for building in turn.ours:
+        if turn.day == 1 and building.kind in WEAPONS:
+            continue
         if target_only is not None and building.pos != target_only:
             continue
         if urgent_only and not (building.kind == 'station' and critical_station(turn, building, mem)
@@ -367,6 +369,14 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     emptied by the worker before buying, and duplicate walking buyers reserve
     both their item and the shared gold for this decision.
     """
+    # First-day construction is followed by BOSS shopping. Do not let normal
+    # buying or a continued voucher job spend that opening surplus.
+    if turn.day == 1:
+        from .spending import first_day_boss_phase
+        if first_day_boss_phase(turn, cfg) or item_only and item_only != 'Medicine':
+            ledger.supply_reports.setdefault(hero.id, {'reasons': []})['reasons'].append(
+                {'reason': 'first_day_boss_priority'})
+            return None
     dusk = turn.is_day and turn.tick >= DUSK_SPEND_TICK
     # Ordinary dusk items remain single purchases. Walls may share one trip
     # only after the complete batch's delivery/return budget has been checked.
@@ -388,7 +398,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     wounded = hero.health <= (165 if hero.kind == "worker" else 150)
     if not hero.inventory["Medicine"] and wounded:
         candidates.append(((-2 if hero.health <= 110 else -.5,), "Medicine", hero.cells))
-    if not urgent_only:
+    if not urgent_only and turn.day > 1:
         carried = Counter(item for h in turn.heroes for item in h.backpack)
         own_carried = hero.inventory.copy()
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
@@ -1238,13 +1248,13 @@ def pioneer_task_options(turn, cfg, mem, nav, ledger, hero):
     return options
 
 
-def pioneer(turn, cfg, mem, nav, ledger, hero):
+def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
     if use_inventory(turn, nav, ledger, hero, mem=mem):
         if mem.treasure:
             mem.trace_treasure(turn, "treasure_progress", dedupe=True, reason="use_inventory")
         return
     # The pioneer can carry its own medicine; there is no transfer action.
-    if not hero.inventory["Medicine"] and hero.health <= 150:
+    if shopping and not hero.inventory["Medicine"] and hero.health <= 150:
         plan = supplies(turn, cfg, mem, nav, ledger, hero, urgent_only=True)
         if buy_supply(turn, ledger, hero, plan):
             if mem.treasure:
@@ -1276,7 +1286,7 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
             if missing:
                 name = next(iter(missing))
                 num = missing[name]
-                if name in turn.shop and hero.space >= num and ledger.gold >= turn.shop[name]*num:
+                if shopping and name in turn.shop and hero.space >= num and ledger.gold >= turn.shop[name]*num:
                     if visit(turn, nav, ledger, hero, "weaponShop", command("buy", name=name, num=num)):
                         return
             elif turn.round + route[0] + cfg.return_margin >= t["startRound"]:
@@ -1315,5 +1325,5 @@ def pioneer(turn, cfg, mem, nav, ledger, hero):
             mem.log_task_type = task.get("taskType", "自进化类")
             update_context(task_id=mem.log_task_id, task_type=mem.log_task_type)
             logging.getLogger(__name__).info("task_accept point=%s", point)
-    else:
+    elif shopping:
         prepare_treasure(turn, cfg, mem, nav, ledger, hero)
