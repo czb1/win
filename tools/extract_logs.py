@@ -405,7 +405,7 @@ TASK_CATEGORIES = {"evolution", "long_context", "reasoning"}
 TASK_ACTIONS = {"acceptTask", "submitAnswer", "summonTreasure"}
 TASK_PAYLOAD_EVENTS = {"sent_prompt", "sent_executeCmd", "received_llmResp", "received_lastCmdResult"}
 HIDDEN_FIELDS = {"run", "request_id", "level", "logger", "timestamp", "source", "session",
-                 "record_id", "sequence", "schema_version"}
+                 "record_id", "sequence", "schema_version", "game_time"}
 
 
 def is_task(record):
@@ -880,7 +880,8 @@ def main(argv=None):
                 "selected_records": selected_count, "read_report": report.summary(),
                 "missing_payloads": absent, "requests_without_response": [list(key) for key in unfinished],
                 "missing_session_metadata": [list(key) for key in bounds if key not in metadata]}
-        meta["session_metadata"] = [{"run": key[0], "session": key[1], **metadata[key]}
+        meta["session_metadata"] = [{"run": key[0], "session": key[1],
+                                     **{name: value for name, value in metadata[key].items() if name != "game_time"}}
                                     for key in bounds if key in metadata]
         files = {"issue": (args.out / "issue.txt").open("w", encoding="utf-8"),
                  "tasks": (args.out / "tasks.txt").open("w", encoding="utf-8")}

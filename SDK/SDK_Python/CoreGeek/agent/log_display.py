@@ -7,7 +7,7 @@ TASK_CATEGORIES = {"evolution", "long_context", "reasoning"}
 TASK_ACTIONS = {"acceptTask", "submitAnswer", "summonTreasure"}
 TASK_PAYLOAD_EVENTS = {"sent_prompt", "sent_executeCmd", "received_llmResp", "received_lastCmdResult"}
 HIDDEN_FIELDS = {"run", "request_id", "level", "logger", "timestamp", "source", "session",
-                 "record_id", "sequence", "schema_version"}
+                 "record_id", "sequence", "schema_version", "game_time"}
 
 
 def is_task(record):

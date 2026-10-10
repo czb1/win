@@ -142,6 +142,7 @@ class LogDisplayTests(unittest.TestCase):
 
     def test_query_filters_before_compacting_and_keeps_data_and_exceptions(self):
         record = dict(round=0, event="failed", category="runtime", session="S", level="ERROR",
+                      game_time="obsolete time label",
                       task_id=None, task_type=None, data={"error": "failure", "attempt": 0},
                       exception="ValueError: first\nsecond")
         with tempfile.TemporaryDirectory() as directory:
@@ -157,6 +158,7 @@ class LogDisplayTests(unittest.TestCase):
                     self.assertEqual(result["data"], record["data"])
                     self.assertEqual(result["exception"], record["exception"])
                 else:
+                    self.assertNotIn("obsolete time label", process.stdout)
                     self.assertIn("round=0", process.stdout)
                     self.assertIn('"error":"failure"', process.stdout)
                     self.assertIn("ValueError: first\nsecond", process.stdout)

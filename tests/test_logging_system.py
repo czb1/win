@@ -123,7 +123,9 @@ class LoggingSystemTests(unittest.TestCase):
             self.assertEqual(process.returncode, 0, process.stderr)
             self.assertIn('roleCommandMap', json.loads(process.stdout))
             text = Path(directory, 'game.log').read_text(encoding='utf-8')
-            self.assertIn('第1天黑夜', text)
+            self.assertNotIn('game_time', text)
+            wire = [json.loads(line.removeprefix('FWLOG ')) for line in text.splitlines()]
+            self.assertTrue(all(r['day'] == 1 and r['phase'] == 'night' for r in wire))
             data = [json.loads(line) for line in Path(directory, 'events.jsonl').read_text(encoding='utf-8').splitlines()]
             self.assertTrue(data)
             self.assertTrue(all(r['day'] == 1 and r['phase'] == 'night' for r in data))

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def record(identity, number, day, phase):
     return dict(run="R", session="S", team="A", record_id=identity, message=identity, round=number,
-                day=day, phase=phase, event="diagnostic", category="general", data={})
+                day=day, phase=phase, game_time="legacy time label", event="diagnostic", category="general", data={})
 
 
 def mixed_records():
@@ -103,6 +103,8 @@ class ExtractionModeTests(unittest.TestCase):
         rows = [json.loads(line.split("FWLOG ", 1)[1])
                 for line in (output / "issue.txt").read_text(encoding="utf-8").splitlines()]
         meta = json.loads((output / "meta.json").read_text(encoding="utf-8"))
+        self.assertTrue(all("game_time" not in row for row in rows))
+        self.assertTrue(all("game_time" not in row for row in meta["session_metadata"]))
         return rows, meta, output
 
     def test_evolution_only_and_payload_dependency(self):
@@ -131,7 +133,7 @@ class ExtractionModeTests(unittest.TestCase):
         self.assertEqual((output / "tasks.txt").read_text(encoding="utf-8"), "")
         self.assertEqual(meta["task_records"], 0)
         self.assertEqual(len((output / "turns.jsonl").read_text(encoding="utf-8").splitlines()), 1)
-        hidden = {"run", "session", "request_id", "record_id", "level", "logger", "timestamp", "source"}
+        hidden = {"run", "session", "request_id", "record_id", "level", "logger", "timestamp", "source", "game_time"}
         for name in ("turns", "decisions", "feedback", "errors"):
             for line in (output / (name + ".jsonl")).read_text(encoding="utf-8").splitlines():
                 row = json.loads(line)
