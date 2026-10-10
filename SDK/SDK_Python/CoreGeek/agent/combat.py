@@ -147,15 +147,15 @@ def block_enemy_workers(turn, nav, ledger, hero):
     return True
 
 
-def fixed_gatling_crew(turn, mem, nav, ledger):
-    """Night ownership survives daylight jobs, congestion and a missing gun."""
-    workers = {h.id: h for h in turn.workers}
+def fixed_gatling_crew(turn, mem, nav, ledger, excluded=()):
+    """Keep the operator unless lost or explicitly assigned to night scouting."""
+    workers = {h.id: h for h in turn.workers if h.id not in excluded}
     previous = mem.gatling_operator_id
     holder = workers.get(previous)
     gatling = next((w for w in turn.weapons if w.kind == 'gatling'), None)
     if holder is None and workers:
         # Initial assignment considers equipment and travel. Once selected,
-        # only the loss of the living owner can make another worker take over.
+        # loss or explicit role exclusion can make another worker take over.
         original = turn.blocked
         try:
             turn.blocked = original - {h.pos for h in turn.heroes}

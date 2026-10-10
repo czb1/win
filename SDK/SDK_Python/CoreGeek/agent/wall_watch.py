@@ -8,10 +8,10 @@ from .economy_plan import via
 from .wall_health import repair_risk
 
 
-def select_watch(turn, mem, pairs, fixed_operator=None):
+def select_watch(turn, mem, pairs, fixed_operator=None, excluded=()):
     previous = mem.wall_watch_id
     operators = {fixed_operator} if fixed_operator is not None else {h.id for h, _ in pairs}
-    eligible = [h for h in turn.workers if h.id not in operators]
+    eligible = [h for h in turn.workers if h.id not in operators and h.id not in excluded]
     hero = min(eligible, key=lambda h: (h.id != mem.wall_watch_id,
                                        -h.inventory['WallFixer'], h.id), default=None)
     mem.wall_watch_id = hero.id if turn.day >= 4 and hero else None

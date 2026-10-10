@@ -93,22 +93,27 @@ class MixedBatteryTests(unittest.TestCase):
         data = mixed_case()
         data['robot']['roles'] = []
         enemy_walls(data)
-        commands = Agent(mixed_config(llm_enabled=False)).decide(data)['roleCommandMap']
+        agent = Agent(mixed_config(llm_enabled=False))
+        commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['20']['controllerId'], '11')
         self.assertEqual(len(commands['20']['targetPos']), 3)
         self.assertTrue(all(p['x'] == 8 for p in commands['20']['targetPos']))
         self.assertNotIn('22', commands)
         self.assertIn(commands['1']['action'], ('move', 'collect'))
-        self.assertEqual(commands['2']['action'], 'collect')
+        self.assertEqual(commands['2']['action'], 'move')
+        self.assertEqual(next(iter(agent.sessions.values())).night_scout.worker_id, 2)
 
-    def test_released_gatling_worker_mines_instead_of_becoming_wall_watcher(self):
+    def test_released_gatling_worker_mines_while_other_worker_scouts(self):
         data = mixed_case(470, walls=True)
         data['robot']['roles'] = []
         enemy_walls(data)
         agent = Agent(mixed_config(llm_enabled=False))
         commands = agent.decide(data)['roleCommandMap']
         self.assertIn(commands['1']['action'], ('move', 'collect'))
-        self.assertEqual(next(iter(agent.sessions.values())).wall_watch_id, 2)
+        mem = next(iter(agent.sessions.values()))
+        self.assertIsNone(mem.wall_watch_id)
+        self.assertEqual(mem.night_scout.worker_id, 2)
+        self.assertEqual(mem.gatling_operator_id, 1)
         self.assertEqual(commands['20']['controllerId'], '11')
 
     def test_worker_returns_when_enemy_reappears_after_mining_move(self):

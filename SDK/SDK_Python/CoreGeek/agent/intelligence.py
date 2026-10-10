@@ -27,6 +27,7 @@ from .task_sop import answer_contract, answer_error, engineering_code
 from .task_query import reference_paths, query_config, query_code
 from .market import observe_prices, merge_signals
 from .movement import MovementMemory
+from .scouting import ScoutMemory
 from .sabotage import ImpMemory
 from .navigation import layout, wall_gaps
 from .economy_plan import wall_level_limit
@@ -385,6 +386,7 @@ class Memory:
     return_targets: dict = field(default_factory=dict)
     return_posts: dict = field(default_factory=dict)
     movement: MovementMemory = field(default_factory=MovementMemory)
+    night_scout: ScoutMemory = field(default_factory=ScoutMemory)
     sabotage: ImpMemory = field(default_factory=ImpMemory)
     imp_catch_attempted: set = field(default_factory=set)
     imp_catch_next_round: int = 0
