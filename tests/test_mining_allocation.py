@@ -205,7 +205,7 @@ class MiningSectorTests(unittest.TestCase):
 
     def test_material_requirement_can_cross_a_wing(self):
         p = wing_case(mines=[('copper', 11, 18, 10), ('stone', 11, 24, 10)])
-        t, cfg, nav, ledger = self.setup(p)
+        t, cfg, nav, ledger = setup_case(p, layout_mode='explicit', wall_cells=[[6, 26], [6, 27]])
         self.assertTrue(mine(t, cfg, Memory(), nav, ledger, t.workers[0], want_stone=True, stone_goal=2))
         self.assertEqual(ledger.mine_claims[1], (11, 24))
         self.assertEqual(ledger.notes[1]['conditions']['expected_units'], 2)

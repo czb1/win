@@ -227,9 +227,9 @@ class ConstructionRegressionTests(unittest.TestCase):
         self.assertEqual(l.commands["1"]["action"], "move")
 
     def test_news_prediction_cannot_disable_a_visible_stone_deposit(self):
-        p = payload(roles=[unit(1, "worker", 2, 2)])
+        p = payload(roles=[unit(1, "worker", 2, 2), unit(13, "station", 0, 4)])
         p["mapInfo"]["zones"] = [{"neutralType": "stone", "pos": {"x": 3, "y": 2}}]
-        t, c, n, l = setup_case(p)
+        t, c, n, l = setup_case(p, layout_mode="explicit", wall_cells=[[4, 2]])
         mem = Memory(outages=[{"name": "stone", "startDay": 1, "endDay": 10}])
         self.assertTrue(mine(t, c, mem, n, l, t.workers[0], want_stone=True))
         self.assertEqual(l.commands["1"]["action"], "collect")

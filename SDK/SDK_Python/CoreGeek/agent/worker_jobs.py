@@ -20,12 +20,7 @@ def save_daytime_jobs(turn, mem, ledger):
 
 
 def _fits_return(turn, cfg, mem, nav, ledger, hero, target):
-    home, exact = return_destination(turn, nav, ledger, hero)
-    if turn.day >= 4 and hero.id == mem.wall_watch_id:
-        from .wall_watch import geometry
-        inside, _ = geometry(turn, ledger.wall_cells)
-        post = getattr(ledger, 'daytime_gunner_post', mem.gunner_post)
-        home, exact = inside - set(ledger.operator_posts.values()) - {post}, True
+    home, exact = return_destination(turn, nav, ledger, hero, mem)
     if not home:
         return False
     trip = via(nav, hero, [[target], home], ledger.reserved, final_exact=exact,
@@ -100,11 +95,12 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls):
             missing = [p for p in walls if p not in turn.blocked and p not in mem.build_failures]
             if not missing or hero.inventory['stone'] >= min(goal, len(missing) * cfg.wall_stones):
                 return False, 'material_batch_complete'
-        if not _fits_return(turn, cfg, mem, nav, ledger, hero, target):
+        if not job['want_stone'] and not _fits_return(turn, cfg, mem, nav, ledger, hero, target):
             return False, 'mining_return_deadline'
         ok = mine(turn, cfg, mem, nav, ledger, hero, want_stone=job['want_stone'],
                   stockpile=job['stockpile'], deadline=deadline,
-                  target_only=target, stone_goal=job.get('stone_goal'))
+                  target_only=target, stone_goal=job.get('stone_goal'),
+                  stone_sites=job.get('stone_sites'))
     elif kind == 'spare':
         ok = spare_mine(turn, cfg, mem, nav, ledger, hero, target_only=target)
     elif kind == 'recovery':

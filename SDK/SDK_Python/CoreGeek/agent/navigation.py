@@ -54,14 +54,14 @@ class Navigator:
             self._distances[key] = distances
         return self._distances[key]
 
-    def search(self, hero, goals, reserved=()):
+    def search(self, hero, goals, reserved=(), *, with_endpoint=False):
         goals, reserved = set(goals), set(reserved)
-        route = self._search(hero, goals, reserved)
+        route = self._search(hero, goals, reserved, with_endpoint=with_endpoint)
         if self.gate_guard is not None:
-            self.gate_guard.observe_search(hero, goals, reserved, route)
+            self.gate_guard.observe_search(hero, goals, reserved, route[:2] if route else None)
         return route
 
-    def _search(self, hero, goals, reserved=()):
+    def _search(self, hero, goals, reserved=(), *, with_endpoint=False):
         check_time(self.deadline)
         avoided = self.memory.blocked(hero.id) if self.memory else set()
         blocked = frozenset((self.turn.blocked | set(reserved) | avoided) - {hero.pos})
@@ -72,7 +72,7 @@ class Navigator:
             return None
         if hero.pos in goals:
             self.record_search(hero.id, "at_goal")
-            return 0, None
+            return (0, None, hero.pos) if with_endpoint else (0, None)
         # Many mines/build sites share the same actor and occupancy snapshot.
         # Cache the entire BFS, including deterministic discovery order.
         key = hero.pos, blocked
@@ -95,16 +95,20 @@ class Navigator:
                 self._trees.clear()
             self._trees[key] = routes
         routes = self._trees[key]
-        route = min((routes[g] for g in goals if g in routes),
+        route = min(((*routes[g], g) for g in goals if g in routes),
                     key=lambda r: (r[0], r[2]), default=None)
         self.record_search(hero.id, "route_found" if route else "unreachable",
                            goal_count=len(goals), blocked_count=len(blocked), avoided_count=len(avoided),
                            reserved_count=len(reserved), expanded_cells=len(routes))
-        return route[:2] if route else None
+        if route is None:
+            return None
+        return (route[0], route[1], route[3]) if with_endpoint else route[:2]
 
-    def approach(self, hero, targets, reserved=()):
+    def approach(self, hero, targets, reserved=(), *, with_endpoint=False):
         targets = set(targets)
         goals = {p for target in targets for p in neighbours(target)} - targets
+        if with_endpoint:
+            return self.search(hero, goals, reserved, with_endpoint=True)
         return self.search(hero, goals, reserved)
 
 

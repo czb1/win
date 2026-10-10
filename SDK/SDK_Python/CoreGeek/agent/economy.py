@@ -717,7 +717,8 @@ def wall_keeps_access(turn, nav, ledger, target):
         turn.blocked = original
 
 
-def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
+def build_options(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
+    """Share construction order with the material-trip forecast."""
     options = []
     wall_chain = {w.pos for w in turn.ours if w.kind == "wall" and w.pos in ledger.wall_cells}
     wall_chain.update(pos(c["targetPos"][0]) for c in ledger.commands.values()
@@ -738,7 +739,7 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
                 continue
             if missing_front and target not in front and target not in gaps:
                 continue
-        if (target in turn.blocked or target in ledger.reserved
+        if (target == hero.pos or target in turn.blocked or target in ledger.reserved
                 or target in ledger.build_claims or target in mem.build_failures
                 or mem.movement.avoids(hero.id, target)):
             continue
@@ -759,7 +760,12 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
             previous = mem.build_targets.get(hero.id)
             continuity = distance(target, previous) if name_for(index) == "wall" and previous else 0
             options.append((priority, route[0], continuity, index, target, route))
-    for _, _, _, index, target, route in sorted(options):
+    return sorted(options)
+
+
+def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
+    for _, _, _, index, target, route in build_options(
+            turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell):
         name = name_for(index)
         if name == "wall" and not wall_keeps_access(turn, nav, ledger, target):
             continue
@@ -820,7 +826,7 @@ def first_day_front(turn, cfg, mem, nav, ledger, wall_sites, excluded=()):
     for _, _, _, _, hero, mines, goal in sorted(options):
         if mines:
             accepted = mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
-                            target_only=min(mines)[1], stone_goal=goal)
+                            target_only=min(mines)[1], stone_goal=goal, stone_sites=front)
             delivering = False
         else:
             accepted = build(turn, cfg, mem, nav, ledger, hero, front, lambda _: 'wall')
@@ -929,7 +935,7 @@ def repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
         # after each wall or switching to a shopping trip.
         if not mem.wall_repair_delivering and held < goal:
             if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
-                    stone_goal=goal):
+                    stone_goal=goal, stone_sites=sites):
                 return gaps
         if held >= cfg.wall_stones:
             mem.wall_repair_delivering = True
@@ -991,7 +997,7 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
         # front-wall batch on its way home, avoiding a second base -> mine trip.
         if held < min(cfg.stone_batch, missing * cfg.wall_stones):
             if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
-                    stone_goal=min(cfg.stone_batch, missing * cfg.wall_stones)):
+                    stone_goal=min(cfg.stone_batch, missing * cfg.wall_stones), stone_sites=stone_sites):
                 return
     available_towers = [p for p in tower_sites if p not in turn.blocked
                         and p not in ledger.reserved and p not in ledger.build_claims
@@ -1044,7 +1050,8 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
             stone_goal = min(stone_goal, feasible)
     if need_walls and hero.inventory["stone"] < stone_goal:
         if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
-                local_only=hero.inventory["stone"] >= cfg.wall_stones, stone_goal=stone_goal):
+                local_only=hero.inventory["stone"] >= cfg.wall_stones, stone_goal=stone_goal,
+                stone_sites=stone_sites):
             return
     if need_walls and hero.inventory["stone"] >= cfg.wall_stones:
         if build(turn, cfg, mem, nav, ledger, hero, wall_sites, lambda _: "wall"):
