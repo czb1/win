@@ -33,6 +33,8 @@ class Config:
     build_retry_rounds: int = 20
     # A configurable policy cap, not a substitute for playerTasks.timeoutRounds.
     task_max_rounds: int = 1300
+    # Opportunity-based switch check; not a platform timeout or a solve estimate.
+    task_switch_rounds: int = 7
 
     @classmethod
     def load(cls, path=None):
@@ -54,7 +56,7 @@ class Config:
             raise ValueError("loadout must contain 1..3 weapons")
         for name in ("weapon_cost", "wall_stones", "stone_batch", "sell_batch", "sell_batch_max",
                      "task_min_rounds", "task_danger_radius", "max_body_bytes",
-                     "build_retry_rounds", "task_max_rounds", "max_python_chars"):
+                     "build_retry_rounds", "task_max_rounds", "task_switch_rounds", "max_python_chars"):
             if type(getattr(cfg, name)) is not int or getattr(cfg, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
         if not 0 < cfg.decision_seconds < 5 or cfg.round_origin not in (0, 1):

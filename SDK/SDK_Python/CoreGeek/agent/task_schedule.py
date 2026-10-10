@@ -4,7 +4,7 @@ No task content is available before acceptTask. Learned budgets are explicitly
 estimates for a stable task stream, never proof that the next question is equal.
 """
 from collections import Counter
-from .model import pos, neighbours
+from .model import pos, neighbours, DEFENCE_RETURN_TICK
 from .mining import return_destination
 from .task_skills import shape
 
@@ -72,8 +72,8 @@ def wait_cell_safe(turn, nav, ledger, hero, cell, forbidden):
     return adjacent <= connected.keys()
 
 
-def task_options(turn, cfg, mem, nav, ledger, hero):
-    if not turn.is_day or turn.phase_task or hero.id in mem.return_targets:
+def task_options(turn, cfg, mem, nav, ledger, hero, *, switching=False):
+    if not turn.is_day or (turn.phase_task and not switching) or hero.id in mem.return_targets:
         return []
     danger = set()
     for robot in turn.robots:
@@ -93,6 +93,8 @@ def task_options(turn, cfg, mem, nav, ledger, hero):
         if not task.get('isValid') and not cooldown:
             continue  # exhausted or unavailable; do not invent a refresh
         point = pos(task['taskPosition'])
+        if switching and (point == mem.task_point or cooldown or not task.get('isValid')):
+            continue
         if nav.memory and nav.memory.avoids(hero.id, point):
             continue
         budget = task_budget(task, cfg, mem.task_outcomes)
@@ -101,6 +103,10 @@ def task_options(turn, cfg, mem, nav, ledger, hero):
         candidates = []
         for cell in sorted(goals):
             if cell in forbidden or not turn.inside(cell) or home and cell not in back:
+                continue
+            if switching and any(turn.adjacent(cell, p) for current in turn.tasks
+                                 if pos(current["taskPosition"]) == mem.task_point
+                                 for p in turn.task_cells(current)):
                 continue
             route = nav.search(hero, {cell}, forbidden)
             if route is None:
@@ -179,3 +185,17 @@ def choose_task(options, mem):
             best = previous
     mem.task_target, mem.task_wait_cell = best['point'], best['cell']
     return best
+
+
+def switch_task_option(turn, cfg, mem, nav, ledger, hero):
+    """After the configured effort, leave only for a ready, feasible other task."""
+    if (not turn.phase_task or mem.task_point is None or not turn.is_day
+            or turn.tick >= DEFENCE_RETURN_TICK
+            or turn.round - mem.task_started <= cfg.task_switch_rounds
+            or mem.answer is not None or mem.submitted is not None
+            or mem.stop_reason not in ('', 'task_switch_budget')):
+        return None
+    options = task_options(turn, cfg, mem, nav, ledger, hero, switching=True)
+    options = [o for o in options if o['route'][1] is not None
+               and turn.tick + o['finish'] < DEFENCE_RETURN_TICK]
+    return min(options, key=lambda o: (-o['rate'], o['finish'], o['point']), default=None)
