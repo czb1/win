@@ -131,6 +131,12 @@ class ExtractionModeTests(unittest.TestCase):
         self.assertEqual((output / "tasks.txt").read_text(encoding="utf-8"), "")
         self.assertEqual(meta["task_records"], 0)
         self.assertEqual(len((output / "turns.jsonl").read_text(encoding="utf-8").splitlines()), 1)
+        hidden = {"run", "session", "request_id", "record_id", "level", "logger", "timestamp", "source"}
+        for name in ("turns", "decisions", "feedback", "errors"):
+            for line in (output / (name + ".jsonl")).read_text(encoding="utf-8").splitlines():
+                row = json.loads(line)
+                self.assertFalse(hidden & row.keys())
+                self.assertNotIn("task_id", row)
 
     def test_non_task_night_has_strict_boundaries(self):
         rows, meta, output = self.extract("--mode", "non-task", "--day", "2", "--phase", "night")

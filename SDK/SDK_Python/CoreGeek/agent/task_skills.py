@@ -164,7 +164,7 @@ def output_supports(answer, output):
                                + output.splitlines())
 
 
-def learned_method(point, contract, recipe=None, calls=(), parser=None, rules='', transform=None, parser_evidence=None):
+def learned_method(point, contract, recipe=None, calls=(), parser=None, rules='', transform=None, parser_evidence=None, transform_metadata=None):
     if recipe:
         recipe = {'parameters': dict(recipe['parameters']),
                   'python': ast.unparse(ast.parse(recipe['python']))}
@@ -179,7 +179,7 @@ def learned_method(point, contract, recipe=None, calls=(), parser=None, rules=''
               'evidence': 'legal_submission_then_task_disappeared',
               'verified': False, 'successes': 1, 'failures': 0, 'disabled': False}
     if transform:
-        method.update(transform=transform, family=contract.get('family'))
+        method.update(transform=transform, family=contract.get('family'), transform_metadata=transform_metadata or {})
     if parser or rules:
         method.update(parser=parser, rules=rules, family=contract.get('family'))
     if parser and parser_evidence and parser_method(parser, parser_evidence):
@@ -192,7 +192,7 @@ def learned_method(point, contract, recipe=None, calls=(), parser=None, rules=''
                            'check_parse_coverage', 'aggregate_current_requirements']
     signature = json.dumps({k: method.get(k) for k in
                            (('point', 'shape', 'workflow', 'recipe', 'interfaces', 'parser', 'family')
-                            + (('rules',) if rules else ()) + (('transform',) if transform else ()))},
+                            + (('rules',) if rules else ()) + (('transform', 'transform_metadata') if transform else ()))},
                            sort_keys=True, ensure_ascii=False)
     method['id'] = hashlib.sha256(signature.encode()).hexdigest()[:16]
     return method

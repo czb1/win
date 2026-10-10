@@ -5,7 +5,7 @@ from collections import Counter
 import json
 import sys
 from log_records import events, ReadReport, LogDecryptor, LogCryptoError, load_log_key
-from extract_logs import compact_record
+from extract_logs import compact_record, record_value
 
 
 def readable(record):
@@ -34,7 +34,7 @@ def readable(record):
 def matches(record, args):
     for key in ("day", "phase", "category", "task_id", "session", "team", "level", "event"):
         value = getattr(args, key)
-        if value is not None and record.get(key) != value:
+        if value is not None and record_value(record, key) != value:
             return False
     if args.unit_id is not None and str(record.get("unit_id")) != args.unit_id:
         return False
@@ -43,7 +43,7 @@ def matches(record, args):
         return False
     if args.to_round is not None and (type(number) is not int or number > args.to_round):
         return False
-    return args.contains is None or args.contains in record.get("message", "")
+    return args.contains is None or args.contains in json.dumps(compact_record(record), ensure_ascii=False)
 
 
 def main(argv=None):
@@ -74,7 +74,7 @@ def main(argv=None):
         if not matches(record, args):
             continue
         if args.list:
-            groups[tuple(record.get(k) for k in ("day", "phase", "team", "session", "category", "task_id"))] += 1
+            groups[tuple(record_value(record, k) for k in ("day", "phase", "team", "session", "category", "task_id"))] += 1
             continue
         if args.json:
             print(json.dumps(compact_record(record), ensure_ascii=False, separators=(",", ":")))

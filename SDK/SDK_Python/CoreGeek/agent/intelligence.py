@@ -17,6 +17,7 @@ from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status
 from .wall_watch_state import WallWatchState
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
 from .task_inputs import input_context, preview_code, zero_without_coverage
+from .task_transform_feedback import diagnosis as transform_diagnosis, metadata as transform_metadata, prompt as transform_prompt
 from .task_transform import transform_config, transform_method, transform_code, case_page_code
 from .task_runtime import runtime_code, runtime_result, command_output
 from .task_evidence import computed_answer, evidence_matches, parsing_rules
@@ -101,7 +102,8 @@ def sandbox_failure_fingerprint(text, report=None):
                 detail = json.loads(line.partition(' ')[2])
                 return digest_text(json.dumps({'stage': detail.get('stage'),
                     'differences': [f.get('difference') for f in detail.get('failures', [])],
-                    'checker': detail.get('checker_feedback')}, sort_keys=True, ensure_ascii=False))
+                    'checker': detail.get('checker_feedback'),
+                    'exception': detail.get('traceback'), 'classification': detail.get('classification')}, sort_keys=True, ensure_ascii=False))
             except ValueError:
                 pass
     matches = re.findall(r"(?m)^([A-Za-z_][\w.]*(?:Error|Exception)):\s*(.+)$", text)
@@ -297,6 +299,8 @@ class Memory:
     task_failures: int = 0
     proposal_counts: dict = field(default_factory=dict)
     failed_python: set = field(default_factory=set)
+    rejected_transform: dict = field(default_factory=dict)
+    transform_attempt: dict = field(default_factory=dict)
     failure_fingerprints: dict = field(default_factory=dict)
     output_fingerprints: dict = field(default_factory=dict)
     diagnosed_outputs: set = field(default_factory=set)
@@ -615,6 +619,8 @@ class Memory:
             self.task_failures = 0
             self.proposal_counts.clear()
             self.failed_python.clear()
+            self.rejected_transform.clear()
+            self.transform_attempt.clear()
             self.failure_fingerprints.clear()
             self.output_fingerprints.clear()
             self.diagnosed_outputs.clear()
@@ -728,6 +734,12 @@ class Memory:
             if tool.get('kind') == 'transform':
                 self.last_attempt['tool'] = 'transform'
                 self.last_attempt['python'] = self.running_python
+                detail = transform_diagnosis(raw)
+                if detail:
+                    self.last_attempt['diagnosis'] = detail
+                    self.last_attempt['runtimeError'] = ''
+                self.rejected_transform.clear()
+                self.transform_attempt = dict(self.last_attempt)
             if status == "ok":
                 if tool.get('kind') in ('discover', 'read', 'inspect'):
                     self.inputs = input_context(body) or self.inputs
@@ -984,6 +996,8 @@ class Memory:
                 proposal = "answer:" + answer
             learned = self.reusable_parser() if has_python and not self.transform_config() else None
             if has_python and python_identity(code, learned.get('parser') if learned else None, self.inputs) in self.failed_python:
+                if self.transform_config():
+                    self.rejected_transform = {'python': code, 'reason': 'failed_ast', 'executed': False}
                 self.reject('当前任务同一AST代码已验证失败，不再执行；依据具体诊断修改失败规则或解析返回结构，保留已通过部分。')
                 return
             signature = hashlib.sha256(proposal.encode()).hexdigest()
@@ -1172,6 +1186,7 @@ class Intelligence:
                 self.mem.task_point, self.mem.contract, self.mem.recipe_candidate,
                 self.mem.method_calls, self.mem.parser_candidate, self.mem.parse_rules,
                 parser_evidence=self.mem.log_diagnostics.get('logs', {}).get('parsers'),
+                transform_metadata=transform_metadata(self.mem.inputs, self.mem.contract),
                 transform=self.mem.answer_python if self.mem.last_attempt.get('tool') == 'transform' else None) if supported else None)
             self.mem.submitted = (self.turn.round, self.mem.answer)
             self.mem.submitted_python = self.mem.answer_python
@@ -1432,21 +1447,7 @@ class Intelligence:
             prompt = ("上次输出未能执行。现在只输出一个最小步骤；无需解释或编写skill。\n" + prompt)
         conversion = self.mem.transform_config()
         if conversion:
-            methods = [s.get('transform') for s in self.mem.skills if s.get('transform')
-                       and s.get('family') == self.mem.contract.get('family')
-                       and compatible(s, self.mem.task_point, self.mem.contract, for_hint=True)][-1:]
-            prompt = ("第一行 PYTHON，后面只定义 transform(records) 和必要辅助函数，返回题目要求的数据。\n"
-                      "不要读取/写入文件、打印、运行checker或定义主程序，不要长篇注释。\n"
-                      "框架在同一次沙盒执行中验证全部公开样例，通过后写入产物并独立运行checker。只有真实token会提交。\n"
-                      "按完整样例推断规则，逐项检查过滤、排序、相同键顺序、分组及输出字段。保留排序字段到最后再裁剪。\n"
-                      "样例有next_case且剩余回合>4时，可单独输出READ 样例路径 next_case（此处偏移为样例编号），按NEXT_CASE翻页。\n"
-                      "优先修复lastAttempt的具体反例；旧方法只能参考，必须通过当前全部样例。\n"
-                      "本轮唯一动作：根据difference/record_evidence修改一个有证据支持的规则，保留已通过逻辑。\n"
-                      "样例通过不代表规则唯一；checker失败时比较expected_kept/dropped与input_summary的边界，检查等值排除是否误代范围条件。字段和阈值必须来自题目证据，不按差额改答案。无法关联记录时不得猜测过滤条件。\n"
-                      "上下文：" + json.dumps({'documents': self.mem.documents, 'inputPreview': self.mem.inputs,
-                          'lastAttempt': attempt, 'lastErrors': self.mem.task_feedback,
-                          'rejections': [item['error'] for item in list(self.mem.history)[-3:] if 'error' in item],
-                          'remainingRounds': remaining, 'verifiedMethods': methods}, ensure_ascii=False))
+            prompt = transform_prompt(self.mem, remaining)
         LOG.info("round=%s task_request task_started=%s point=%s remaining=%s timeout=%s "
                  "deadline=%s documents=%s exploration=%s previous_solutions=%s prompt_chars=%s prompt_sha=%s",
                  self.turn.round, self.mem.task_started, self.mem.task_point, remaining,

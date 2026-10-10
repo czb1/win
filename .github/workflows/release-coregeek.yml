@@ -82,6 +82,7 @@ jobs:
 
           archive="CoreGeek-${RELEASE_TAG}.tar.gz"
           python3 tools/check_log_key_packaging.py "$source_dir"
+          python3 tools/sync_log_crypto.py --check
           tar --create --gzip --file "$archive" \
             --directory "SDK/SDK_Python" \
             "CoreGeek"
@@ -110,7 +111,7 @@ jobs:
               exit 1
             fi
 
-            gh release upload "$RELEASE_TAG" "$ARCHIVE_PATH" \
+            gh release upload "$RELEASE_TAG" "$ARCHIVE_PATH" "tools/extract_logs.py" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
           else
@@ -118,10 +119,26 @@ jobs:
             if [[ "$SOURCE_BRANCH" != "main" ]]; then
               release_flags+=(--prerelease)
             fi
-            gh release create "$RELEASE_TAG" "$ARCHIVE_PATH" \
+            # Use GitHub's generated PR/changelog content with Chinese section labels.
+            notes_file="$(mktemp)"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$RELEASE_TAG" -f target_commitish="$SOURCE_SHA" \
+              --jq .body > "$notes_file"
+            python3 - "$notes_file" <<'PYNOTES'
+          import pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          text = path.read_text()
+          for source, target in (("## What's Changed", "## 本次更新"),
+                                 ("## New Contributors", "## 新贡献者"),
+                                 ("**Full Changelog**", "**完整变更记录**")):
+              text = text.replace(source, target)
+          path.write_text(text)
+          PYNOTES
+            gh release create "$RELEASE_TAG" "$ARCHIVE_PATH" "tools/extract_logs.py" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$SOURCE_SHA" \
               --title "$RELEASE_TAG" \
-              --generate-notes "${release_flags[@]}"
+              --notes-file "$notes_file" "${release_flags[@]}"
+            rm -f "$notes_file"
           fi
 

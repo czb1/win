@@ -82,7 +82,7 @@ print(json.dumps(values, ensure_ascii=False, allow_nan=False))
 '''
 
 _RUNNER = r'''
-import json, os, re, subprocess, sys, tempfile
+import json, os, re, shlex, subprocess, sys, tempfile, traceback
 from pathlib import Path
 base = Path(CONFIG['workspace']).resolve(strict=True)
 os.chdir(base)
@@ -118,6 +118,47 @@ def diff(a, b, location='$'):
     elif a != b:
         return {'path': location, 'expected': a, 'actual': b}
     return None
+
+def unordered(value):
+    # Type tags prevent bool/int and nested structure from comparing as equal.
+    if isinstance(value, dict):
+        return ('dict', tuple((k, unordered(v)) for k, v in sorted(value.items())))
+    if isinstance(value, list):
+        return ('list', tuple(sorted((unordered(v) for v in value), key=repr)))
+    return (type(value).__name__, value)
+
+def classify(expected, actual, evidence):
+    if unordered(expected) == unordered(actual):
+        return 'order_only'
+    if evidence.get('missing_count') or evidence.get('extra_count'):
+        return 'record_membership_or_mixed'
+    return 'value_or_structure'
+
+def emit_diagnostic(detail):
+    # Keep complete, machine-readable evidence accessible even for large cases.
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=base,
+                                     prefix='.transform-diagnostic-', suffix='.json', delete=False) as f:
+        json.dump(detail, f, ensure_ascii=False, indent=2)
+        saved = f.name
+    view = dict(detail, evidence_path=saved, read_command='READ ' + shlex.quote(saved) + ' 0')
+    if detail.get('stage') == 'samples':
+        view['failures'] = []
+        budget = 6500
+        for item in detail['failures'][:2]:
+            size = len(json.dumps(item, ensure_ascii=False))
+            if size <= budget:
+                view['failures'].append(item)
+                budget -= size
+            else:
+                view['failures'].append({k: item[k] for k in ('case', 'difference', 'classification')})
+                view['failures'][-1]['detail'] = 'Complete counterexample at evidence_path; not truncated JSON'
+    if 'traceback' in view and len(view['traceback']) > 8000:
+        view['traceback'] = view['traceback'][-8000:]
+        view['traceback_truncated'] = True
+    if 'checker_feedback' in view and len(view['checker_feedback']) > 8000:
+        view['checker_feedback'] = view['checker_feedback'][-8000:]
+        view['checker_feedback_truncated'] = True
+    print('TRANSFORM_DIAGNOSTIC ' + json.dumps(view, ensure_ascii=False))
 
 def bounded(value, limit=1800):
     encoded = json.dumps(value, ensure_ascii=False)
@@ -158,6 +199,9 @@ def record_evidence(records, expected, actual):
     missing, extra = set(kept)-set(produced), set(produced)-set(kept)
     return {'alignment': 'unique input field preserved in output', 'identity_field': key,
             'missing_count': len(missing), 'extra_count': len(extra),
+            'input_order': bounded([r[key] for r in records]),
+            'expected_order': bounded([o[key] for o in objects(expected) if key in o]),
+            'actual_order': bounded([o[key] for o in objects(actual) if key in o]),
             'missing_records': bounded([records[i] for i in sorted(missing)[:4]]),
             'extra_records': bounded([records[i] for i in sorted(extra)[:4]]),
             'expected_kept': numeric_summary([records[i] for i in kept]),
@@ -190,6 +234,7 @@ def checker_fragment(value, text):
         return {'path': location, 'detail': 'checker path cannot be resolved; do not guess'}
 
 
+stage = 'input'
 try:
     data = read(CONFIG['cases'])
     cases = data.get('cases') if isinstance(data, dict) else data
@@ -201,57 +246,69 @@ try:
     if not isinstance(records, list):
         raise ValueError('input is not a record array')
     request = json.dumps({'code': METHOD, 'inputs': [c['input'] for c in cases] + [records]}, ensure_ascii=False)
-    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+    stage = 'execution'
+    with tempfile.TemporaryFile() as out, tempfile.NamedTemporaryFile(
+            dir=base, prefix='.transform-stderr-', suffix='.txt', delete=False) as err:
         run = subprocess.run([sys.executable, '-I', '-c', WORKER], input=request.encode(), stdout=out, stderr=err, timeout=6)
         out.seek(0); raw = out.read(60001)
-        err.seek(0); error = err.read(2000).decode(errors='replace')
+        error_size = err.tell()
+        err.seek(max(0, error_size - 16000)); error = err.read(16000).decode(errors='replace')
     if run.returncode or len(raw) > 60000:
-        raise ValueError('transform execution failed: ' + error)
+        emit_diagnostic({'stage': stage, 'classification': 'code_exception' if run.returncode else 'output_limit',
+                         'exit_code': run.returncode, 'traceback': error, 'output_limit': len(raw) > 60000,
+                         'traceback_truncated': error_size > 16000, 'stderr_path': err.name,
+                         'stderr_read_command': 'READ ' + shlex.quote(err.name) + ' 0'})
+        raise SystemExit(1)
+    Path(err.name).unlink()
     values = json.loads(raw, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))
     if not isinstance(values, list) or len(values) != len(cases) + 1:
         raise ValueError('invalid transform output')
+    stage = 'samples'
     failures = []
     for i, case in enumerate(cases):
         expected = case['expected'] if 'expected' in case else case['output']
         mismatch = diff(expected, values[i])
-        if mismatch and len(failures) < 3:
+        if mismatch:
+            evidence = record_evidence(case['input'], expected, values[i])
             failures.append({'case': i, 'difference': mismatch, 'input': case['input'], 'expected': expected, 'actual': values[i],
-                             'record_evidence': record_evidence(case['input'], expected, values[i])})
+                             'classification': classify(expected, values[i], evidence), 'record_evidence': evidence})
     if failures:
-        # Complete first mismatch pair; never dump all cases or splice JSON mid-record.
-        detail = {'stage': 'samples', 'case_count': len(cases), 'failures': []}
-        for index, item in enumerate(failures):
-            if index > 0 or len(json.dumps(item, ensure_ascii=False)) > 3500:
-                item = {'case': item['case'], 'difference': item['difference'], 'detail': 'large case; inspect this case separately',
-                        'record_evidence': item['record_evidence']}
-            detail['failures'].append(item)
-        print('TRANSFORM_DIAGNOSTIC ' + json.dumps(detail, ensure_ascii=False))
+        emit_diagnostic({'stage': 'samples', 'case_count': len(cases),
+                         'failed_count': len(failures), 'failures': failures})
         raise SystemExit(1)
+    stage = 'output'
     encoded = json.dumps(values[-1], ensure_ascii=False, allow_nan=False)
     destination = path(CONFIG['output'])
     # Never overwrite input, samples or checker, including aliases.
     if destination.resolve() in {path(n).resolve() for n in (CONFIG['input'], CONFIG['cases'], CONFIG['checker'])}:
         raise ValueError('output aliases protected input')
     destination.write_text(encoded, encoding='utf-8')
-    with tempfile.TemporaryFile() as out:
+    stage = 'checker'
+    with tempfile.NamedTemporaryFile(dir=base, prefix='.transform-checker-', suffix='.txt', delete=False) as out:
         checked = subprocess.run([str(path(CONFIG['checker']))], cwd=base, stdout=out, stderr=subprocess.STDOUT, timeout=6)
-        out.seek(0); raw = out.read(16001)
+        checker_size = out.tell()
+        out.seek(max(0, checker_size - 16000)); raw = out.read(16000)
     text = raw.decode(errors='replace')
     tokens = re.findall(r'^TOKEN:[ \t]*(\S+)[ \t]*$', text, re.M)
-    if checked.returncode != 0 or len(raw) > 16000 or len(tokens) != 1 or re.search(r'\[FAIL\]', text):
-        print('TRANSFORM_DIAGNOSTIC ' + json.dumps({
-            'stage': 'checker', 'samples_passed': len(cases), 'checker_feedback': text[:2500],
+    if checked.returncode != 0 or checker_size > 16000 or len(tokens) != 1 or re.search(r'\[FAIL\]', text):
+        emit_diagnostic({
+            'stage': 'checker', 'classification': 'checker_failure', 'exit_code': checked.returncode,
+            'samples_passed': len(cases), 'checker_feedback': text,
+            'checker_feedback_truncated': checker_size > 16000, 'checker_output_path': out.name,
+            'checker_read_command': 'READ ' + shlex.quote(out.name) + ' 0',
             'output_fragment': checker_fragment(values[-1], text),
             'input_summary': numeric_summary(records),
             'sample_evidence': [record_evidence(c['input'], c.get('expected', c.get('output')), values[i])
                                 for i,c in enumerate(cases[:3])],
             'next_action': 'Public samples may admit multiple rules. Compare kept/dropped boundaries and current input; change one supported rule, never patch the answer.'
-        }, ensure_ascii=False))
+        })
         raise SystemExit(1)
+    Path(out.name).unlink()
     print('FINAL_ANSWER')
     print(json.dumps({'token': tokens[0]}))
 except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
-    print('TRANSFORM_DIAGNOSTIC ' + str(error)[:2000])
+    emit_diagnostic({'stage': stage, 'classification': 'timeout' if isinstance(error, subprocess.TimeoutExpired) else 'exception',
+                     'error_type': type(error).__name__, 'message': str(error), 'traceback': traceback.format_exc()})
     raise SystemExit(1)
 '''
 _RUNNER = 'WORKER = ' + repr(_WORKER) + '\n' + _RUNNER
