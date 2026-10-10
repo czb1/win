@@ -7,7 +7,7 @@ import unittest
 import test_weak_model_evolution as weak
 from test_evolution_v2 import step, v2_result
 from agent.intelligence import Memory
-from agent.task_transform_feedback import diagnosis, metadata, history_methods, prompt
+from agent.task_transform_feedback import diagnosis, metadata, history_methods, prompt, observe, dominates, repair_direction
 from agent.task_skills import learned_method
 
 
@@ -100,6 +100,60 @@ class TransformFeedbackTests(unittest.TestCase):
             mem.last_attempt = {'tool':'read', 'status':'ok'}
             context = json.loads(prompt(mem, 8).split('上下文：')[1])
             self.assertEqual(context['lastAttempt']['diagnosis']['stage'], 'samples')
+
+
+    def test_result_fingerprint_and_conservative_candidate_selection(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg, *_ = self.fixture(root)
+            records = [{'serial': 'x', 'rank': 8, 'quantity': 2},
+                       {'serial': 'y', 'rank': 8, 'quantity': 7},
+                       {'serial': 'z', 'rank': 4, 'quantity': 9}]
+            (root/'examples.json').write_text(json.dumps([
+                {'input': records, 'expected': records[1:]}]))
+            mem = Memory()
+            def attempt(code):
+                _, body, _ = self.execute(code, cfg)
+                item = {'python': code, 'diagnosis': diagnosis(body)}
+                observe(mem, item)
+                return item
+            first = attempt('def transform(records): return records')
+            second = attempt('def transform(records): return records[:1]')
+            self.assertTrue(dominates(first['diagnosis'], second['diagnosis']))
+            self.assertEqual(mem.transform_progress['comparison'], 'regressed')
+            self.assertEqual(mem.transform_best['python'], first['python'])
+            attempt('def transform(records): return list(records[:1])')
+            self.assertTrue(mem.transform_progress['same_sample_outputs'])
+            context = json.loads(prompt(mem, 8).split('上下文：')[1])
+            # Wiring stores the last attempt; direct helper invocation does not.
+            mem.transform_attempt = second
+            context = json.loads(prompt(mem, 8).split('上下文：')[1])
+            self.assertEqual(context['repairBase']['python'], first['python'])
+            self.assertNotIn('python', context['lastAttempt'])
+            self.assertNotIn('failures', context['lastAttempt']['diagnosis'])
+            evidence = first['diagnosis']['failures'][0]['record_evidence']
+            self.assertEqual(evidence['contrasts'][0]['contrast']['serial'], 'y')
+            # Same number of failures is not enough; trade-offs remain incomparable.
+            a = {'sample_fingerprint':'s', 'quality':[[1, 0, 1, 0, 0]]}
+            b = {'sample_fingerprint':'s', 'quality':[[1, 1, 0, 0, 0]]}
+            self.assertFalse(dominates(a,b))
+            self.assertFalse(dominates(b,a))
+            self.assertFalse(dominates(a, {**b, 'sample_fingerprint':'other'}))
+
+    def test_feedback_has_one_direction_and_no_duplicate_candidate(self):
+        mem = Memory()
+        mem.transform_attempt = {'python':'def transform(records): return records',
+                                 'diagnosis': {'stage':'samples', 'failures':[]}}
+        mem.rejected_transform = {'python':mem.transform_attempt['python'],
+                                  'reason':'failed_ast', 'executed':False}
+        mem.history.append({'error':'同类运行时失败；缩小为一个诊断步骤'})
+        text = prompt(mem, 3)
+        self.assertNotIn('同类运行时失败', text)
+        self.assertNotIn('缩小为一个诊断步骤', text)
+        self.assertEqual(text.count('def transform(records)'), 1)
+        self.assertIn('临近截止', text)
+        self.assertIn('traceback', repair_direction({'stage':'execution'}, 8))
+        self.assertIn('正式checker', repair_direction({'stage':'checker'}, 8))
 
 
 if __name__ == '__main__':
