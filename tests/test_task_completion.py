@@ -19,6 +19,7 @@ from agent.model import Turn
 from agent.task_sop import answer_contract, answer_error, engineering_code
 from agent.task_tools import document_code, document_path
 from agent.task_skills import learned_method
+from agent.task_schedule import task_descriptor, task_signature
 
 
 def deployment(directory, name, port=8080):
@@ -387,7 +388,12 @@ print('repair done')
         for learned, expected in ((False, (5, 6)), (True, (6, 5))):
             with self.subTest(learned=learned):
                 t, cfg, nav, ledger = setup_case(p)
-                mem = Memory(skills=[{'point': (6, 5), 'workflow': 'check_token', 'rounds': 4}] if learned else [])
+                mem = Memory()
+                if learned:
+                    mem.task_outcomes.append(dict(point=(6, 5), rounds=4, completionObserved=True,
+                        descriptor=task_descriptor(p['teamOur']['playerTasks'][0]),
+                        signature=task_signature(dict(family='deployment/task_#', kind='check_token',
+                                                      example={'token': 'sample'}))))
                 pioneer(t, cfg, mem, nav, ledger, t.pioneer)
                 self.assertEqual(mem.task_point, expected)
                 self.assertEqual(mem.task_timeout, 100 if learned else 10)

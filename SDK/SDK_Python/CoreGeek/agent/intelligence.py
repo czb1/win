@@ -15,6 +15,7 @@ from .model import ORES, pos
 from .recovery import Recovery
 from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status
 from .wall_watch_state import WallWatchState
+from .task_schedule import task_descriptor, task_signature
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
 from .task_inputs import input_context, preview_code, zero_without_coverage
 from .task_transform_feedback import diagnosis as transform_diagnosis, metadata as transform_metadata, prompt as transform_prompt, observe as observe_transform, repair_direction
@@ -340,6 +341,9 @@ class Memory:
     task_start_gold: int = 0
     task_start_score: int = 0
     task_outcomes: deque = field(default_factory=lambda: deque(maxlen=8))
+    task_descriptor: dict = field(default_factory=dict)
+    task_target: tuple | None = None
+    task_wait_cell: tuple | None = None
     knowledge: list = field(default_factory=list)
     submission_feedback: str = ""
     stop_reason: str = ""
@@ -435,7 +439,10 @@ class Memory:
                 del self.wall_rebuild_levels[p]
         self.wall_health = current_walls
         self.wall_levels = levels
+        if not turn.is_day or not turn.pioneer:
+            self.task_target = self.task_wait_cell = None
         if self.day != turn.day:
+            self.task_target = self.task_wait_cell = None
             self.day, self.calls = turn.day, 0
             self.wall_repair_worker = None
             self.wall_repair_delivering = False
@@ -545,6 +552,8 @@ class Memory:
         if turn.phase_task != self.task_text:
             if self.task_text:
                 outcome = {"point": self.task_point, "rounds": turn.round - self.task_started,
+                           "descriptor": dict(self.task_descriptor),
+                           "signature": task_signature(self.contract),
                            "completionObserved": completed,
                            "reason": ("completion_observed" if completed else self.stop_reason or
                                       ("timeout" if any(e.get("errorCode") == 1 for e in errors)
@@ -570,12 +579,15 @@ class Memory:
             self.task_text = turn.phase_task
             self.task_started = (self.accepted_round if self.accepted_round is not None else turn.round) if turn.phase_task else 0
             self.accepted_round = None
+            self.task_descriptor = {}
+            self.task_target = self.task_wait_cell = None
             if turn.phase_task and turn.pioneer:
                 active = next((task for task in turn.tasks
                                if any(turn.adjacent(turn.pioneer.pos, p) for p in turn.task_cells(task))
                                and (self.task_point is None or pos(task["taskPosition"]) == self.task_point)), None)
                 if active:
                     self.task_point = pos(active["taskPosition"])
+                    self.task_descriptor = task_descriptor(active)
                     self.task_timeout = int(active.get("timeoutRounds", cfg.task_max_rounds))
             if turn.phase_task:
                 self.log_task_id = f"{self.log_session}/r{self.task_started}"
