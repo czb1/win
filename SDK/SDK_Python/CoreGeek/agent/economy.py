@@ -702,7 +702,7 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
     gaps = wall_gaps(turn, ledger.wall_cells, mem.wall_hits) | (
         set(mem.wall_rebuild_levels) - wall_chain)
     for index, target in enumerate(sites):
-        if name_for(index) == "wall" and cfg.layout_mode != "explicit":
+        if name_for(index) == "wall" and cfg.layout_mode != "explicit" and turn.day != 1:
             # Shared edges, not diagonal contact: grow one continuous wall.
             # A move claim is not a built wall and cannot seed a second segment.
             if wall_chain and not any(abs(target[0]-p[0]) + abs(target[1]-p[1]) == 1
@@ -724,6 +724,12 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
             if name_for(index) == "wall":
                 # Close gaps first, then retain the established expansion order.
                 priority = (int(target not in gaps),) + priority[:3] + (0, target != mem.build_targets.get(hero.id))
+                if turn.day == 1:
+                    # Prefer a connected segment, but never require it: an
+                    # occupied extension must not suppress every other site.
+                    connected = not wall_chain or any(
+                        abs(target[0]-p[0]) + abs(target[1]-p[1]) == 1 for p in wall_chain)
+                    priority += (int(not connected),)
             previous = mem.build_targets.get(hero.id)
             continuity = distance(target, previous) if name_for(index) == "wall" and previous else 0
             options.append((priority, route[0], continuity, index, target, route))
@@ -739,6 +745,70 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
                 ledger.remember_work(hero, 'build', target, name=name, work_cell=work_cell)
             return True
     return False
+
+
+def first_day_front(turn, cfg, mem, nav, ledger, wall_sites, excluded=()):
+    """One active builder, no guards or waiting locks, ordinary work on failure."""
+    if not turn.is_day or turn.day != 1 or not turn.station:
+        mem.day1_wall_worker = None
+        mem.day1_wall_delivering = False
+        return
+    front = [p for p in front_sites(turn, wall_sites)
+             if p not in turn.blocked and p not in ledger.reserved
+             and p not in mem.build_failures and p not in ledger.build_claims]
+    if not front:
+        mem.day1_wall_worker = None
+        mem.day1_wall_delivering = False
+        return
+    options = []
+    for hero in turn.workers:
+        job = mem.daytime_jobs.get(hero.id, {})
+        if (hero.id in ledger.used or hero.id in excluded or hero.health <= 165
+                or any('UpgradeVoucher' in k or k == 'WallFixer' for k in hero.backpack)
+                or job.get('kind') in ('sell', 'buy', 'use', 'robot_buy')
+                or job.get('kind') == 'build' and job.get('name') != 'wall'):
+            continue
+        routes = [r[0] for p in front if not mem.movement.avoids(hero.id, p)
+                  and (r := nav.approach(hero, [p], ledger.reserved)) is not None]
+        if not routes or min(routes) + cfg.return_margin + 2 >= turn.day_left:
+            continue
+        held = hero.inventory['stone']
+        goal = min(cfg.stone_batch, len(front) * cfg.wall_stones)
+        delivering = hero.id == mem.day1_wall_worker and mem.day1_wall_delivering and held > 0
+        # A full/partial carried batch is spent before gathering again. Only
+        # gather while starting the job empty or continuing its material trip.
+        gathering = (held < cfg.wall_stones or hero.id == mem.day1_wall_worker and not delivering)
+        mines = []
+        if gathering and held < goal and hero.space:
+            for p, kind in turn.zones.items():
+                if (kind != 'stone' or turn.mine_remain.get(p, 1) == 0
+                        or p in mem.collect_failures or mem.movement.avoids(hero.id, p)):
+                    continue
+                trip = via(nav, hero, [[p], front], ledger.reserved)
+                if trip is not None and trip + goal - held + len(front) + cfg.return_margin < turn.day_left:
+                    mines.append((trip, p))
+        if not mines and held < cfg.wall_stones:
+            continue
+        options.append((hero.id != mem.day1_wall_worker, held < cfg.wall_stones,
+                        min(mines)[0] if mines else min(routes), hero.id, hero, mines, goal))
+    for _, _, _, _, hero, mines, goal in sorted(options):
+        if mines:
+            accepted = mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
+                            target_only=min(mines)[1], stone_goal=goal)
+            delivering = False
+        else:
+            accepted = build(turn, cfg, mem, nav, ledger, hero, front, lambda _: 'wall')
+            delivering = True
+        if accepted:
+            mem.day1_wall_worker = hero.id
+            mem.day1_wall_delivering = delivering
+            mem.daytime_jobs.pop(hero.id, None)
+            # Reevaluate every turn: no stale material/build job after the
+            # front fills or becomes blocked. Other workers' jobs stay intact.
+            ledger.work_jobs.pop(hero.id, None)
+            return
+    mem.day1_wall_worker = None
+    mem.day1_wall_delivering = False
 
 
 def finish_preparation(turn, cfg, mem, nav, ledger, hero, tower, wall_sites):
