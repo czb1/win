@@ -28,7 +28,7 @@ def _fits_return(turn, cfg, mem, nav, ledger, hero, target):
     return trip is not None and trip + 1 + cfg.return_margin <= turn.day_left
 
 
-def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls):
+def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()):
     from .economy import buy_supply, supplies, use_inventory, build, batch_sale_ready
 
     kind, target = job['kind'], job['target']
@@ -60,10 +60,11 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls):
             mem.supply_worker = hero.id
     elif kind == 'robot_buy':
         from .brain import summon_best_robot
-        from .spending import plan_day_spending
-        _, reserve = plan_day_spending(turn, cfg, mem, nav, ledger, towers)
+        from .spending import plan_day_spending, prepare_defense_purchase
+        priority_actors, reserve = plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded)
+        reserve = prepare_defense_purchase(turn, mem, ledger, reserve)
         ok = summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls,
-                               excluded={h.id for h in turn.heroes if h.id != hero.id},
+                               excluded=priority_actors | {h.id for h in turn.heroes if h.id != hero.id},
                                reserve=reserve, item_only=job['name'], shop_only=target,
                                quantity_limit=job['quantity'])
     elif kind == 'use':
@@ -168,6 +169,8 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
     if mem.daytime_jobs and repair_job.get('kind') not in ('mine', 'build'):
         repair_walls(turn, cfg, mem, nav, ledger,
                      [h for h in free if h.id not in ledger.used], walls)
+    from .spending import prepare_paid_upgrades
+    prepare_paid_upgrades(turn, mem, nav, ledger, free, returning)
     # Keep the existing purchase-before-construction gold reservation order.
     # A builder spending first would make the buyer reserve the same missing
     # gun again and needlessly cancel an already accepted shopping journey.
@@ -179,8 +182,12 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
         if hero.id in ledger.used or hero.id in returning:
             reason = 'emergency_or_recall'
         else:
-            ok, reason = _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls)
+            ok, reason = _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, returning)
             if ok:
+                if job['kind'] == 'use' and 'UpgradeVoucher' in job['name']:
+                    ledger.protected_supply_workers.add(hero.id)
+                    if mem.supply_worker is None:
+                        mem.supply_worker = hero.id
                 LOG.info('round=%s worker=%s daytime_job=continue kind=%s target=%s',
                          turn.round, hero.id, job['kind'], job['target'])
                 continue

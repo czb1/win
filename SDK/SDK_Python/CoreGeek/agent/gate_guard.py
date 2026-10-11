@@ -181,13 +181,15 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     # With a smaller sabotage region there may be no target. An idle imp at
     # the doorway must still use the shared traffic clearance, without being
     # recalled from elsewhere or holding the gate on a quiet night.
-    traffic_only = ((turn.is_day or quiet_night) and hero.pos in {gate, *posts}
+    state = mem.sabotage.gate_states.get(hero.id, {})
+    waiting_post = (state.get('day') == turn.day and state.get('traffic_only')
+                    and hero.pos == state.get('post'))
+    traffic_only = ((turn.is_day or quiet_night) and (hero.pos in {gate, *posts} or waiting_post)
                     and not any(turn.enemy_mine(p) for p in turn.zones))
     if quiet_night and not traffic_only:
         # Keep any valid mine target and channel progress when releasing guard.
         mem.sabotage.gate_states.pop(hero.id, None)
         return None
-    state = mem.sabotage.gate_states.get(hero.id, {})
     returning = state.get('day') == turn.day and state.get('recalling', False)
     yielding = state.get('day') == turn.day and state.get('yield_until', -1) >= turn.round
     if turn.is_day and not returning and not yielding:

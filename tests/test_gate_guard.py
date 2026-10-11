@@ -290,6 +290,27 @@ class GateGuardEligibilityTests(unittest.TestCase):
 
 
 class GateGuardTests(unittest.TestCase):
+    def test_recorded_aisle_clearance_post_keeps_daytime_traffic_role(self):
+        for day_offset, post, expected in ((0, (34, 8), True),
+                                          (0, (34, 9), False),
+                                          (-1, (34, 8), False)):
+            with self.subTest(day_offset=day_offset, post=post):
+                data = logged_morning_case()
+                next(u for u in data['teamOur']['roles'] if u['id'] == 20014)['pos'] = dict(x=34, y=8)
+                turn, cfg, nav, ledger = setup_case(data, llm_enabled=False)
+                mem = Memory()
+                mem.observe(turn, cfg)
+                mem.sabotage.gate_states[20014] = dict(day=turn.day + day_offset,
+                    recalling=False, traffic_only=True, post=post)
+                towers, walls = layout(turn, cfg)
+                guard = prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls)
+                if expected:
+                    self.assertIsNotNone(guard)
+                    self.assertTrue(guard.state['traffic_only'])
+                    self.assertFalse(guard.state['recalling'])
+                else:
+                    self.assertIsNone(guard)
+
     def test_early_day_at_gate_does_not_recall_or_clear_sabotage(self):
         for point in ((33, 10), (34, 9)):
             with self.subTest(point=point):

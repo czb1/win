@@ -25,7 +25,8 @@ from .wall_watch import select_watch, prepare_watch, repair_watch
 from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position, enemy_base
-from .spending import first_day_boss_phase, plan_day_spending, robot_purchase_plan
+from .spending import (first_day_boss_phase, plan_day_spending, robot_purchase_plan,
+                       prepare_paid_upgrades, prepare_defense_purchase)
 from .scouting import act_night_scout, prepare_night_scout
 from .task_schedule import task_options, switch_task_option
 
@@ -87,6 +88,8 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         excluded.add(turn.pioneer.id)
     free = [hero for hero in turn.heroes
             if hero.id not in ledger.used and hero.id not in excluded]
+    prepare_paid_upgrades(turn, mem, nav, ledger, free)
+    free = [hero for hero in free if hero.id not in ledger.used]
     carriers = sorted(((-rank, hero.kind != 'worker', hero.id, hero, name)
                        for hero in free for rank, name in enumerate(SUMMON_ORDERS)
                        if hero.inventory[name]), key=lambda row: row[:3])
@@ -592,10 +595,11 @@ class Agent:
                 first_day_front(turn, self.cfg, mem, nav, ledger, walls, returning)
                 resume_daytime_jobs(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
                 if not opening_boss:
-                    _, priority_gold = plan_day_spending(
+                    priority_actors, priority_gold = plan_day_spending(
                         turn, self.cfg, mem, nav, ledger, towers, returning)
+                    priority_gold = prepare_defense_purchase(turn, mem, ledger, priority_gold)
                     summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
-                                      excluded=returning, reserve=priority_gold)
+                                      excluded=returning | priority_actors, reserve=priority_gold)
                 dusk_resources(turn, self.cfg, mem, nav, ledger, towers)
                 if not staged_scout:
                     staged_scout = prepare_night_scout(
