@@ -49,6 +49,19 @@ def reflect(data, flip_x, flip_y):
 
 
 class AssaultBypassTests(unittest.TestCase):
+    def test_unattackable_neutral_barrier_still_allows_forward_progress(self):
+        data = assault_payload(robot=controlled_robot(x=5, y=4))
+        # Neutral cells cannot be attacked, and a continuous barrier makes
+        # every legal base firing stance unreachable from the starting side.
+        data['mapInfo']['zones'] += [
+            {'neutralType': 'stone', 'pos': {'x': 7, 'y': y}, 'remain': 10}
+            for y in range(data['mapInfo']['height'])]
+        ledger, _ = decide(data)
+        action = ledger.commands['30000']
+        self.assertEqual(action['action'], 'move')
+        self.assertEqual(pos(action['targetPos'][0])[0], 6)
+        self.assertEqual(ledger.notes[30000]['reason'], 'robot_advance_when_routes_blocked')
+
     def test_reported_frontage_uses_open_routes_for_all_three_bosses(self):
         for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
             with self.subTest(flip_x=flip_x, flip_y=flip_y):

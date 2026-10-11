@@ -482,6 +482,30 @@ def _focus_blocker(turn, memory, ledger, base, occupied):
     return target
 
 
+def _advance_toward_base(turn, memory, ledger, robot, base):
+    """Use a legal forward step if every firing route and clearance failed."""
+    current = base_distance(base, robot.pos)
+    firing_lanes = set()
+    shooters = {r.id: r for r in turn.summon_robots}
+    for uid, action in ledger.commands.items():
+        shooter = shooters.get(int(uid))
+        if shooter and action.get('action') == 'attack':
+            aim = action['targetPos'][0]
+            firing_lanes.update(line_cells(shooter.pos, (aim['x'], aim['y'])))
+    options = [p for p in neighbours(robot.pos) if turn.inside(p)
+               and base_distance(base, p) < current and p not in turn.blocked
+               and p not in ledger.reserved and p not in memory.avoided_steps(robot.id)
+               and p not in firing_lanes]
+    for step in sorted(options, key=lambda p: (base_distance(base, p), p)):
+        if ledger.add(robot.id, command('move', step)):
+            memory.remember(turn, robot, 'move', step)
+            ledger.explain(robot.id, 'robot_advance_when_routes_blocked',
+                           target_id=base.id, assault_choice='base_progress',
+                           remaining_distance=base_distance(base, step))
+            return True
+    return False
+
+
 def act_robots(turn, memory, nav, ledger):
     base = enemy_base(turn)
     memory.observe(turn, base)
@@ -563,6 +587,8 @@ def act_robots(turn, memory, nav, ledger):
             wall = next((u for u in turn.enemies if detour and u.id == detour.wall_id), None)
             if wall and _act_toward_target(turn, memory, nav, ledger, robot, wall, occupied):
                 continue
+        if _advance_toward_base(turn, memory, ledger, robot, base):
+            continue
         ledger.used.add(robot.id)
         ledger.reserved.add(robot.pos)
         ledger.explain(robot.id, "robot_assault_path_blocked", target_id=target.id,

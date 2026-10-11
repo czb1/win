@@ -8,8 +8,8 @@ from agent.brain import Agent
 from agent.commands import command
 from agent.config import Config
 from agent.model import distance, pos
-from agent.scouting import ScoutMemory, act_night_scout
-from agent.robot_assault import RobotAssaultMemory, act_robots
+from agent.scouting import ScoutMemory, act_night_scout, prepare_night_scout
+from agent.robot_assault import RobotAssaultMemory, act_robots, rear_approach
 from agent.wall_watch import select_watch
 from agent.intelligence import Memory
 
@@ -33,6 +33,60 @@ def decide(data, memory=None, home_roles=(), assault=False):
 
 
 class NightScoutTests(unittest.TestCase):
+    def test_dusk_departure_is_route_timed_and_night_keeps_worker(self):
+        data = scout_case(55)
+        data['teamOur']['roles'][1]['pos'] = {'x': 13, 'y': 2}
+        data['teamOur']['roles'][2]['pos'] = {'x': 5, 'y': 10}
+        memory = ScoutMemory()
+        turn, _, nav, ledger = setup_case(data)
+        self.assertIsNone(prepare_night_scout(turn, memory, nav, ledger, excluded={12}))
+        self.assertFalse(ledger.used)
+        data['roundNo'] = 68
+        turn, _, nav, ledger = setup_case(data)
+        scout = prepare_night_scout(turn, memory, nav, ledger, excluded={12})
+        self.assertEqual(scout.id, 10)
+        self.assertEqual(ledger.commands['10']['action'], 'move')
+        self.assertTrue(rear_approach(turn, turn.enemies[0], memory.post))
+        self.assertEqual(memory.key[0], 1)
+        data['roundNo'] = 70
+        data['teamOur']['roles'][1]['pos'] = {'x': memory.post[0], 'y': memory.post[1]}
+        turn, _, nav, ledger = setup_case(data)
+        self.assertEqual(act_night_scout(turn, memory, nav, ledger).id, 10)
+        self.assertEqual(ledger.notes[10]['reason'], 'night_scout_hold')
+
+    def test_paid_daytime_job_is_not_taken_for_staging(self):
+        data = scout_case(68)
+        turn, _, nav, ledger = setup_case(data)
+        memory = ScoutMemory()
+        self.assertIsNone(prepare_night_scout(turn, memory, nav, ledger,
+                                              excluded={12}, jobs={10: {'kind': 'sell'}}))
+        self.assertFalse(ledger.used)
+
+    def test_agent_stages_then_reads_shared_sight_for_robot_attack(self):
+        data = scout_case(68)
+        data['teamOur']['roles'][1]['pos'] = {'x': 13, 'y': 2}
+        agent = Agent(Config(llm_enabled=False))
+        first = agent.decide(data)['roleCommandMap']
+        memory = next(iter(agent.sessions.values()))
+        post = memory.night_scout.post
+        self.assertEqual(first['10']['action'], 'move')
+        self.assertIsNotNone(post)
+        data['roundNo'] = 69
+        data['teamOur']['roles'][1]['pos'] = {'x': post[0], 'y': post[1]}
+        agent.decide(data)
+        self.assertEqual(memory.night_scout.worker_id, 10)
+        self.assertEqual(memory.night_scout.post, post)
+        data['roundNo'] = 70
+        # The engine supplies the enemy after our observer sees it; the agent
+        # never inserts an unseen target into this request.
+        data['teamEnemy']['roles'].append(unit(50, 'rocket', 12, 3))
+        data['teamOur']['summonRobotList'] = [controlled_robot(x=8, y=4)]
+        second = agent.decide(data)['roleCommandMap']
+        self.assertEqual(memory.night_scout.worker_id, 10)
+        self.assertIn(50, memory.robot_assault.buildings)
+        self.assertEqual(second['30000']['action'], 'attack')
+        self.assertEqual(pos(second['30000']['targetPos'][0]), (10, 4))
+
     def test_one_worker_approaches_and_holds_shared_vision(self):
         data = scout_case()
         scout, ledger, memory, turn = decide(data)

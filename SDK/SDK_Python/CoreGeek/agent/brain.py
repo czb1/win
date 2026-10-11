@@ -26,7 +26,7 @@ from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position, enemy_base
 from .spending import first_day_boss_phase, plan_day_spending, robot_purchase_plan
-from .scouting import act_night_scout
+from .scouting import act_night_scout, prepare_night_scout
 from .task_schedule import task_options, switch_task_option
 
 LOG = logging.getLogger(__name__)
@@ -581,6 +581,14 @@ class Agent:
                 if watch_locked:
                     returning.add(watcher.id)
                 ledger.gold -= min(watch_gold, ledger.gold)
+                scout_excluded = returning | ({watcher.id} if watcher else set())
+                staged_scout = None
+                enemy_station = enemy_base(turn)
+                if (enemy_station and mem.night_scout.worker_id is not None
+                        and mem.night_scout.key == (turn.day, enemy_station.id, enemy_station.pos)):
+                    staged_scout = prepare_night_scout(
+                        turn, mem.night_scout, nav, ledger,
+                        excluded=scout_excluded, jobs=mem.daytime_jobs)
                 first_day_front(turn, self.cfg, mem, nav, ledger, walls, returning)
                 resume_daytime_jobs(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
                 if not opening_boss:
@@ -589,6 +597,13 @@ class Agent:
                     summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
                                       excluded=returning, reserve=priority_gold)
                 dusk_resources(turn, self.cfg, mem, nav, ledger, towers)
+                if not staged_scout:
+                    staged_scout = prepare_night_scout(
+                        turn, mem.night_scout, nav, ledger,
+                        excluded=scout_excluded, jobs=mem.daytime_jobs)
+                if staged_scout:
+                    mem.daytime_jobs.pop(staged_scout.id, None)
+                    ledger.work_jobs.pop(staged_scout.id, None)
                 for hero, tower in pairs:
                     if hero.id in returning and hero.id not in ledger.used:
                         finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)
