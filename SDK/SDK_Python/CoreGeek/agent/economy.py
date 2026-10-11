@@ -257,16 +257,13 @@ def delivery_trip(turn, nav, ledger, hero, shop_cell, targets):
 def upgrade_order(turn, building, mem=None):
     """Upgrade all weapons to level 2, then 3, before a healthy base.
 
-    Rebuilt walls catch up first, then critical base healing. Ordinary walls
-    follow level-3 weapons and precede healthy base upgrades.
+    Critical base healing leads feasible upgrades, then rebuilt walls catch
+    up. Ordinary walls follow level-3 weapons and precede healthy base upgrades.
     """
     if rebuilding_wall(turn, building, mem):
         return (-.75, building.level, building.id)
     if building.kind == "station":
-        # Rebuilt walls must be restored first. Once walls are ready, a
-        # critically damaged base outranks weapon and ordinary wall upgrades.
-        emergency = -1 if turn.day < RESOURCE_POLICY_DAY else -.5
-        return (emergency if critical_station(turn, building, mem) else 2 if building.level == 1 else 3, building.id)
+        return (-1 if critical_station(turn, building, mem) else 2 if building.level == 1 else 3, building.id)
     if building.kind in WEAPONS:
         return (0 if building.level == 1 else 1, building.id)
     stage = wall_three_stage(turn, building) if building.level == 2 else (
@@ -297,7 +294,9 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
                                 or rebuilding_wall(turn, building, mem)
                                 or building.kind == 'wall' and building.health < 500):
             continue
-        if building.kind == "station" and replacement_work_pending(turn, mem):
+        # Paid emergency healing competes with other feasible deliveries.
+        if (building.kind == "station" and replacement_work_pending(turn, mem)
+                and not critical_station(turn, building, mem)):
             continue
         name = voucher_for(building)
         if (name and (name_only is None or name == name_only)
