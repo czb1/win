@@ -45,6 +45,8 @@ class Ledger:
         self.supply_targets = {}
         self.supply_reports = {}
         self.spending_plan = {}
+        self.defense_purchase = None
+        self.protected_supply_workers = set()
         self.notes, self.plans, self.origins, self.rejections, self.rejected_samples = {}, {}, {}, {}, {}
 
     def explain(self, uid, reason, **conditions):

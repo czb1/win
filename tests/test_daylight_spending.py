@@ -265,9 +265,11 @@ class DaylightSpendingTests(unittest.TestCase):
         mem=Memory(daytime_jobs={2:dict(kind='robot_buy',target=(6,11),
                                       name='MiddleRobotSummonOrder',quantity=1)})
         resume_daytime_jobs(turn,cfg,mem,nav,ledger,[(7,4)],list(ledger.wall_cells),set())
-        self.assertNotIn('2',ledger.commands)
+        self.assertEqual(ledger.commands['2'], command('move', (6,10)))
+        self.assertEqual(ledger.work_jobs[2], dict(kind='buy',target=(6,11),
+                                                 name='WallUpgradeVoucher2',quantity=3))
         self.assertNotIn(2,mem.daytime_jobs)
-        self.assertEqual(ledger.gold,100)
+        self.assertEqual(ledger.gold,10)
 
     def test_agent_reports_spending_rejections_without_changing_cached_turn(self):
         data,cfg=case(tick=69)

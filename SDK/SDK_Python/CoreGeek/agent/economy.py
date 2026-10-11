@@ -281,7 +281,7 @@ def voucher_for(building):
 
 
 def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
-                  target_only=None, name_only=None, urgent_only=False):
+                  target_only=None, name_only=None, urgent_only=False, upgrades_only=False):
     if hero.health <= (165 if hero.kind == "worker" else 150) and hero.inventory["Medicine"]:
         return ledger.add(hero.id, command("use", name="Medicine"))
     upgrades = []
@@ -311,11 +311,11 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
                     route = None
             else:
                 route = (dusk_route(turn, nav, ledger, hero, building.cells)
-                         if turn.is_day and (turn.tick >= DUSK_SPEND_TICK or late_wall_phase(turn))
+                         if turn.is_day and (upgrades_only or turn.tick >= DUSK_SPEND_TICK or late_wall_phase(turn))
                          else nav.approach(hero, building.cells, ledger.reserved))
             if route and (not local_only or route[0] == 0):
                 upgrades.append((upgrade_order(turn, building, mem), route[0], name, building, route))
-        if (building.kind == "wall" and (name_only is None or name_only == 'WallFixer')
+        if (not upgrades_only and building.kind == "wall" and (name_only is None or name_only == 'WallFixer')
                 and hero.inventory["WallFixer"]
                 and (needs_day_repair(building, turn) if turn.is_day else needs_night_repair(building, turn, mem))
                 and building.id not in ledger.repair_claims
@@ -1163,7 +1163,10 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     carrying = next((h for h in free if h.id == mem.supply_worker
                      and any("UpgradeVoucher" in k for k in h.backpack)), None)
     eligible = {uid for _, uid in buyers}
-    if mem.supply_worker in eligible and not carrying:
+    planned_buyer = ledger.spending_plan.get('purchase_actor')
+    if planned_buyer in eligible and not carrying:
+        buyer = planned_buyer
+    elif mem.supply_worker in eligible and not carrying:
         buyer = mem.supply_worker
     elif eligible:
         # While the current carrier is walking a delivery, let another
@@ -1174,7 +1177,8 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
         buyer = mem.supply_worker
     else:
         buyer = None
-    mem.supply_worker = buyer
+    if mem.supply_worker not in ledger.protected_supply_workers:
+        mem.supply_worker = buyer
     # Complete the configured wall blueprint; the default surrounds the base except for its side gate.
     selected_walls = wall_sites
     builders = [h for h in free if h.id in developing and h.id != buyer]
