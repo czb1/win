@@ -33,7 +33,7 @@ class WorkerRecoveryTests(unittest.TestCase):
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(sale_workers={1})
         workers(t, cfg, mem, nav, ledger, [], [])
-        self.assertEqual(ledger.commands['1'], command('use', (3, 5), name='StationUpgradeVoucher1'))
+        self.assertEqual(ledger.commands['1'], command('use', (4, 5), name='StationUpgradeVoucher1'))
 
     def test_preparation_buys_affordable_base_when_weapon_too_expensive(self):
         p = self.case()

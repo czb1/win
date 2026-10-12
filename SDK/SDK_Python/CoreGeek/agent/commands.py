@@ -264,8 +264,8 @@ class Ledger:
                     if len(points) != 1:
                         return self._reject("item_expected_one_target")
                     if name not in ("Bomb", "DizzyWeapon"):
-                        building = next((u for u in self.turn.ours if target == u.pos), None)
-                        if not building or not any(self.turn.adjacent(unit.pos, p) for p in building.cells):
+                        building = next((u for u in self.turn.ours if target in u.cells), None)
+                        if not building or not self.turn.adjacent(unit.pos, target):
                             return self._reject("building_missing_or_not_adjacent")
                         if name == "WallFixer" and (building.kind != "wall" or building.id in self.repair_claims):
                             return self._reject("wall_repair_already_claimed_or_wrong_kind")

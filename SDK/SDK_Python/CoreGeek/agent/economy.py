@@ -361,7 +361,7 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
             key = lambda o: (min(0, o[0][0]), o[3].pos != previous, o[0], o[1], o[3].id)
         _, _, name, building, route = min(upgrades, key=key)
         if route[1] is None:
-            used = ledger.add(hero.id, command("use", building.pos, name=name))
+            used = ledger.add(hero.id, command("use", building.nearest_cell(hero.pos), name=name))
             if used and mem:
                 mem.upgrade_targets.pop(hero.id, None)
             return used

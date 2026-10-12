@@ -64,7 +64,7 @@ class Recovery:
             if (not name or not hero.inventory[name] or building.id in ledger.upgrade_claims
                     or not wall_upgrade_allowed(turn, building, mem, paid=True)):
                 return None
-            action = command("use", target, name=name)
+            action = command("use", building.nearest_cell(hero.pos), name=name)
         targets = building.cells if kind == "use" else [target]
         home, exact = return_destination(turn, nav, ledger, hero)
         if not home:
