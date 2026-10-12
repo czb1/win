@@ -272,7 +272,7 @@ class WallWatchTests(unittest.TestCase):
 
     def test_late_watch_keeps_one_wall_upgrade_affordable(self):
         from agent.economy import wall_purchase_allowed
-        p = self.case(day=8, tick=5, packs=0, damaged=False)
+        p = self.case(day=8, tick=35, packs=0, damaged=False)
         p['teamOur']['goldNum'] = 50
         p['weaponShopList'].append({'name': 'WallUpgradeVoucher1', 'price': 20})
         for role in p['teamOur']['roles']:

@@ -3,6 +3,13 @@ from dataclasses import replace
 from .model import Unit, ORES, neighbours
 
 
+def maxed_weapon_mining_phase(turn, cfg):
+    """Completed firepower keeps the configured early-day mining window."""
+    return (turn.is_day and turn.tick < cfg.economy_rounds
+            and len(turn.weapons) >= len(cfg.loadout)
+            and all(w.level >= 3 for w in turn.weapons))
+
+
 def planned_weapons(turn, cfg, mem, sites):
     weapons = list(turn.weapons)
     occupied = {p for u in (*turn.ours, *turn.enemies) if u.kind not in ("worker", "pioneer")
@@ -100,6 +107,11 @@ def development_pending(turn, cfg, mem, tower_sites, wall_sites):
 
 
 def preparation_start(turn, cfg, mem, nav, heroes, sites):
+    if maxed_weapon_mining_phase(turn, cfg):
+        # Optional wall/base work must not shorten the mining window once
+        # firepower is ready. Each later purchase still checks its actual trip.
+        mem.preparation_tick = cfg.economy_rounds
+        return mem.preparation_tick
     weapons = planned_weapons(turn, cfg, mem, sites)
     home = {p for w in weapons for p in w.cells}
     if not home and turn.station:

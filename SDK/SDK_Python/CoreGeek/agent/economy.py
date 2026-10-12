@@ -8,6 +8,7 @@ from .model import ORES, WEAPONS, HEROES, CHARACTERS, DEFENCE_RETURN_TICK, pos, 
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, spare_mine, sale_inventory, return_destination
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit, delivery_destination, development_pending, reserve_income_worker
+from .economy_plan import maxed_weapon_mining_phase
 from .treasure_clues import treasure_active
 from .wall_health import needs_night_repair, needs_day_repair
 
@@ -471,6 +472,16 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     if target_sites is not None:
         candidates = [c for c in candidates if set(c[2]) & set(target_sites)]
         paid_walls = [c for c in paid_walls if set(c[2]) & set(target_sites)]
+    if maxed_weapon_mining_phase(turn, cfg):
+        # Shared by new allocation, the preemptive spending planner and old
+        # buy jobs. Preserve medicine, critical base healing and real repairs.
+        urgent_cells = {p for b in turn.ours for p in b.cells
+                        if critical_station(turn, b, mem) or rebuilding_wall(turn, b, mem)
+                        or b.kind == 'wall' and (b.health < 500 or exposed_wall(turn, b, mem))}
+        allowed = [c for c in candidates if c[0][0] < 0 or set(c[2]) & urgent_cells]
+        if len(allowed) < len(candidates):
+            reject('mining_phase', until_tick=cfg.economy_rounds)
+        candidates = allowed
     candidates.sort(key=lambda c: c[0])
     if not candidates:
         reject('no_applicable_item')
@@ -655,7 +666,7 @@ def batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
 
 def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
     """Sell complete batches or due loads, then spend feasible daylight."""
-    if not turn.is_day or turn.tick < cfg.economy_rounds and not late_wall_phase(turn):
+    if not turn.is_day or turn.tick < cfg.economy_rounds:
         return
     refresh_stone_reserves(turn, cfg, mem, ledger)
     planned = planned_weapons(turn, cfg, mem, tower_sites)
@@ -1156,8 +1167,11 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
                   or h.id in mem.preparation_workers
                   or h.id in mem.sold_workers
                   or h.id == mem.supply_worker
-                  or late_wall_phase(turn)
                   or any("UpgradeVoucher" in k or k == "WallFixer" for k in h.backpack)}
+    if maxed_weapon_mining_phase(turn, cfg):
+        # Stale sale/supply flags and spare packs cannot start ordinary
+        # development before the cutoff. Paid voucher delivery remains useful.
+        developing = {h.id for h in free if any('UpgradeVoucher' in k for k in h.backpack)}
     developing.discard(ledger.income_worker_id)
     mem.preparation_workers.discard(ledger.income_worker_id)
     repair_sites = repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites)

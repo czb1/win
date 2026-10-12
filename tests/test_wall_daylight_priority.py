@@ -145,6 +145,7 @@ class WallDaylightPriorityTests(unittest.TestCase):
     def test_route_estimate_can_start_preparation_before_thirty_five(self):
         case = test_wall_upgrade_delivery.WallUpgradeDeliveryTests()
         p = case.case(1)
+        next(r for r in p['teamOur']['roles'] if r['roleType'] == 'rocket')['level'] = 2
         p['mapInfo']['zones'][0]['pos'] = {'x': 40, 'y': 31}
         p['mapInfo'].update(width=41, height=32)
         t, cfg, nav, _ = case.setup(p)
