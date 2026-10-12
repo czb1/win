@@ -31,7 +31,7 @@ from .spending import (first_day_boss_phase, first_day_boss_staging, plan_day_sp
                        heal_station_with_pioneer, prepare_station_reserve)
 from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scout,
                        prepare_first_day_wall_blocker, yield_wall_entry)
-from .task_schedule import task_options, switch_task_option
+from .task_schedule import task_options
 
 LOG = logging.getLogger(__name__)
 
@@ -632,19 +632,6 @@ class Agent:
                             returning.add(helper.id)
                             mem.return_targets[helper.id] = weapon.id
                             mem.return_posts[helper.id] = posts[helper.id][0]
-            if (h and turn.phase_task and (hold_task or mem.stop_reason == "task_switch_budget")
-                    and not danger and not defence_return_due and h.id not in ledger.used
-                    and h.id not in returning):
-                alternative = switch_task_option(turn, self.cfg, mem, nav, ledger, h)
-                if alternative and nav.move_along(h, ledger, alternative['route'],
-                                                  {alternative['cell']}, alternative['travel_forbidden']):
-                    mem.stop_reason = 'task_switch_budget'
-                    hold_task = False
-                    ledger.explain(h.id, 'task_switch_budget', elapsed=turn.round - mem.task_started,
-                                   limit=self.cfg.task_switch_rounds, next_point=alternative['point'],
-                                   route_steps=alternative['route'][0], budget=alternative['budget'])
-                    emit_event('task_switch', dict(elapsed=turn.round - mem.task_started,
-                               limit=self.cfg.task_switch_rounds, next_point=alternative['point']), 'evolution')
             if h and turn.phase_task and not (not turn.is_day and pioneer_gunner):
                 # Submit a ready answer before a return movement can cancel it.
                 # LLM/sandbox work holds the pioneer at the task point and gets
