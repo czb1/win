@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 
 from .commands import command
-from .model import distance, neighbours
+from .model import distance, neighbours, SUMMON_ORDERS
 from .navigation import check_time
 from .projectiles import line_cells
 from .robot_assault import base_distance, enemy_base, rear_approach
@@ -67,7 +67,8 @@ def prepare_night_scout(turn, memory, nav, ledger, excluded=(), jobs=None):
     for scout in turn.workers:
         job = jobs.get(scout.id, {})
         if (scout.id in ledger.used or scout.id in excluded or scout.health <= 165
-                or any('UpgradeVoucher' in item or item == 'WallFixer' for item in scout.backpack)
+                or any('UpgradeVoucher' in item or item == 'WallFixer' or item in SUMMON_ORDERS
+                       for item in scout.backpack)
                 or job.get('kind') in ('sell', 'buy', 'use', 'robot_buy', 'build')):
             continue
         routes = _routes(turn, memory, nav, ledger, scout, base, ledger.reserved)

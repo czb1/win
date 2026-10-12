@@ -1,5 +1,6 @@
 """Reserve construction/upgrades and spend the remaining gold on robots."""
 from .economy_plan import front_sites, planned_weapons
+from .model import DEFENCE_RETURN_TICK
 
 
 def prepare_paid_upgrades(turn, mem, nav, ledger, heroes, excluded=()):
@@ -42,6 +43,13 @@ def prepare_defense_purchase(turn, mem, ledger, reserve):
 def first_day_boss_phase(turn, cfg):
     """Opening gold funds the configured guns first, then only BOSS orders."""
     return turn.day == 1 and len(turn.weapons) >= min(3, len(cfg.loadout))
+
+
+def first_day_boss_staging(turn, cfg):
+    """A spare worker can reach the shop while the last opening gun is built."""
+    count = min(3, len(cfg.loadout))
+    return (turn.is_day and turn.day == 1 and turn.tick < DEFENCE_RETURN_TICK and count > 1
+            and len(turn.weapons) == count - 1)
 
 
 def defenses_ready(turn, cfg, towers, walls, mem=None, ledger=None):
@@ -128,9 +136,10 @@ def plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded=()):
     return actors, reserve
 
 
-def robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only=None, quantity=1):
-    """Buy any affordable batch with space and a reachable shop."""
-    if not hero.space or (hero.id, name) in mem.buy_failures:
+def robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only=None,
+                        quantity=1, reserved_uses=0):
+    """Leave a daylight action for the purchase and for every carried/new use."""
+    if not turn.is_day or not hero.space or (hero.id, name) in mem.buy_failures:
         return None
     options = []
     for shop, kind in turn.zones.items():
@@ -141,9 +150,11 @@ def robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only=None,
         route = nav.approach(hero, [shop], ledger.reserved)
         if route is None:
             continue
-        count = min(quantity, hero.space)
+        count = min(quantity, hero.space, turn.day_left - route[0] - 1 - reserved_uses)
         if count > 0:
             options.append((-count, route[0], shop, route))
+        else:
+            ledger.spending_plan['robot_blocked'] = 'daylight_summon_deadline'
     if not options:
         return None
     negative_count, _, shop, route = min(options)

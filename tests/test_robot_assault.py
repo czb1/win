@@ -312,17 +312,20 @@ class BestRobotSummoningTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertFalse(ledger.commands)
 
-    def test_night_and_daily_use_limit_do_not_gate_purchases(self):
+    def test_night_and_daily_use_limit_prevent_unusable_purchases(self):
         result, _, _, ledger = self.summon(self.shop_data(round_no=330))
-        self.assertTrue(result)
-        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=1))
+        self.assertFalse(result)
+        self.assertFalse(ledger.commands)
+        self.assertEqual(ledger.gold, 120)
+        self.assertEqual(ledger.spending_plan['robot_blocked'], 'night')
         mem = Memory()
         mem.robot_summon_state = {"day": 3, "count": 10, "positions": set(),
                                   "pending": None, "observed_round": 260}
         result, _, _, ledger = self.summon(self.shop_data(), mem=mem)
-        self.assertTrue(result)
-        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=1))
-        self.assertEqual(ledger.gold, 0)
+        self.assertFalse(result)
+        self.assertFalse(ledger.commands)
+        self.assertEqual(ledger.gold, 120)
+        self.assertEqual(ledger.spending_plan['robot_blocked'], 'daily_summon_capacity')
         self.assertEqual(mem.robot_summon_state['count'], 10)
 
     def test_daily_limit_still_prevents_using_an_owned_order(self):

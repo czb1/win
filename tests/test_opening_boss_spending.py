@@ -1,4 +1,4 @@
-"""Opening construction/BOSS priority and unrestricted surplus purchasing."""
+"""Opening construction/BOSS priority and daylight surplus purchasing."""
 import copy
 import unittest
 from unittest.mock import patch
@@ -98,7 +98,7 @@ class OpeningBossSpendingTests(unittest.TestCase):
             self.assertTrue(summon_best_robot(turn, cfg, Memory(), nav, ledger, TOWERS, WALLS))
         self.assertEqual(ledger.commands['1']['num'], 5)
 
-    def test_first_day_agent_preempts_old_work_and_recall_for_boss_purchase(self):
+    def test_first_day_boss_priority_still_respects_last_daylight_use(self):
         for round_no in (10, 69):
             with self.subTest(round_no=round_no):
                 data = self.data(round_no=round_no)
@@ -115,7 +115,10 @@ class OpeningBossSpendingTests(unittest.TestCase):
                     name='WeaponUpgradeVoucher1', quantity=3)}
                 response = agent.decide(data)
                 buys = [c for c in response['roleCommandMap'].values() if c['action'] == 'buy']
-                self.assertIn(command('buy', name='BossRobotSummonOrder', num=5), buys)
+                if round_no == 69:
+                    self.assertFalse(buys)
+                else:
+                    self.assertIn(command('buy', name='BossRobotSummonOrder', num=5), buys)
                 self.assertTrue(all(c['name'] == 'BossRobotSummonOrder' for c in buys))
 
     def test_first_day_robot_shopping_continues_without_defense_reservations(self):
