@@ -784,7 +784,9 @@ class Memory:
                 if tool.get('kind') in ('discover', 'read', 'inspect'):
                     self.inputs = input_context(body) or self.inputs
                 if not tool:
-                    self.parser_candidate = self.running_parser or parser_method(self.running_python, report.get('logs', {}).get('parsers'), self.log_diagnostics)
+                    self.parser_candidate = parser_method(
+                        (self.running_parser + '\n' if self.running_parser else '') + self.running_python,
+                        report.get('logs', {}).get('parsers'), self.log_diagnostics)
                     if self.contract.get('input_kind') == 'logs' and not self.parser_candidate:
                         LOG.info('round=%s task_parser_unavailable=%s', turn.round, self.log_diagnostics.get('parser_unavailable'))
                     observed_answer = answer
@@ -855,7 +857,7 @@ class Memory:
                         self.answer_python = self.running_python if tool.get("kind") != "check" else ""
                         self.proposal_counts[signature] = self.proposal_counts.get(signature, 0) + 1
                     else:
-                        self.reject("沙盒重复生成已提交过两次的答案，请修正查询或格式。")
+                        self.reject("沙盒重复生成相同候选答案，请根据原始反馈修正相关计算。")
             else:
                 self.supported_output = self.supported_python = ""
                 self.fail_skill("execution_failed")
@@ -1466,12 +1468,12 @@ class Intelligence:
         log_guidance = ""
         if self.mem.contract.get('input_kind') == 'logs' and remaining > 2:
             step = ("修复 logDiagnostics 指出的问题；涉及返回结构变化时同步修复调用方。"
-                    if self.mem.input_blocked else "根据 logDiagnostics/submissionFeedback 定点修正故障筛选或事件合并；不要改算出的数字。"
+                    if self.mem.input_blocked else "根据 submissionFeedback 的原始错误及字段路径，检查对应字段的提取、计算和输出；必要时修正解析函数或聚合并重新计算，不要猜答案。"
                     if self.mem.submission_feedback else "按已验证故障定义解析当前文件，再做本题聚合。")
             formats = "第一行必须写 PYTHON，后面只写必要代码，最后调用 task_result(result)；若只能 ANSWER，必须逐值照抄本题沙盒计算结果。\n"
             log_guidance = ("日志任务：task_result(result)由程序提供，自动输出最终协议；无需自己打印标记。\n"
                             "verifiedParsingRules为同格式前题保存的定义；currentParsingRules明确更新时以本题为准，不得自行增加/遗漏故障关键词。\n"
-                            "只有parserAvailable=true时，同名函数由框架复用；否则旧解析器仅供参考，必须定义可执行解析函数；用当前路径调用原函数，或task_parse(system,path,**当前参数)。日期等参数从本题读取。"
+                            "parserAvailable=true时默认提供历史解析函数；本轮定义的同名函数优先，未重定义的函数继续复用。旧函数缺少本题字段时允许补充或修正；否则直接复用。parserAvailable=false时须定义可执行解析函数。用当前路径调用函数或task_parse(system,path,**当前参数)，日期等参数从本题读取。"
                             "parse_line对正常行和故障行都返回字典：system字符串、timestamp解析后的时间、is_fault布尔值、module模块；正常行is_fault=False。"
                             "仅无法识别的行返回None；禁止用None/False过滤正常行，禁止只返回时间。兼容(系统,时间,是否故障,模块)；parse_*_log返回结构化记录列表，正常行也保留。\n"
                             "用task_events(system,故障时间列表,gap_minutes=题目阈值)获得(start,end)事件列表，程序自动排序、按相邻间隔合并并记录各系统事件数。\n"

@@ -246,17 +246,18 @@ with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
                 scope.update(_task_audit_parser=audited_function, _task_parser_exception=parser_exception,
                              _task_audit_merge=audit_merge, task_events=task_events, task_parse=task_parse)
                 if LEARNED_PARSER:
-                    learned_scope = dict(scope)
+                    learned_scope = scope
                     exec(compile(instrument(ast.parse(LEARNED_PARSER)), '<learned-parser>', 'exec'), learned_scope)
             if TASK_ROUNDING == 'half_up':
                 scope['round'] = task_round
             tree = ast.parse(TASK_CODE, '<task>', 'exec')
             if TASK_LOG and LEARNED_PARSER:
                 names = [n.name for n in ast.parse(LEARNED_PARSER).body if isinstance(n, ast.FunctionDef)]
-                scope.update({name: learned_scope[name] for name in names})
-                # Explicit same-format tasks reuse verified functions, not model rewrites.
-                tree.body = [n for n in tree.body if not (isinstance(n, ast.FunctionDef) and n.name in names)]
-                report['reused_parsers'] = names
+                # Current definitions override defaults in the SAME globals mapping,
+                # including calls made from retained functions and task_parse.
+                overrides = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+                report['reused_parsers'] = [name for name in names if name not in overrides]
+                report['overridden_parsers'] = [name for name in names if name in overrides]
             if TASK_LOG:
                 # Reserve the helper: weak models often redefine it as print('RESULT', value).
                 tree.body = [n for n in tree.body if not (isinstance(n, ast.FunctionDef) and n.name == 'task_result')]
