@@ -47,6 +47,32 @@ def seal_ring(data, gap=ENTRY):
 
 
 class FirstDayWallBlockTests(unittest.TestCase):
+    def test_agent_finishes_last_gun_before_dispatching_wall_blocker(self):
+        data = block_case(40)
+        data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] != 22]
+        data['teamOur']['roles'][1]['pos'] = {'x': 9, 'y': 20}
+        data['teamOur']['goldNum'] = 433
+        cfg = Config(llm_enabled=False, layout_mode='explicit', wall_cells=[],
+                     weapon_cells=[[8, 23], [9, 23], [8, 21]])
+        agent = Agent(cfg)
+        response = agent.decide(data)['roleCommandMap']
+        mem = next(iter(agent.sessions.values()))
+        self.assertEqual(response['10'], command('build', (8, 21), name='rocket'))
+        self.assertEqual(mem.daytime_jobs[12]['kind'], 'robot_buy')
+        self.assertIsNone(mem.night_scout.worker_id)
+
+    def test_dusk_fallback_does_not_take_workers_before_last_gun_is_observed(self):
+        data = block_case(54)
+        data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] != 22]
+        data['teamOur']['roles'][1]['pos'] = {'x': 9, 'y': 20}
+        data['teamOur']['roles'][2]['pos'] = {'x': 15, 'y': 14}
+        data['teamOur']['goldNum'] = 25
+        agent = Agent(Config(llm_enabled=False, layout_mode='explicit', wall_cells=[],
+                             weapon_cells=[[8, 23], [9, 23], [8, 21]]))
+        response = agent.decide(data)['roleCommandMap']
+        self.assertEqual(response['10'], command('build', (8, 21), name='rocket'))
+        self.assertIsNone(next(iter(agent.sessions.values())).night_scout.worker_id)
+
     def test_departure_at_40_and_second_day_keeps_existing_policy(self):
         for tick, expected in ((39, False), (40, True), (41, True), (170, False)):
             with self.subTest(tick=tick):

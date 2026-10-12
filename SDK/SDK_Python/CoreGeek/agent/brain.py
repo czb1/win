@@ -420,13 +420,18 @@ class Agent:
             # A paid base heal takes the pioneer before task or gun allocation,
             # including at night and on the final daylight turn.
             heal_station_with_pioneer(turn, mem, nav, ledger)
+            # Do not send either worker scouting while the opening guns still
+            # need construction. A spare worker may stage at the shop instead.
+            opening_scout_excluded = ({w.id for w in turn.workers}
+                if turn.day == 1 and not first_day_boss_phase(turn, self.cfg) else set())
             if turn.is_day:
                 # Share current/remembered weapon occupancy before selecting
                 # the wall blocker and this day's summon positions.
                 act_robots(turn, mem.robot_assault, nav, ledger)
                 scout = prepare_first_day_wall_blocker(
                     turn, mem.night_scout, nav, ledger,
-                    excluded={mem.gatling_operator_id} if mem.gatling_operator_id is not None else (),
+                    excluded=opening_scout_excluded | ({mem.gatling_operator_id}
+                        if mem.gatling_operator_id is not None else set()),
                     jobs=mem.daytime_jobs)
             else:
                 scout = yield_wall_entry(turn, mem.night_scout, nav, ledger)
@@ -691,7 +696,7 @@ class Agent:
                 if watch_locked:
                     returning.add(watcher.id)
                 ledger.gold -= min(watch_gold, ledger.gold)
-                scout_excluded = returning | ({watcher.id} if watcher else set())
+                scout_excluded = returning | ({watcher.id} if watcher else set()) | opening_scout_excluded
                 staged_scout = scout
                 enemy_station = enemy_base(turn)
                 if (not staged_scout and enemy_station and mem.night_scout.worker_id is not None

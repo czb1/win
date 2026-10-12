@@ -192,7 +192,16 @@ def plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded=()):
     claimed = set()
     if construction and ledger.gold >= cfg.weapon_cost:
         missing_weapons = [w for w in planned if w.id < 0]
-        for hero in sorted(free, key=lambda h: h.id):
+        missing_targets = {w.pos: w.kind for w in missing_weapons}
+        def opening_builder_priority(hero):
+            job = mem.daytime_jobs.get(hero.id, {})
+            continuing = (job.get('kind') == 'build' and job.get('target') in missing_targets
+                          and job.get('name') == missing_targets[job['target']])
+            # Keep an accepted builder. Borrow a staged buyer only when no
+            # other worker has a feasible construction route.
+            return not continuing, job.get('kind') == 'robot_buy', hero.id
+        priority = opening_builder_priority if turn.day == 1 else lambda h: h.id
+        for hero in sorted(free, key=priority):
             if len(claimed) >= ledger.gold // cfg.weapon_cost:
                 break
             if hero.id == buyer:
