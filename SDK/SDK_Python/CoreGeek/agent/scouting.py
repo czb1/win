@@ -5,7 +5,8 @@ from .commands import command
 from .model import distance, neighbours, SUMMON_ORDERS
 from .navigation import check_time
 from .projectiles import line_cells
-from .robot_assault import base_distance, enemy_base, enemy_entries, rear_approach
+from .robot_assault import (base_distance, enemy_base, enemy_entries,
+                            first_day_clear_sides, rear_approach)
 
 
 FIRST_DAY_SCOUT_TICK = 40
@@ -36,6 +37,7 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
     xs, ys = zip(*base.cells)
     entries = [p for p in enemy_entries(turn, base)
                if p[1] in (min(ys) - 2, max(ys) + 2)]
+    clear_sides = first_day_clear_sides(turn, base, ledger.robot_known_enemies)
     jobs = jobs or {}
     candidates = []
     for scout in turn.workers:
@@ -57,9 +59,14 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
                 continue
             if not any(turn.summon_position_legal(p) and base_distance(base, p) >= 3
                        and p not in (turn.blocked - {scout.pos}) | ledger.reserved
+                       and (p[1] >= entry[1] if entry[1] > max(ys) else p[1] <= entry[1])
                        for p in neighbours(entry)):
                 continue
-            candidates.append((not incumbent, entry != memory.wall_entry,
+            # Reconsider an armed face before committing any summons. Once
+            # spawns are reserved, keep a still-usable gap for those robots.
+            candidates.append((bool(ledger.summon_pending_positions) and entry != memory.wall_entry,
+                               entry[1] not in clear_sides,
+                               not incumbent, entry != memory.wall_entry,
                                jobs.get(scout.id, {}).get('kind') == 'build',
                                entry[0] not in xs, route[0], scout.id, entry, scout, route))
     if not candidates:
@@ -68,7 +75,7 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
                 w.id == memory.worker_id and w.pos == memory.wall_entry for w in turn.workers):
             memory.wall_entry = None
         return None
-    _, _, _, _, _, _, entry, scout, route = min(candidates, key=lambda row: row[:7])
+    _, _, _, _, _, _, _, _, entry, scout, route = min(candidates, key=lambda row: row[:9])
     memory.worker_id, memory.post, memory.wall_entry = scout.id, entry, entry
     if route[1] is None:
         ledger.used.add(scout.id)

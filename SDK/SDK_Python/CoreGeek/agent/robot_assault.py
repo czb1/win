@@ -207,6 +207,27 @@ def enemy_entries(turn, base):
             if base_distance(base, (x, y)) == 2]
 
 
+def first_day_clear_sides(turn, base, known_enemies=()):
+    """Upper/lower wall rows with no observed weapon in the inner face.
+
+    Unseen weapons remain unknown. Remembered stationary weapons count until
+    ordinary shared sight or an explicit death disproves their occupancy.
+    """
+    if turn.day != 1:
+        return set()
+    ys = [p[1] for p in base.cells]
+    lower, upper = min(ys) - 2, max(ys) + 2
+    armed = set()
+    for weapon in (*known_enemies, *turn.enemies):
+        if weapon.kind not in WEAPONS or base_distance(base, weapon.pos) != 1:
+            continue
+        if weapon.pos[1] < min(ys):
+            armed.add(lower)
+        elif weapon.pos[1] > max(ys):
+            armed.add(upper)
+    return {lower, upper} - armed
+
+
 def weakness(wall):
     # Absolute observed HP breaks level ties; missing walls always win.
     return (1, wall.level, wall.health) if wall else (0, 0, 0)
@@ -249,7 +270,12 @@ def _entry_walls(turn, base):
     return [(point, walls.get(point)) for point in enemy_entries(turn, base) if point not in fixed]
 
 
-def _spawn_at_entry(turn, ledger, base, entry, wall, deadline, rear_only=False):
+def _on_entry_side(base, point, side_row):
+    return (side_row is None or
+            (point[1] >= side_row if side_row > base.pos[1] else point[1] <= side_row))
+
+
+def _spawn_at_entry(turn, ledger, base, entry, wall, deadline, rear_only=False, side_row=None):
     blocked = turn.blocked | ledger.reserved
     pending = ledger.summon_pending_positions
     if wall:
@@ -267,6 +293,7 @@ def _spawn_at_entry(turn, ledger, base, entry, wall, deadline, rear_only=False):
         # into a wall. Prefer a free adjacent placement, avoiding spawn shift.
         starts = {p for p in neighbours(entry)
                   if turn.inside(p) and p not in blocked and base_distance(base, p) >= 2}
+    starts = {p for p in starts if _on_entry_side(base, p, side_row)}
     if not starts:
         return None
     queue = deque((point, 0) for point in sorted(starts))
@@ -287,24 +314,28 @@ def _spawn_at_entry(turn, ledger, base, entry, wall, deadline, rear_only=False):
                 best = candidate
             continue
         for step in neighbours(point):
-            if step not in seen and turn.inside(step) and step not in blocked:
+            if (step not in seen and turn.inside(step) and step not in blocked
+                    and _on_entry_side(base, step, side_row)):
                 seen.add(step)
                 queue.append((step, length + 1))
     return best
 
 
-def weakest_approach(turn, ledger, deadline=None, *, prefer_rear=False):
+def weakest_approach(turn, ledger, deadline=None, *, prefer_rear=False, preferred_sides=()):
     base = enemy_base(turn)
     if base is None:
         return None
-    entries = sorted((_entry_rank(turn, base, point, wall, prefer_rear), point, wall)
+    entries = sorted(((int(point[1] not in preferred_sides),
+                       *_entry_rank(turn, base, point, wall, prefer_rear)), point, wall)
                      for point, wall in _entry_walls(turn, base))
     chosen, chosen_key = None, None
     for rank, entry, wall in entries:
         if chosen_key is not None and rank > chosen_key[:len(rank)]:
             break
+        preferred = entry[1] in preferred_sides
         spawn = _spawn_at_entry(turn, ledger, base, entry, wall, deadline,
-                                rear_only=prefer_rear and rear_approach(turn, base, entry))
+                                rear_only=prefer_rear and rear_approach(turn, base, entry),
+                                side_row=entry[1] if preferred else None)
         if spawn is None:
             continue
         key = (*rank, *spawn[:3], entry, spawn[3])
@@ -328,8 +359,10 @@ def _summon_at_gap(turn, ledger, base, entry, deadline):
     # The held wall cell is in the no-summon construction ring. Search outward
     # from it, preferring the same column, and keep every reserved spawn unique.
     blocked = turn.blocked | ledger.reserved
+    ys = [p[1] for p in base.cells]
+    side_row = entry[1] if entry[1] in (min(ys) - 2, max(ys) + 2) else None
     starts = {p for p in neighbours(entry) if turn.inside(p) and p not in blocked
-              and base_distance(base, p) >= 3}
+              and base_distance(base, p) >= 3 and _on_entry_side(base, p, side_row)}
     queue = deque((p, 0) for p in sorted(starts))
     seen, options = set(starts), []
     while queue:
@@ -343,7 +376,7 @@ def _summon_at_gap(turn, ledger, base, entry, deadline):
             continue
         for step in neighbours(point):
             if (step not in seen and turn.inside(step) and step not in blocked
-                    and base_distance(base, step) >= 3):
+                    and base_distance(base, step) >= 3 and _on_entry_side(base, step, side_row)):
                 seen.add(step)
                 queue.append((step, steps + 1))
     return min(options)[-1] if options else None
@@ -355,7 +388,11 @@ def choose_summon_position(turn, ledger, deadline=None):
         position = _summon_at_gap(turn, ledger, base, entry, deadline)
         if position is not None:
             return position
-    plan = weakest_approach(turn, ledger, deadline, prefer_rear=True)
+    clear_sides = first_day_clear_sides(turn, base, ledger.robot_known_enemies) if base else set()
+    # An occupied gap stays authoritative. Without one, prefer the unarmed
+    # horizontal face over the old geometric rear; equal faces keep old ties.
+    plan = weakest_approach(turn, ledger, deadline, prefer_rear=True,
+                            preferred_sides=clear_sides if len(clear_sides) == 1 else ())
     return plan.position if plan else None
 
 
@@ -592,11 +629,11 @@ def _enter_scout_gap(turn, memory, nav, ledger, robot, base, entry, occupied):
 def act_robots(turn, memory, nav, ledger):
     base = enemy_base(turn)
     memory.observe(turn, base)
+    ledger.robot_known_enemies = tuple(u for uid, u in memory.buildings.items()
+                                       if uid not in memory.rejected_buildings)
     if not turn.summon_robots:
         memory.focus_target_id = None
         return
-    ledger.robot_known_enemies = tuple(u for uid, u in memory.buildings.items()
-                                       if uid not in memory.rejected_buildings)
     occupied = _occupants(turn, memory)
     entry = _open_assault_entry(turn, ledger, base) if base else None
     if entry is not None and not turn.is_day:
