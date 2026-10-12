@@ -32,7 +32,8 @@ def fortified_payload(round_no=260, backpack=None):
 
 
 def fortified_case(data=None):
-    return setup_case(data or fortified_payload(), layout_mode="explicit",
+    # Exercise purchasing mechanics independently of the default day-one-only policy.
+    return setup_case(data or fortified_payload(), robot_purchase_last_day=10, layout_mode="explicit",
                       wall_cells=[list(p) for p in WALLS],
                       weapon_cells=[list(p) for p in TOWERS])
 

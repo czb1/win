@@ -12,28 +12,49 @@ ITEM_DESCRIPTIONS = {
 KINDS = ("items", "location", "time")
 
 
-def preparation_items(news, shop):
-    """Conservative appearance matching for one speculative set, never a summon.
+def merge_material_plan(previous, proposed, news, clues, shop):
+    """Validate structure and quote provenance; interpretation belongs to LLM."""
+    if proposed is None:
+        return previous, "unchanged"
+    if not isinstance(proposed, dict):
+        return previous, "invalid_plan"
+    status = proposed.get("status")
+    if status not in ("unknown", "confirmed", "conflict"):
+        return previous, "invalid_status"
+    # An explicit uncertainty/conflict pauses spending. Missing output does not.
+    if status != "confirmed":
+        return {"status": status, "items": []}, status
+    items = proposed.get("items")
+    if not isinstance(items, list) or not items:
+        return previous, "invalid_items"
+    sources = [(n.get("day"), n.get("folkLegends", "")) for n in news]
+    sources += [(c.get("day"), c.get("quote", "")) for c in clues]
+    sources += [(i.get("day"), i.get("quote", "")) for i in (previous or {}).get("items", [])]
+    checked, names = [], set()
+    for item in items:
+        if not isinstance(item, dict):
+            return previous, "invalid_item"
+        name, quantity = item.get("name"), item.get("quantity")
+        day, quote = item.get("day"), item.get("quote")
+        if (not isinstance(name, str) or name not in shop or name in names
+                or type(quantity) is not int or quantity <= 0
+                or type(day) is not int or not isinstance(quote, str) or not quote.strip()
+                or not any(day == d and quote.strip() in text for d, text in sources)):
+            return previous, "invalid_item_or_evidence"
+        checked.append(dict(name=name, quantity=quantity, day=day, quote=quote.strip()))
+        names.add(name)
+    return {"status": status, "items": checked}, "confirmed"
 
-    Match independent visual features in the same source record. Model prose
-    cannot authorize purchases. These rules deliberately prefer missed matches
-    to guessing from a generic word such as 'light'.
-    """
-    texts = [n.get("folkLegends", "") for n in news]
-    if not any("三钥" in t or "三道封印" in t for t in texts):
-        return []
-    features = {
-        "AcientTablet": (("灰白",), ("石板",), ("刻", "铭文")),
-        "StarSand": (("银白",), ("粉末", "细沙"), ("发光", "冷光")),
-        "FlameBreath": (("水晶瓶", "晶石瓶"), ("橙红",), ("雾",)),
-        "FrostPotion": (("深蓝",), ("液体",), ("薄霜", "寒意")),
-        "ThornAmulet": (("藤蔓",), ("护符",), ("尖刺",)),
-        "IronWhistle": (("铁哨",), ("锈",), ("金属片",)),
-    }
-    found = [name for name, groups in features.items()
-             if any(all(any(word in t for word in group) for group in groups) for t in texts)]
-    # Ambiguous sets and absent shop entries must not become partial purchases.
-    return found if len(found) == 3 and all(name in shop for name in found) else []
+
+def treasure_active(turn, mem):
+    """Protect the pioneer while an evidence-backed treasure objective exists."""
+    if mem.treasure_done or mem.treasure_attempted:
+        return False
+    if mem.treasure_materials and mem.treasure_materials.get("status") != "confirmed":
+        return False
+    if mem.treasure:
+        return turn.round <= mem.treasure["endRound"]
+    return bool(mem.treasure_materials and mem.treasure_materials.get("status") == "confirmed")
 
 
 def merge_clues(previous, proposed, news):

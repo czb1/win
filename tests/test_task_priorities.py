@@ -105,8 +105,12 @@ class TaskPriorityTests(unittest.TestCase):
         self.assertEqual(ledger.commands['11']['action'], 'summonTreasure')
 
     def test_full_plan_reserves_supplies_before_worker_spending(self):
-        turn, cfg, nav, ledger = setup_case(case(10))
-        self.assertEqual(reserve_treasure_gold(turn, cfg, Memory(treasure=plan()), nav,
+        data = case(140)
+        data['mapInfo']['zones'].append({'neutralType': 'weaponShop', 'pos': {'x': 4, 'y': 5}})
+        turn, cfg, nav, ledger = setup_case(data)
+        target = plan(155)
+        target['endRound'] = 170
+        self.assertEqual(reserve_treasure_gold(turn, cfg, Memory(treasure=target), nav,
                                              ledger, turn.pioneer), 10)
 
     def test_expired_or_done_plan_does_not_block_tasks(self):

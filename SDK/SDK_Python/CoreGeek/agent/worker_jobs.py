@@ -59,6 +59,8 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()
         if ok:
             mem.supply_worker = hero.id
     elif kind == 'robot_buy':
+        if turn.day > cfg.robot_purchase_last_day:
+            return False, 'purchase_days_finished'
         from .brain import summon_best_robot
         from .spending import plan_day_spending, prepare_defense_purchase
         priority_actors, reserve = plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded)

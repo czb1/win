@@ -1,7 +1,7 @@
 """Asynchronous judger LLM/sandbox loop; nothing here runs shell commands locally."""
 from uuid import uuid4
 from .logging_system import update_context
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 import ast
 import hashlib
@@ -13,7 +13,7 @@ import shlex
 from .commands import command
 from .model import ORES, pos
 from .recovery import Recovery
-from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status
+from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status, merge_material_plan
 from .wall_watch_state import WallWatchState
 from .task_schedule import task_descriptor, task_signature
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
@@ -270,8 +270,7 @@ class Memory:
     news_review_pending: bool = False
     treasure_trace_state: dict = field(default_factory=dict)
     treasure_clues: list = field(default_factory=list)
-    treasure_prep_spent: int = 0
-    treasure_prep_items: list = field(default_factory=list)
+    treasure_materials: dict | None = None
     gunner_observation: tuple | None = None
     gunner_stalled: int = 0
     wall_watch_id: int | None = None
@@ -1059,12 +1058,27 @@ class Memory:
             self.trace_treasure(turn, "treasure_clues", dedupe=True,
                                 hints=clue_status(self.treasure_clues), rejected=rejected_clues,
                                 status="hints_only_not_actionable")
+            self.treasure_materials, material_status = merge_material_plan(
+                self.treasure_materials, parsed.get("treasureMaterials"), self.news,
+                self.treasure_clues, turn.shop)
+            self.trace_treasure(turn, "treasure_materials", dedupe=True,
+                                result=material_status, plan=self.treasure_materials)
+            if material_status == "confirmed" and self.treasure:
+                target = Counter({i["name"]: i["quantity"] for i in self.treasure_materials["items"]})
+                if target != Counter(self.treasure["items"]):
+                    self.treasure = None
+                    self.treasure_attempted = False
             t = parsed.get("treasure")
             if isinstance(t, dict) and not self.treasure_done:
                 p, items = t.get("position"), t.get("items")
                 begin, end = t.get("startRound"), t.get("endRound")
                 confidence, evidence = t.get("confidence", 0), t.get("evidence")
-                if (isinstance(p, list) and len(p) == 2 and all(type(x) is int for x in p)
+                material_match = (not self.treasure_materials or
+                    self.treasure_materials.get("status") == "confirmed" and
+                    isinstance(items, list) and all(isinstance(x, str) for x in items) and
+                    Counter(items) == Counter({i["name"]: i["quantity"]
+                                               for i in self.treasure_materials["items"]}))
+                if (material_match and isinstance(p, list) and len(p) == 2 and all(type(x) is int for x in p)
                         and turn.inside(tuple(p)) and isinstance(items, list) and items
                         and all(isinstance(x, str) and x in turn.shop for x in items)
                         and type(begin) is int and type(end) is int
@@ -1081,6 +1095,7 @@ class Memory:
                                         attempted=self.treasure_attempted)
                 else:
                     checks = {
+                        "material_match": material_match,
                         "position": isinstance(p, list) and len(p) == 2
                                     and all(type(x) is int for x in p) and turn.inside(tuple(p)),
                         "items": isinstance(items, list) and bool(items)
@@ -1534,7 +1549,13 @@ class Intelligence:
         if not self.mem.news_dirty:
             return ""
         prompt = ("分析《未来战争》累计新闻，只输出一个JSON对象，先整理宝藏线索，再作结论。\n"
-                  "格式：{\"treasureClues\":[],\"treasure\":null,\"oreOutages\":[],\"marketSignals\":[]}。\n"
+                  '格式：{"treasureClues":[],"treasureMaterials":{"status":"unknown","items":[]},'
+                  '"treasure":null,"oreOutages":[],"marketSignals":[]}。\n'
+                  '材料及数量已明确时，status为confirmed，items为'
+                  '[{"name":"商店原名","quantity":正整数,"day":来源天数,"quote":"原文摘录"}]。'
+                  "每种材料一条，引用应支持材料及数量；不限制种类数，不默认每种一件。"
+                  "材料明确就可confirmed，不必等待地点或时间；有冲突用conflict，不确定用unknown。"
+                  "不得猜测新商品用途，不因旧计划存在就继续确认；结合最新原文复核。\n"
                   "treasureClues每条仅含kind、day、quote、meaning四个字段。"
                   "kind只能是items（用品）、location（地点）、time（时间）；day为来源新闻天数，"
                   "quote逐字摘录该天民间传闻（4到500字），meaning写简短解读（最多300字）。"
@@ -1566,6 +1587,7 @@ class Intelligence:
                        "reviewInstruction": "复核已有线索的遗漏和冲突；缺乏原文依据时保留未知，不猜测。",
                        "itemDescriptions": {k: v for k, v in ITEM_DESCRIPTIONS.items() if k in self.turn.shop},
                        "savedTreasureClues": self.mem.treasure_clues,
+                        "savedTreasureMaterials": self.mem.treasure_materials,
                        "map": [self.turn.width, self.turn.height]}, ensure_ascii=False))
         result = self.request("news", prompt)
         if result:
