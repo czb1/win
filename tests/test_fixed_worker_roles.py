@@ -111,6 +111,8 @@ class FixedWorkerRolesTests(unittest.TestCase):
 
     def test_gate_blockage_does_not_cancel_sale_or_exchange_jobs(self):
         data = gate_case()
+        # Unfinished firepower retains the inherited sale continuation rules.
+        next(r for r in data['teamOur']['roles'] if r['id'] == 20)['level'] = 2
         agent, mem = seeded_agent(data, sale_workers={2}, sale_targets={2: (20, 16)},
                                   daytime_jobs={2: dict(kind='sell', target=(20, 16))})
         result = agent.decide(data)['roleCommandMap']

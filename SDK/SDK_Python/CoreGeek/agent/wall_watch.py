@@ -4,7 +4,7 @@ import logging
 from .commands import command
 from .model import neighbours, ORES
 from .mining import earn, sale_inventory
-from .economy_plan import via
+from .economy_plan import via, maxed_weapon_mining_phase
 from .wall_health import repair_risk
 
 
@@ -179,7 +179,6 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     # A distant single-pack order is not a reason to give up a whole workday.
     # Finish an accepted order, buy a useful nearby batch, or leave two turns
     # before the last feasible full trip. Unfunded trips charge only the return.
-    firepower_ready = bool(turn.weapons and all(w.level >= 3 for w in turn.weapons))
     near_batch = bool(buying and shop[1][0] <= 2 and (quota >= 2 or shop[1][0] == 0))
     continuing_order = bool(buying and previous_shop is not None)
     urgent_repair = any(w.health < 500 for w in walls)
@@ -192,9 +191,10 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         funds = 0
         report('work', 'income_worker_reserved', steps=home[0])
         return False, 0
-    if (turn.day_left > budget + 2 and not urgent_repair and not paid_work
-            and not continuing_order
-            and not (near_batch and (firepower_ready or turn.tick >= cfg.economy_rounds))):
+    if (not urgent_repair and not paid_work
+            and (maxed_weapon_mining_phase(turn, cfg)
+                 or turn.day_left > budget + 2 and not continuing_order
+                 and not (near_batch and turn.tick >= cfg.economy_rounds))):
         # Reserve mandatory safety packs while producing; optional stock is
         # funded when the shopping journey is actually dispatched.
         safety_quota = min(quota, max(0, min(safety_stock, target) - held)) if buying else 0

@@ -48,7 +48,7 @@ def setup(data, cfg):
 
 class DaylightSpendingTests(unittest.TestCase):
     def test_spare_fixer_does_not_exclude_worker_from_voucher_purchase(self):
-        data, cfg = case()
+        data, cfg = case(tick=35)
         data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] not in (2, 3)]
         data['teamOur']['roles'][1]['pos'] = {'x': 6, 'y': 10}
         turn, cfg, nav, ledger = setup(data, cfg)
@@ -98,8 +98,8 @@ class DaylightSpendingTests(unittest.TestCase):
         ledger.operator_posts[2]=(7,5)
         self.assertEqual(delivery_destination(turn,nav,ledger,turn.workers[1]), ([(7,5)],True))
 
-    def test_stock_trip_starts_early_and_includes_daylight_repairs(self):
-        data,cfg=case(packs=1)
+    def test_stock_trip_starts_after_mining_and_includes_daylight_repairs(self):
+        data,cfg=case(tick=35,packs=1)
         data['teamOur']['roles'][1]['pos']={'x':6,'y':10}
         for p,hp in (((8,4),1440),((8,5),1545)):
             next(r for r in data['teamOur']['roles'] if r['roleType']=='wall' and pos(r['pos'])==p)['health']=hp
@@ -139,7 +139,7 @@ class DaylightSpendingTests(unittest.TestCase):
         self.assertEqual(ledger.commands['1'],command('use',(8,5),name='WallFixer'))
 
     def test_healthy_base_is_eligible_with_unfinished_side_wall_levels(self):
-        data,cfg=case()
+        data,cfg=case(tick=35)
         turn,cfg,nav,ledger=setup(data,cfg)
         self.assertTrue(station_purchase_allowed(turn,turn.station,Memory()))
         plan=supplies(turn,cfg,Memory(),nav,ledger,turn.workers[1],item_only='StationUpgradeVoucher1')
@@ -166,7 +166,7 @@ class DaylightSpendingTests(unittest.TestCase):
         self.assertTrue(defenses_ready(turn,cfg,[(7,4)],list(ledger.wall_cells),mem,ledger))
 
     def test_planner_deduplicates_batch_reservations_and_protects_base_budget(self):
-        data,cfg=case()
+        data,cfg=case(tick=35)
         turn,cfg,nav,ledger=setup(data,cfg)
         actors,reserve=plan_day_spending(turn,cfg,Memory(),nav,ledger,[(7,4)])
         self.assertTrue(actors)
@@ -176,7 +176,7 @@ class DaylightSpendingTests(unittest.TestCase):
         self.assertEqual(ledger.gold,581)
 
     def test_two_workers_do_not_purchase_the_same_wall_batch(self):
-        data,cfg=case()
+        data,cfg=case(tick=35)
         data['teamOur']['roles'][1]['pos']={'x':6,'y':10}
         data['teamOur']['roles'][2]['pos']={'x':5,'y':10}
         turn,cfg,nav,ledger=setup(data,cfg);mem=Memory()
@@ -260,7 +260,7 @@ class DaylightSpendingTests(unittest.TestCase):
         self.assertEqual(ledger.gold,100)
 
     def test_robot_continuation_rechecks_new_defensive_purchase_budget(self):
-        data,cfg=case(gold=100)
+        data,cfg=case(tick=35,gold=100)
         turn,cfg,nav,ledger=setup(data,cfg)
         mem=Memory(daytime_jobs={2:dict(kind='robot_buy',target=(6,11),
                                       name='MiddleRobotSummonOrder',quantity=1)})
