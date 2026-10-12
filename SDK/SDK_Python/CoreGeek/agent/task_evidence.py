@@ -194,6 +194,26 @@ def valid_record(value):
             and (value[1] is not None or value[2] is False))
 
 line_parser_depth = 0
+line_sample_count = 0
+
+def remember_line(entry, bound, value, category):
+    global line_sample_count
+    samples = entry.setdefault('samples', {})
+    bucket = samples.setdefault(category, [])
+    if len(bucket) >= 2 or line_sample_count >= 24:
+        return
+    line = bound.arguments.get('line')
+    if not isinstance(line, str):
+        return
+    def small(item):
+        if item is None or type(item) in (bool, int, float):
+            return item
+        return str(item)[:160]
+    parsed = ({str(k)[:80]: small(v) for k, v in list(value.items())[:8]}
+              if isinstance(value, dict) else
+              [small(v) for v in value[:8]] if isinstance(value, (list, tuple)) else small(value))
+    bucket.append({'line': line[:400], 'line_truncated': len(line) > 400, 'parsed': parsed})
+    line_sample_count += 1
 
 def audited_function(function):
     signature = inspect.signature(function)
@@ -245,7 +265,9 @@ def audited_function(function):
                 counts['failures' if fault else 'normal'] += 1
                 entry['returned_records'] += 1
                 entry['record_contract'] = 'structured-v1'
+                remember_line(entry, bound, value, 'fault' if fault else 'normal')
             else:
+                remember_line(entry, bound, value, 'unmatched')
                 line = str(bound.arguments.get('line', '<line argument unavailable>'))[:240]
                 entry['unmatched_count'] = entry.get('unmatched_count', 0) + 1
                 entry.setdefault('unmatched', [])

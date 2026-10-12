@@ -1,5 +1,6 @@
 """Evidence-only transform feedback; never infer business rules or field renames."""
 import json
+from .task_log_repair import repair_expressions
 
 
 def diagnosis(raw):
@@ -76,7 +77,14 @@ def dominates(a, b):
 
 def observe(mem, attempt):
     detail = attempt.get('diagnosis') or {}
+    previous = mem.transform_progress
     mem.transform_progress = {}
+    if detail.get('stage') == 'checker':
+        feedback = detail.get('checker_feedback', '')
+        repeated = bool(feedback) and feedback == previous.get('checker_feedback')
+        mem.transform_progress = {'checker_feedback': feedback, 'same_checker_failure': repeated,
+                                  'repeat_count': previous.get('repeat_count', 1) + 1 if repeated else 1}
+        return
     if detail.get('stage') != 'samples' or not detail.get('sample_fingerprint'):
         return
     sample = detail['sample_fingerprint']
@@ -167,6 +175,14 @@ def prompt(mem, remaining):
                'verifiedMethods': [] if attempt else history_methods(mem.skills, metadata(mem.inputs, mem.contract))}
     if detail:
         context['lastAttempt']['diagnosis'] = compact(detail)
+    if detail and detail.get('stage') == 'checker':
+        # Keep current counterexample first; do not repeat numeric summaries already in previews.
+        context['lastAttempt']['diagnosis'].pop('sample_evidence', None)
+        context['progress'] = {k: v for k, v in context['progress'].items() if k != 'checker_feedback'}
+        if context['progress'].get('same_checker_failure'):
+            context['nextAction'] = ('同一checker反例仍未解决；对照record_context中的完整输入和原始位置，'
+                                     '重新检查过滤边界与排序条件，不只移动代码位置。' + context['nextAction'])
+            context['currentExpressions'] = repair_expressions(base.get('python', ''))
     if use_best:
         context['repairBase']['diagnosis'] = compact(base_detail)
         context['lastAttempt']['diagnosis'] = {k: detail[k] for k in
@@ -174,6 +190,10 @@ def prompt(mem, remaining):
     if attempt and not detail:
         context['lastAttempt']['sandbox'] = attempt.get('sandbox', '')
         context['lastAttempt']['runtimeError'] = attempt.get('runtimeError', '')
+    if rejected.get('reason') == 'failed_ast':
+        context['rejectedCandidate']['unchangedExpressions'] = repair_expressions(rejected.get('python', ''))
+        context['nextAction'] = ('本次代码与已失败代码的AST相同；注释修改无效。'
+                                 '对照原反例修改执行表达式。' + context['nextAction'])
     failed = {f['case'] for f in (base_detail or {}).get('failures', []) if 'input' in f}
     for entry in mem.inputs.get('files', []):
         clean = dict(entry)
@@ -188,5 +208,6 @@ def prompt(mem, remaining):
             "按nextAction执行。focus索引指向诊断中的完整反例；混合错误可能同时涉及成员、数值和排序。\n"
             "repairBase只提供一份修复代码。same_sample_outputs=true表示已测样例输出重复，不代表程序在所有输入上等价。请改变有证据的规则，不只改写法。\n"
             "rejectedCandidate表示同一失败AST未再执行。verifiedMethods仅为历史参考，仍须通过本题验证。\n"
+            "公开样例通过仅表示规则与这些样例兼容；record_context不完整时按入口补证据，不能猜身份或直接替换答案。\n"
             "READ 路径 偏移：样例偏移为case编号，其他文件按读取入口和NEXT_READ继续。\n"
             "上下文：" + json.dumps(context, ensure_ascii=False))
