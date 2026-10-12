@@ -619,7 +619,7 @@ def _advance_toward_base(turn, memory, ledger, robot, base):
 
 
 def _make_room_inside(turn, memory, nav, ledger, base, occupied):
-    """Pack the inner aisle deeper when our own frontage blocks the queue.
+    """Open inner firing stances when our own frontage blocks the queue.
 
     Vacating controlled robots is a planning comparison only. Every submitted
     move still uses observed occupancy, and followers wait for the next view.
@@ -698,6 +698,27 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
             if step in free_inner and step not in depth:
                 depth[step] = depth[point] + 1
                 pending.append(step)
+
+    def queue_routes(view, vacated, lanes, destinations=()):
+        # Compare one projected move, without removing any other occupant.
+        # These paths rank yields only; actual followers still wait for a view.
+        routes = {}
+        for follower in queue:
+            check_time(nav.deadline)
+            avoided = (ledger.reserved | memory.avoided_steps(follower.id)
+                       | set(lanes) | set(destinations))
+            if nav.memory:
+                avoided |= nav.memory.blocked(follower.id)
+            cleared = set(vacated) | {follower.pos}
+            blocked = (turn.blocked - cleared) | avoided
+            goals = {p for p in inner - blocked
+                     if _firing_point(p, follower, base, memory, view) is not None}
+            routes[follower.id] = nav.distances_to(
+                goals, vacated=cleared, reserved=avoided, exact=True).get(follower.pos)
+        return routes
+
+    current_routes = queue_routes(occupied, (), firing_lanes)
+    current_footprint = (positions | firing_lanes) & free_inner
     choices = []
     for robot in movable:
         check_time(nav.deadline)
@@ -708,21 +729,39 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
         if nav.memory:
             blocked |= nav.memory.blocked(robot.id)
         for step in neighbours(robot.pos):
-            if step in blocked or depth.get(step, -1) <= depth[robot.pos]:
+            if step in blocked or depth.get(step, -1) < depth[robot.pos]:
                 continue
             moved = occupied.copy()
             moved.pop(robot.pos, None)
             moved[step] = robot, False
-            if _firing_point(step, robot, base, memory, moved) is not None:
-                # Clear from the head of the queue. Strictly increasing depth
-                # prevents sideways oscillation while teammates advance.
-                choices.append((-depth[step], -depth[robot.pos], robot.id, step, robot))
-    for _, _, _, step, robot in sorted(choices, key=lambda row: row[:-1]):
+            aim = _firing_point(step, robot, base, memory, moved)
+            if aim is None:
+                continue
+            next_lanes = protected | set(line_cells(step, aim))
+            next_footprint = ((positions - {robot.pos}) | {step} | next_lanes) & free_inner
+            space_gain = len(current_footprint) - len(next_footprint)
+            next_routes = queue_routes(moved, {robot.pos}, next_lanes, {step})
+            relief = sum(length is not None and (current_routes[uid] is None
+                         or length < current_routes[uid]) for uid, length in next_routes.items())
+            worse_route = any(length is not None and (next_routes[uid] is None
+                              or next_routes[uid] > length)
+                              for uid, length in current_routes.items())
+            # A corner-to-straight shot can release the aisle at equal depth.
+            # Neither route access nor space may worsen, and one must improve
+            # there, so neutral sideways moves cannot oscillate. Prefer relief over packing a
+            # shooter farther away while the doorway remains blocked.
+            if depth[step] == depth[robot.pos] and (worse_route or space_gain < 0
+                                                  or relief == 0 and space_gain == 0):
+                continue
+            rank = (-relief, -space_gain, -depth[step], -depth[robot.pos], robot.id, step)
+            choices.append((rank, step, robot, relief, space_gain))
+    for _, step, robot, relief, space_gain in sorted(choices, key=lambda row: row[0]):
         if ledger.add(robot.id, command('move', step)):
             memory.remember(turn, robot, 'move', step)
             ledger.explain(robot.id, 'robot_make_room_inside', target_id=base.id,
                            from_pos=robot.pos, next_pos=step, inner_depth=depth[robot.pos],
-                           next_depth=depth[step], waiting_robots=[r.id for r in queue])
+                           next_depth=depth[step], waiting_robots=[r.id for r in queue],
+                           ingress_routes_improved=relief, inner_space_gain=space_gain)
             for follower in queue:
                 if follower.id not in ledger.used:
                     ledger.used.add(follower.id)
