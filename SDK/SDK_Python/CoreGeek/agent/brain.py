@@ -6,7 +6,7 @@ from time import monotonic
 from .logging_system import turn_context, update_context, request_context, emit_event
 from . import diagnostics
 from .config import Config
-from .daytime import finish_daytime_work, park_idle_pioneer
+from .daytime import finish_daytime_work, park_idle_pioneer, yield_idle_worker_for_traffic
 from .worker_jobs import resume_daytime_jobs, save_daytime_jobs
 from .model import Turn, distance, SUMMON_ORDERS, DEFENCE_RETURN_TICK
 from .navigation import Navigator, layout, DeadlineExceeded
@@ -713,6 +713,7 @@ class Agent:
                         pioneer(turn, self.cfg, mem, nav, ledger, h, shopping=turn.day > 1)
                         if h.id not in ledger.used:
                             park_idle_pioneer(turn, self.cfg, mem, nav, ledger, h)
+                yield_idle_worker_for_traffic(turn, mem, nav, ledger, returning)
                 finish_daytime_work(turn, self.cfg, mem, nav, ledger, returning)
                 emit_event('spending_plan', dict(ledger.spending_plan,
                            gold_after_reservations=ledger.gold,

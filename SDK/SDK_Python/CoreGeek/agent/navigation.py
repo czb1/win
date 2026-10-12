@@ -26,7 +26,7 @@ class Navigator:
     def record_search(self, uid, outcome, **facts):
         record = self.diagnostics.setdefault(uid, {"outcomes": {}, "last_failure": None})
         record["outcomes"][outcome] = record["outcomes"].get(outcome, 0) + 1
-        if outcome not in ("route_found", "at_goal"):
+        if outcome not in ("route_found", "route_found_after_collision", "at_goal"):
             record["last_failure"] = {"reason": outcome, **facts}
 
     def move_along(self, hero, ledger, route, goals, reserved=()):
@@ -86,15 +86,47 @@ class Navigator:
     def _search(self, hero, goals, reserved=(), *, with_endpoint=False):
         check_time(self.deadline)
         avoided = self.memory.blocked(hero.id) if self.memory else set()
-        blocked = frozenset((self.turn.blocked | set(reserved) | avoided) - {hero.pos})
-        goals = {g for g in goals if self.turn.inside(g) and g not in blocked}
-        if not goals:
-            self.record_search(hero.id, "goals_occupied_or_outside_map", blocked_count=len(blocked),
-                               avoided_count=len(avoided), reserved_count=len(reserved))
-            return None
-        if hero.pos in goals:
+        occupied = (self.turn.blocked | set(reserved)) - {hero.pos}
+        blocked = frozenset(occupied | avoided)
+        valid = {g for g in goals if self.turn.inside(g)}
+        open_goals = valid - blocked
+        if not open_goals:
+            # Only a *currently free* failed step may be retried. A real
+            # occupant or a same-turn reservation must never be ignored.
+            if not (valid - occupied) or len(avoided - occupied) != 1:
+                self.record_search(hero.id, "goals_occupied_or_outside_map", blocked_count=len(blocked),
+                                   avoided_count=len(avoided), reserved_count=len(reserved),
+                                   occupied_goals=len(valid & self.turn.blocked),
+                                   reserved_goals=len(valid & set(reserved)),
+                                   avoided_goals=len(valid & avoided), outside_goals=len(goals - valid))
+                return None
+        if hero.pos in open_goals:
             self.record_search(hero.id, "at_goal")
             return (0, None, hero.pos) if with_endpoint else (0, None)
+        route, expanded = self._bfs(hero, open_goals, blocked)
+        # A failed step is a temporary collision observation, not proof that
+        # the only door is permanently sealed. Retry without that penalty only
+        # when the normal search found no other route and the cell is free now.
+        retried = False
+        if route is None and len(avoided - occupied) == 1:
+            route, expanded = self._bfs(hero, valid - occupied, frozenset(occupied))
+            retried = route is not None
+        self.record_search(hero.id, "route_found_after_collision" if retried else
+                           "route_found" if route else
+                           "goals_occupied_or_outside_map" if not open_goals else "unreachable",
+                           goal_count=len(open_goals), blocked_count=len(blocked),
+                           avoided_count=len(avoided), reserved_count=len(reserved),
+                           expanded_cells=expanded,
+                           occupied_goals=len(valid & self.turn.blocked),
+                           reserved_goals=len(valid & set(reserved)),
+                           avoided_goals=len(valid & avoided), outside_goals=len(goals - valid))
+        if route is None:
+            return None
+        return (route[0], route[1], route[3]) if with_endpoint else route[:2]
+
+    def _bfs(self, hero, goals, blocked):
+        if not goals:
+            return None, 0
         # Many mines/build sites share the same actor and occupancy snapshot.
         # Cache the entire BFS, including deterministic discovery order.
         key = hero.pos, blocked
@@ -119,12 +151,7 @@ class Navigator:
         routes = self._trees[key]
         route = min(((*routes[g], g) for g in goals if g in routes),
                     key=lambda r: (r[0], r[2]), default=None)
-        self.record_search(hero.id, "route_found" if route else "unreachable",
-                           goal_count=len(goals), blocked_count=len(blocked), avoided_count=len(avoided),
-                           reserved_count=len(reserved), expanded_cells=len(routes))
-        if route is None:
-            return None
-        return (route[0], route[1], route[3]) if with_endpoint else route[:2]
+        return route, len(routes)
 
     def approach(self, hero, targets, reserved=(), *, with_endpoint=False):
         targets = set(targets)
