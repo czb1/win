@@ -139,6 +139,7 @@ def task_options(turn, cfg, mem, nav, ledger, hero, *, switching=False):
                                           start=t['startRound'], timeout=timeout)
                         continue
             options.append(dict(point=point, task=task, route=route, cell=cell,
+                                travel_forbidden=forbidden,
                                 start=start, finish=start + budget['rounds'],
                                 cooldown=cooldown, return_steps=return_steps, budget=budget,
                                 value=int(task.get('scoreReward', 0)) + .5 * int(task.get('goldReward', 0))))

@@ -114,6 +114,10 @@ class Turn:
         self.weapons = sorted((r for r in self.ours if r.kind in WEAPONS), key=lambda r: r.id)
         self.station = next((r for r in self.ours if r.kind == "station"), None)
         self.units = {r.id: r for r in (*self.ours, *self.summon_robots)}
+        self.vehicle_cells = {p for p, kind in self.zones.items() if kind == self.team + "Vehicle"}
+        occupied = {p for r in (*self.ours, *self.enemies, *self.robots, *self.summon_robots)
+                    for p in r.cells}
+        self.free_vehicle_cells = self.vehicle_cells - occupied
         self.tasks = team.get("playerTasks", [])
         self.phase_task = str(data.get("phaseTask") or "")
         self.prices = {r["name"]: int(r["price"]) for r in data.get("vendorShopList", [])}

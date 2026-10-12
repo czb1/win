@@ -537,13 +537,13 @@ def defend(turn, nav, ledger, pairs=None, posts=None, damage=None):
             if report.get("reason") != "operator_yielding_gate":
                 report["reason"] = "operator_busy"
             continue
-        route = (nav.search(hero, {posts[hero.id]}, ledger.reserved) if posts and hero.id in posts
-                 else nav.approach(hero, [tower.pos], ledger.reserved))
+        route = (nav.search(hero, {posts[hero.id]}, ledger.reserved, with_endpoint=True) if posts and hero.id in posts
+                 else nav.approach(hero, [tower.pos], ledger.reserved, with_endpoint=True))
         if turn.is_day and posts and hero.id in posts:
             if yield_operator(turn, nav, ledger, hero, pairs, posts, route):
                 continue
         if route and route[1] is not None:
-            ledger.add(hero.id, command("move", route[1]))
+            nav.move_along(hero, ledger, route, {route[2]})
             report.update(reason="operator_moving", post=posts.get(hero.id) if posts else None,
                           return_steps=route[0])
             ledger.explain(hero.id, "operator_repositioning", tower=tower.id,
@@ -822,7 +822,7 @@ def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6, corridor
             report["reason"] = "fired"
             return
     if route and route[1] is not None:
-        ledger.add(hero.id, command('move', route[1]))
+        nav.move_along(hero, ledger, route, {mem.gunner_post})
         for tower in turn.weapons:
             if tower.kind == "rocket" and not tower.cooldown:
                 ledger.weapon_diagnostics[tower.id].update(reason="operator_moving", return_steps=route[0])

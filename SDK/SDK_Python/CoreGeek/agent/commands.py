@@ -3,6 +3,7 @@ from collections import Counter
 import sys
 from .model import WEAPONS, CHARACTERS, ORES, SUMMON_ORDERS, DEFENCE_RETURN_TICK, dump, distance, pos
 from .logging_system import logging_failure
+from .vehicle import driving_segment
 
 EMPTY = {"roleCommandMap": {}, "prompt": "", "executeCmd": ""}
 
@@ -135,6 +136,7 @@ class Ledger:
         name = cmd.get("name")
         cost = 0
         controller = None
+        move_cells = set()
         if uid in self.turn.summon_robot_ids:
             if self.turn.is_day or unit.abnormal_state == "dizzy":
                 return self._reject("robot_unavailable_by_phase_or_dizzy")
@@ -176,8 +178,18 @@ class Ledger:
             if needs_pos and len(points) != 1:
                 return self._reject("expected_one_target")
             if action == "move":
-                if (not self.turn.adjacent(unit.pos, target) or target in self.turn.blocked
-                        or target in self.reserved):
+                boarding = (unit.kind == 'pioneer' and self.turn.is_day
+                            and target in self.turn.free_vehicle_cells)
+                segment = (driving_segment(unit.pos, target)
+                           if unit.kind == 'pioneer' and self.turn.is_day and unit.is_driving
+                           and unit.pos in self.turn.vehicle_cells else None)
+                if segment:
+                    if any(not self.turn.inside(p) or p in self.turn.blocked or p in self.reserved
+                           for p in segment):
+                        return self._reject('driving_path_occupied')
+                    move_cells.update(segment)
+                elif (not self.turn.adjacent(unit.pos, target)
+                      or target in self.turn.blocked and not boarding or target in self.reserved):
                     return self._reject("move_not_adjacent_or_occupied")
             elif action == "build":
                 if (not self.turn.is_day or unit.kind != "worker"
@@ -277,6 +289,7 @@ class Ledger:
             self.used.add(controller.id)
         if action in ("build", "move"):
             self.reserved.add(target)
+            self.reserved.update(move_cells)
         if action == "collect":
             self.mine_claims[uid] = target
             self.mine_plans[uid] = 0, 1

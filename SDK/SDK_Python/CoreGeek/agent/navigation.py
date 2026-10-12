@@ -29,6 +29,28 @@ class Navigator:
         if outcome not in ("route_found", "at_goal"):
             record["last_failure"] = {"reason": outcome, **facts}
 
+    def move_along(self, hero, ledger, route, goals, reserved=()):
+        """Optimize only an already authorized trip; budgets stay pedestrian."""
+        from .commands import command
+        from .logging_system import emit_event
+        from .vehicle import faster_route
+        if not route or route[1] is None:
+            return False
+        reason = 'no_safe_saving'
+        try:
+            faster = faster_route(self, ledger, hero, goals, route, reserved)
+        except DeadlineExceeded:
+            # Optional acceleration must not discard an already valid action.
+            faster, reason = None, 'search_budget_exhausted'
+        selected = faster or route
+        accepted = ledger.add(hero.id, command('move', selected[1]))
+        if hero.kind == 'pioneer' and self.turn.is_day and self.turn.vehicle_cells:
+            emit_event('vehicle_travel', dict(actor=hero.id, walking_rounds=route[0],
+                       vehicle_rounds=faster[0] if faster else None,
+                       reason='faster_route' if faster else reason,
+                       is_driving=hero.is_driving, target=selected[1], accepted=accepted), 'economy')
+        return accepted
+
     def distances_to(self, targets, vacated=(), reserved=(), exact=False):
         """One reverse BFS serves every mine; no BFS per deposit endpoint."""
         check_time(self.deadline)
