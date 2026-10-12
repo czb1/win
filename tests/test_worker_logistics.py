@@ -15,9 +15,38 @@ from agent.intelligence import Memory
 from agent.mining import earn, sale_inventory
 from agent.model import Turn, neighbours
 from agent.navigation import Navigator
+from agent.worker_jobs import _continue
 
 
 class LogisticsTests(unittest.TestCase):
+    def test_continued_build_uses_another_adjacent_tile_when_pinned_tile_fills(self):
+        p = payload(10, [unit(1, 'worker', 2, 4), unit(2, 'worker', 3, 4),
+                         unit(13, 'station', 1, 1)])
+        t, cfg, nav, ledger = setup_case(p, layout_mode='explicit', weapon_cells=[[4, 4]])
+        job = {'kind': 'build', 'target': (4, 4), 'name': 'rocket', 'work_cell': (3, 4)}
+        ok, _ = _continue(t, cfg, Memory(), nav, ledger, t.workers[0], job, [(4, 4)], [])
+        self.assertTrue(ok)
+        self.assertEqual(ledger.commands['1']['action'], 'move')
+        self.assertNotEqual(ledger.work_jobs[1]['work_cell'], (3, 4))
+
+    def test_continued_purchase_switches_to_reachable_shop(self):
+        p = payload(140, [unit(1, 'worker', 2, 2),
+                          unit(13, 'station', 0, 0, level=3),
+                          unit(14, 'rocket', 2, 4, level=1)])
+        p['mapInfo']['zones'] = [
+            {'neutralType': 'weaponShop', 'pos': {'x': x, 'y': y}}
+            for x, y in ((12, 12), (4, 2))]
+        p['teamOur']['goldNum'] = 75
+        p['weaponShopList'] = [{'name': 'WeaponUpgradeVoucher1', 'price': 20}]
+        t, cfg, nav, ledger = setup_case(p, layout_mode='explicit', weapon_cells=[[2, 4]])
+        mem = Memory()
+        mem.movement.targets[1, (12, 12)] = t.round + 8
+        job = {'kind': 'buy', 'target': (12, 12),
+               'name': 'WeaponUpgradeVoucher1', 'quantity': 1}
+        ok, _ = _continue(t, cfg, mem, nav, ledger, t.workers[0], job, [(2, 4)], [])
+        self.assertTrue(ok)
+        self.assertEqual(ledger.work_jobs[1]['target'], (4, 2))
+
     def case(self, tick=40):
         p = payload(tick, [unit(1, "worker", 5, 5, backpack=["stone"] * 10 + ["copper"] * 4)])
         p["mapInfo"]["zones"] = [{"neutralType": k, "pos": {"x": x, "y": y}}
@@ -119,7 +148,27 @@ class MovementFeedbackTests(unittest.TestCase):
         for tick in (11, 16, 25):
             p["roundNo"], mem.last_round = tick, tick-1
             mem.observe(Turn(p, Config()), Config())
-        self.assertEqual(mem.movement.failures[1, (3, 3)], 41)
+        self.assertEqual(mem.movement.failures[1, (3, 3)], 29)
+
+    def test_single_failed_step_can_be_retried_at_only_open_gate(self):
+        around = [(x, y) for x in (1, 2, 3) for y in (1, 2, 3)
+                  if (x, y) not in ((2, 2), (3, 2))]
+        p = payload(11, [unit(1, 'worker', 2, 2)] +
+                    [unit(20+i, 'wall', *cell) for i, cell in enumerate(around)])
+        t, cfg, _, _ = setup_case(p)
+        mem = Memory()
+        mem.movement.failures[1, (3, 2)] = 12
+        nav = Navigator(t, monotonic()+3, mem.movement)
+        self.assertEqual(nav.search(t.workers[0], {(4, 2)})[1], (3, 2))
+        self.assertEqual(nav.diagnostics[1]['outcomes']['route_found_after_collision'], 1)
+
+    def test_collision_cooldown_never_overrides_current_occupancy(self):
+        p = payload(11, [unit(1, 'worker', 2, 2), unit(2, 'worker', 3, 2)])
+        t, cfg, _, _ = setup_case(p)
+        mem = Memory()
+        mem.movement.failures[1, (3, 2)] = 12
+        nav = Navigator(t, monotonic()+3, mem.movement)
+        self.assertNotEqual(nav.search(t.workers[0], {(4, 2)})[1], (3, 2))
 
     def test_short_movement_cycle_releases_target(self):
         p = payload(9, [unit(1, "worker", 2, 2)])

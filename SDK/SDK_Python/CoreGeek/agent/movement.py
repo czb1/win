@@ -34,7 +34,9 @@ class MovementMemory:
                 key = hero.id, target
                 count = self.failure_counts.get(key, (0, 0))[0] + 1
                 self.failure_counts[key] = count, turn.round
-                self.failures[key] = turn.round + 4 * 2 ** min(count - 1, 3)
+                # A teammate may vacate the cell on the very next turn.
+                # Escalate only after repeated failures at the same step.
+                self.failures[key] = turn.round + 2 ** min(count - 1, 4)
             else:
                 self.failure_counts.pop((hero.id, target), None)
                 self.failures.pop((hero.id, target), None)

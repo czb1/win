@@ -6,7 +6,7 @@ from time import monotonic
 from .logging_system import turn_context, update_context, request_context, emit_event
 from . import diagnostics
 from .config import Config
-from .daytime import finish_daytime_work, park_idle_pioneer
+from .daytime import finish_daytime_work, park_idle_pioneer, yield_idle_worker_for_traffic
 from .worker_jobs import resume_daytime_jobs, save_daytime_jobs
 from .model import Turn, distance, SUMMON_ORDERS, DEFENCE_RETURN_TICK
 from .navigation import Navigator, layout, DeadlineExceeded
@@ -371,7 +371,7 @@ class Agent:
                      "day" if turn.is_day else "night", extra={"event": "phase_start"})
         previous_mines = mem.mine_kinds.copy()
         mem.observe(turn, self.cfg)
-        observe_robot_summons(turn, mem)
+        summons = observe_robot_summons(turn, mem)
         diagnostics.task_state(turn, mem)
         if mem.last_round < 0 or previous_mines != mem.mine_kinds:
             LOG.info("round=%s source=mapInfo.zones mines_received=%s mines=%s", turn.round,
@@ -394,6 +394,8 @@ class Agent:
         if getattr(turn, "weapon_layout", None):
             emit_event("weapon_layout", turn.weapon_layout, "decision")
         ledger = Ledger(turn, self.cfg, towers, walls)
+        ledger.summon_pending_positions = summons["positions"].copy()
+        ledger.summon_daily_count = summons["count"]
         nav = Navigator(turn, started + self.cfg.decision_seconds, mem.movement)
         intel = Intelligence(turn, self.cfg, mem)
         prompt, execute = "", ""
@@ -403,10 +405,15 @@ class Agent:
         budget_reached = False
         gate_guard = None
         try:
+            if not hasattr(mem, "robot_assault"):
+                mem.robot_assault = RobotAssaultMemory()
             # A paid base heal takes the pioneer before task or gun allocation,
             # including at night and on the final daylight turn.
             heal_station_with_pioneer(turn, mem, nav, ledger)
             if turn.is_day:
+                # Share current/remembered weapon occupancy before selecting
+                # the wall blocker and this day's summon positions.
+                act_robots(turn, mem.robot_assault, nav, ledger)
                 scout = prepare_first_day_wall_blocker(
                     turn, mem.night_scout, nav, ledger,
                     excluded={mem.gatling_operator_id} if mem.gatling_operator_id is not None else (),
@@ -440,9 +447,8 @@ class Agent:
             gate_guard = prepare_gate_guard(turn, self.cfg, mem, nav, ledger, towers, walls)
             nav.gate_guard = gate_guard
             act_imps(turn, mem.sabotage, nav, ledger)
-            if not hasattr(mem, "robot_assault"):
-                mem.robot_assault = RobotAssaultMemory()
-            act_robots(turn, mem.robot_assault, nav, ledger)
+            if not turn.is_day:
+                act_robots(turn, mem.robot_assault, nav, ledger)
             h = turn.pioneer
             within_timeout = bool(h and turn.phase_task and turn.round - mem.task_started <
                                   min(mem.task_timeout, self.cfg.task_max_rounds))
@@ -744,6 +750,7 @@ class Agent:
                         pioneer(turn, self.cfg, mem, nav, ledger, h, shopping=turn.day > 1)
                         if h.id not in ledger.used:
                             park_idle_pioneer(turn, self.cfg, mem, nav, ledger, h)
+                yield_idle_worker_for_traffic(turn, mem, nav, ledger, returning)
                 finish_daytime_work(turn, self.cfg, mem, nav, ledger, returning)
                 emit_event('spending_plan', dict(ledger.spending_plan,
                            gold_after_reservations=ledger.gold,

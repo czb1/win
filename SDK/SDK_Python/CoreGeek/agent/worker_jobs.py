@@ -43,18 +43,30 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()
         if preferred and turn.zones.get(target) not in preferred:
             return False, 'news_stock_replan'
     if target is not None and mem.movement.avoids(hero.id, target):
-        return False, 'movement_retry_cooldown'
+        if kind in ('buy', 'sell', 'robot_buy'):
+            target = None  # Replan the same item/load through another shop.
+        else:
+            return False, 'movement_retry_cooldown'
     if kind == 'sell':
         if not sale_inventory(turn, mem, hero):
             return False, 'sale_complete'
         ok = earn(turn, cfg, mem, nav, ledger, hero, force_sale=True,
                   allow_spare=False, vendor_only=target)
+        if not ok:
+            # The original vendor may be blocked while another is reachable.
+            ok = earn(turn, cfg, mem, nav, ledger, hero, force_sale=True,
+                      allow_spare=False)
     elif kind == 'buy':
         planned = planned_weapons(turn, cfg, mem, towers)
         plan = supplies(turn, cfg, mem, nav, ledger, hero,
                         sum(w.id < 0 for w in planned) * cfg.weapon_cost,
                         planned=planned, bulk=True, item_only=job['name'],
                         shop_only=target, quantity=job['quantity'])
+        if plan is None:
+            plan = supplies(turn, cfg, mem, nav, ledger, hero,
+                            sum(w.id < 0 for w in planned) * cfg.weapon_cost,
+                            planned=planned, bulk=True, item_only=job['name'],
+                            quantity=job['quantity'])
         ok = buy_supply(turn, ledger, hero, plan)
         if ok:
             mem.supply_worker = hero.id
@@ -70,6 +82,12 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()
                                reserve=reserve, item_only=job['name'], shop_only=target,
                                quantity_limit=job['quantity'],
                                stage_only=first_day_boss_staging(turn, cfg))
+        if not ok and target is not None:
+            ok = summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls,
+                                   excluded=priority_actors | {h.id for h in turn.heroes if h.id != hero.id},
+                                   reserve=reserve, item_only=job['name'],
+                                   quantity_limit=job['quantity'],
+                                   stage_only=first_day_boss_staging(turn, cfg))
     elif kind == 'use':
         ok = use_inventory(turn, nav, ledger, hero, mem=mem,
                            target_only=target, name_only=job['name'])
@@ -82,6 +100,9 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()
             return False, 'build_materials_changed'
         ok = build(turn, cfg, mem, nav, ledger, hero, [target], lambda _: name,
                    work_cell=job.get('work_cell'))
+        if not ok and job.get('work_cell') is not None:
+            # Persist the building target, not one stale adjacent work tile.
+            ok = build(turn, cfg, mem, nav, ledger, hero, [target], lambda _: name)
     elif kind == 'mine':
         if turn.zones.get(target) != job['ore'] or target in mem.collect_failures:
             return False, 'mine_changed_or_failed'
