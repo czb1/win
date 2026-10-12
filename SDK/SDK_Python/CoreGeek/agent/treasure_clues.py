@@ -97,3 +97,60 @@ def merge_clues(previous, proposed, news):
 def clue_status(clues):
     # A location hint like "west" is not an exact position. Never call these complete.
     return {kind: [c for c in clues if c["kind"] == kind] for kind in KINDS}
+
+
+def source_matches(evidence, news):
+    return (isinstance(evidence, dict) and type(evidence.get('day')) is int
+            and isinstance(evidence.get('quote'), str) and bool(evidence['quote'].strip())
+            and any(n.get('day') == evidence['day'] and
+                    evidence['quote'].strip() in n.get('folkLegends', '') for n in news))
+
+
+def resolve_location(location, news, inside):
+    """Compute official world coordinates; never infer directions from prose."""
+    if (not source_matches(location, news)
+            or location.get('status') != 'confirmed'):
+        return None
+    mode = location.get('mode')
+    base = location.get('base') if mode == 'relative' else location.get('position')
+    if (mode not in ('relative', 'direct') or not isinstance(base, list)
+            or len(base) != 2 or not all(type(v) is int for v in base)
+            or not inside(tuple(base))):
+        return None
+    point = list(base)
+    if mode == 'relative':
+        offsets = location.get('offsets')
+        if not isinstance(offsets, list) or not offsets:
+            return None
+        vectors = {'east': (1, 0), 'west': (-1, 0), 'north': (0, 1), 'south': (0, -1)}
+        for offset in offsets:
+            if not isinstance(offset, dict):
+                return None
+            direction, steps = offset.get('direction'), offset.get('steps')
+            if not isinstance(direction, str) or direction not in vectors or type(steps) is not int or steps <= 0:
+                return None
+            dx, dy = vectors[direction]
+            point[0] += dx * steps
+            point[1] += dy * steps
+    return point if inside(tuple(point)) else None
+
+
+def retry_allowed(plan, failures, news):
+    """A changed explanation/window alone cannot bypass a failed attempt."""
+    from collections import Counter
+    for failed in failures:
+        same_place = plan['position'] == failed['position']
+        same_items = Counter(plan['items']) == Counter(failed['items'])
+        code = failed['result']
+        if code == 2 and not same_place:
+            continue
+        if code == 3 and not same_items:
+            continue
+        # Code 0 does not diagnose clues. Keep blocked pending execution evidence.
+        opening = plan.get('opening')
+        if (code == 2 and source_matches(opening, news)
+                and type(opening.get('round')) is int
+                and opening['round'] == plan['startRound'] > failed['round']):
+            continue
+        return False
+    return True

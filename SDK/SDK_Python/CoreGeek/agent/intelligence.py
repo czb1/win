@@ -13,7 +13,7 @@ import shlex
 from .commands import command
 from .model import ORES, pos
 from .recovery import Recovery
-from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status, merge_material_plan
+from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status, merge_material_plan, resolve_location, retry_allowed
 from .wall_watch_state import WallWatchState
 from .task_schedule import task_descriptor, task_signature
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
@@ -358,6 +358,7 @@ class Memory:
     treasure: dict | None = None
     treasure_attempted: bool = False
     treasure_done: bool = False
+    treasure_failures: list = field(default_factory=list)
     outages: list = field(default_factory=list)
     market_signals: list = field(default_factory=list)
     market_prices: dict = field(default_factory=dict)
@@ -547,9 +548,23 @@ class Memory:
                                 previous_commands=summons, action_results=results,
                                 correlated=self.last_round == turn.round - 1,
                                 attempted=self.treasure_attempted,
-                                next_state="done" if result in (1, 4) else "unchanged")
-        if result in (1, 4):
-            self.treasure_done = True
+                                next_state=("done" if result in (1, 4) else "review")
+                                if summons and self.last_round == turn.round - 1 else "unchanged")
+        if summons and self.last_round == turn.round - 1:
+            if result in (1, 4):
+                self.treasure_done = True
+            elif result in (0, 2, 3):
+                for uid, cmd in summons.items():
+                    targets = cmd.get("targetPos") or []
+                    if not targets:
+                        continue
+                    failed = dict(round=self.last_round, result=result,
+                                  position=list(pos(targets[0])), items=list(cmd.get("item", [])),
+                                  legality=results.get(str(uid)), errors=errors)
+                    if failed not in self.treasure_failures:
+                        self.treasure_failures.append(failed)
+                        self.news_dirty = True
+                    self.treasure_attempted = True
         if turn.phase_task != self.task_text:
             if self.task_text:
                 outcome = {"point": self.task_point, "rounds": turn.round - self.task_started,
@@ -897,7 +912,7 @@ class Memory:
             if purpose == "task":
                 self.reject("格式错误：第一行写 ANSWER 或 PYTHON，后面写答案或代码。")
             elif purpose == "news":
-                self.news_dirty = True
+                self.news_dirty = not (self.treasure_failures and self.treasure_attempted)
                 self.trace_treasure(turn, "treasure_validation", accepted=False,
                                     reason="invalid_json", old_plan_retained=bool(self.treasure))
             return
@@ -1067,10 +1082,13 @@ class Memory:
                 target = Counter({i["name"]: i["quantity"] for i in self.treasure_materials["items"]})
                 if target != Counter(self.treasure["items"]):
                     self.treasure = None
-                    self.treasure_attempted = False
+                    self.treasure_attempted = bool(self.treasure_failures)
             t = parsed.get("treasure")
             if isinstance(t, dict) and not self.treasure_done:
-                p, items = t.get("position"), t.get("items")
+                t = dict(t)
+                p = resolve_location(t.get("location"), self.news, turn.inside)
+                items = t.get("items")
+                t["position"] = p
                 begin, end = t.get("startRound"), t.get("endRound")
                 confidence, evidence = t.get("confidence", 0), t.get("evidence")
                 material_match = (not self.treasure_materials or
@@ -1088,12 +1106,21 @@ class Memory:
                     signature = (tuple(p), tuple(sorted(items)), begin, end)
                     old = self.treasure
                     old_sig = (tuple(old["position"]), tuple(sorted(old["items"])), old["startRound"], old["endRound"]) if old else None
-                    if old_sig != signature:
-                        self.treasure, self.treasure_attempted = t, False
+                    allowed = retry_allowed(t, self.treasure_failures, self.news)
+                    if any(f["result"] == 3 for f in self.treasure_failures):
+                        allowed = allowed and material_status == "confirmed"
+                    if old_sig != signature or self.treasure_failures:
+                        self.treasure = t
+                        self.treasure_attempted = not allowed
+                    self.trace_treasure(turn, "treasure_retry", dedupe=True,
+                                        allowed=allowed, reason="evidence_checked" if allowed else "failed_plan_blocked")
                     self.trace_treasure(turn, "treasure_validation", accepted=True,
                                         changed=old_sig != signature, plan=t,
                                         attempted=self.treasure_attempted)
                 else:
+                    if p is None:
+                        self.treasure = None
+                        self.treasure_attempted = bool(self.treasure_failures)
                     checks = {
                         "material_match": material_match,
                         "position": isinstance(p, list) and len(p) == 2
@@ -1566,8 +1593,20 @@ class Intelligence:
                   "savedTreasureClues只是过去的候选解读，不是已证实的答案；核对原文，"
                   "新旧线索冲突时在meaning说明冲突，不强行生成完整计划。\n"
                   "只有用品及数量、精确坐标、开启时间均能由原文推出且无冲突时，treasure才可为"
-                  "{\"position\":[x,y],\"items\":[英文商品名],\"startRound\":整数,\"endRound\":整数,"
+                  "{\"location\":定位对象,\"items\":[英文商品名],\"startRound\":整数,\"endRound\":整数,"
                   "\"confidence\":0到1,\"evidence\":[依据]}。"
+                  "地图原点在左下角，东X增加、西X减少、北Y增加、南Y减少；不随阵营镜像。"
+                  'location格式：{"status":"confirmed","mode":"relative","base":[x,y],'
+                  '"offsets":[{"direction":"east","steps":正整数}],'
+                  '"day":来源天数,"quote":"原文摘录"}。'
+                  "direction只允许east/west/north/south，offsets可有多条。"
+                  '直接给坐标则mode为direct，用position:[x,y]替代base和offsets。'
+                  "只提取基准点和方向格数，由程序计算最终坐标，不再自行计算position。"
+                  "未知或冲突时treasure为null，不用高置信度掩盖不确定。"
+                  "lastTreasureFailure非空时按结果复核：2核对地点和时间，3核对材料；0是执行问题，不猜新地点。"
+                  "只有原文支持的纠正才返回计划；无新依据不改变计划，不为重试扩大窗口。"
+                  '若结果2因未到开启时间，补充opening:{"round":明确开启回合,"day":来源天数,"quote":"时间原文"}，'
+                  "startRound须等于该开启回合；没有明确依据不填。"
                   "evidence分别说明用品、坐标和时间的原文依据。西部等方位不足以猜坐标，"
                   "没有结束时间时不要编造窗口；信息不足只让treasure为null，继续保留treasureClues。\n"
                   "marketSignals用于矿石采集和卖出时机，只根据官方消息推断供需及价格方向。"
@@ -1584,6 +1623,7 @@ class Intelligence:
                       {"news": self.mem.news, "shop": self.turn.shop, "day": self.turn.day,
                        "round": self.turn.round,
                        "reviewAfterEvolution": self.mem.news_review_pending,
+                       "lastTreasureFailure": self.mem.treasure_failures[-1] if self.mem.treasure_failures else None,
                        "reviewInstruction": "复核已有线索的遗漏和冲突；缺乏原文依据时保留未知，不猜测。",
                        "itemDescriptions": {k: v for k, v in ITEM_DESCRIPTIONS.items() if k in self.turn.shop},
                        "savedTreasureClues": self.mem.treasure_clues,

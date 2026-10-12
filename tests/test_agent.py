@@ -292,6 +292,8 @@ class IntelligenceTests(unittest.TestCase):
         m.observe(Turn(p,Config()),Config())
         self.assertIsNone(m.treasure)
         prediction["treasure"]["evidence"]=["test clue"]
+        prediction["treasure"]["location"]=dict(status="confirmed", mode="direct", position=[4,4], day=1, quote="test clue")
+        m.news=[dict(day=1, folkLegends="test clue")]
         p["llmResp"]=json.dumps(prediction)
         m.pending=("news",1)
         m.observe(Turn(p,Config()),Config())
