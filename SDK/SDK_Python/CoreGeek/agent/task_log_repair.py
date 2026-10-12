@@ -4,6 +4,10 @@ import re
 import sys
 
 
+class FullRepairRequired(ValueError):
+    """The proposed change needs the existing complete-program workflow."""
+
+
 def repair_context(code, diagnostics):
     """Enable local repair only for named, observed failures with available source."""
     try:
@@ -43,12 +47,12 @@ def repair_context(code, diagnostics):
     source = '\n\n'.join(ast.get_source_segment(code, node) or ast.unparse(node) for node in dependencies)
     if len(source) > 9000 or len(targets) > 8:
         return None  # Fall back to the existing complete-program workflow.
-    return {'targets': targets, 'source': source,
+    return {'targets': targets, 'allowed_functions': sorted(selected), 'source': source,
             'requires_full': any(parsers[name].get('invalid_return') for name in targets),
             'callers': '\n\n'.join(ast.get_source_segment(code, n) or ast.unparse(n)
                                       for n in tree.body if n not in dependencies),
             'failed_parser': diagnostics.get('failed_parser'),
-            'parsers': {name: parsers[name] for name in targets},
+            'parsers': {name: parsers[name] for name in selected if name in parsers},
             'systems': dict(list(diagnostics.get('systems', {}).items())[:8]),
             'errors': diagnostics.get('logs', {}).get('errors', [])[:8]}
 
@@ -56,7 +60,7 @@ def repair_context(code, diagnostics):
 def merge_repair(original, replacement, context):
     """Replace only failed function bodies, preserving signatures and all callers."""
     base, patch = ast.parse(original), ast.parse(replacement)
-    targets = set(context['targets'])
+    targets = set(context.get('allowed_functions', context['targets']))
     functions = {node.name: node for node in base.body if isinstance(node, ast.FunctionDef)}
     updates, imports = {}, []
     # Accept an unchanged full wrapper for older models, but never changed aggregation.
@@ -71,7 +75,7 @@ def merge_repair(original, replacement, context):
             if (node.name in updates or ast.dump(node.args) != ast.dump(old.args)
                     or ast.dump(node.returns or ast.Constant(None)) != ast.dump(old.returns or ast.Constant(None))
                     or [ast.dump(n) for n in node.decorator_list] != [ast.dump(n) for n in old.decorator_list]):
-                raise ValueError('只修失败函数，保留函数签名和装饰器。')
+                raise FullRepairRequired('修改签名或装饰器需要完整修复；下一轮输出包含调用方的完整程序。')
             updates[node.name] = node
         elif full_program:
             continue
@@ -109,11 +113,30 @@ def merge_repair(original, replacement, context):
                 node.names = fresh
                 imports.append(node)
         else:
-            raise ValueError('只输出失败解析函数的完整定义；不输出主程序、聚合或 task_result。')
+            raise FullRepairRequired('修改调用方、聚合或未提供的函数需要完整修复；下一轮输出完整程序。')
     if not updates:
         raise ValueError('缺少失败解析函数定义。')
     base.body = imports + [updates.get(n.name, n) if isinstance(n, ast.FunctionDef) else n for n in base.body]
     return ast.unparse(ast.fix_missing_locations(base))
+
+
+def repair_expressions(code):
+    """Bounded executable expressions, not a claim of semantic equivalence."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    items = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Compare, ast.Lambda, ast.Return)) or (
+                isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ('match', 'search', 'fullmatch', 'split', 'sort')):
+            text = ast.unparse(node)
+            if len(text) <= 320 and text not in items:
+                items.append(text)
+            if len(items) >= 8:
+                break
+    return items
 
 
 def validate_literal_regex(code):

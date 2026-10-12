@@ -22,7 +22,8 @@ from .task_transform_feedback import diagnosis as transform_diagnosis, metadata 
 from .task_transform import transform_config, transform_method, transform_code, case_page_code
 from .task_runtime import runtime_code, runtime_result, command_output
 from .task_evidence import computed_answer, evidence_matches, parsing_rules, inherited_rules
-from .task_log_repair import repair_context, merge_repair, validate_literal_regex
+from .task_log_repair import (repair_context, merge_repair, validate_literal_regex,
+                              FullRepairRequired, repair_expressions)
 from .task_sop import answer_contract, answer_error, engineering_code
 from .task_query import reference_paths, query_config, query_code
 from .market import observe_prices, merge_signals
@@ -984,7 +985,7 @@ class Memory:
                     except (SyntaxError, ValueError) as error:
                         key = type(error).__name__ + ':' + str(error)
                         self.repair_rejections[key] = self.repair_rejections.get(key, 0) + 1
-                        if self.repair_rejections[key] >= 2:
+                        if isinstance(error, FullRepairRequired) or self.repair_rejections[key] >= 2:
                             self.repair_mode = 'full'
                         self.reject(str(error))
                         return
@@ -1049,7 +1050,11 @@ class Memory:
             if has_python and python_identity(code, learned.get('parser') if learned else None, self.inputs) in self.failed_python:
                 if self.transform_config():
                     self.rejected_transform = {'python': code, 'reason': 'failed_ast', 'executed': False}
-                self.reject('当前任务同一AST代码已验证失败，不再执行；依据具体诊断修改失败规则或解析返回结构，保留已通过部分。')
+                if self.contract.get('input_kind') == 'logs':
+                    self.repair_mode = 'full'
+                self.reject('当前任务同一AST代码已验证失败，不再执行；注释变化不会修复程序。'
+                            '对照原反例检查以下仍未变化的表达式，必要时完整修复：'
+                            + json.dumps(repair_expressions(code), ensure_ascii=False))
                 return
             signature = hashlib.sha256(proposal.encode()).hexdigest()
             attempts = self.proposal_counts.get(signature, 0) + 1
@@ -1528,17 +1533,22 @@ class Intelligence:
                 step = '输出完整修复程序，允许调整解析函数及调用方；最后调用 task_result(result)。'
                 log_context['lastAttempt'] = {**attempt, 'python': self.mem.repair_python}
             log_context['parserAvailable'] = bool(self.mem.reusable_parser())
+            log_context['classificationEvidence'] = ('observed' if self.mem.log_diagnostics.get('logs', {}).get('parsers')
+                                                      else 'unavailable: no observed parser; file reads alone do not verify classification')
             log_context['learnedSkills'] = [{k: v for k, v in h.items() if k in ('id', 'parser', 'family', 'parser_contract')} for h in hints]
             prompt = (log_guidance + "本轮只做一步：" + step + "\n" + formats
                       + "所有代码在官方沙盒执行，15秒内结束；使用当前inputPreview文件路径。\n"
                       "输入样例不能代替故障定义；缺少定义时检查已保存规则和当前文档，不得猜关键词。\n"
                       "parseDiagnostics/logDiagnostics内returned_records仅表示解析函数返回条数，不代表所有行成功匹配。\n"
+                      "samples提供原始行与实际解析结果；对照题面故障定义检查字段截断、空白和分类，零故障本身不是错误。"
+                      "分类过程不可见且提交判错时，补充自包含解析函数并重算，不反复改写聚合。\n"
                       "规则与格式变更必须依据本题文档，不复制旧答案、路径或数据。未知字段不得编造。\n"
                       "仅当本次成功执行且所有文件完整读取后才能提交，部分字段也必须有本次计算证据。\n"
                       "上下文：\n" + json.dumps(log_context, ensure_ascii=False))
             repair = self.mem.active_repair() if remaining > 2 else None
             if repair:
-                prompt = ("只修 repair.targets 中有失败证据的解析函数，保留签名、故障定义；返回值遵循记录契约。\n"
+                prompt = ("优先修 repair.targets；允许同时修 repair.allowed_functions 中有证据的关联函数，保留签名和题目故障定义。"
+                          "只修有证据的问题；逐项对照 samples 的原始行与解析结果，正常返回不代表分类正确。\n"
                           "第一行 PYTHON，随后只写待替换函数的完整定义及必要标准库导入。"
                           "不输出聚合、主程序或task_result；框架保留并执行原程序。\n"
                           "直接写Python代码，不要JSON双重转义。样例中的空格原样保留，检查空白数量与正常行格式。\n"

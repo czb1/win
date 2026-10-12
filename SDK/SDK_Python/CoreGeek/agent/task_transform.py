@@ -284,6 +284,62 @@ def checker_fragment(value, text):
         return {'path': location, 'detail': 'checker path cannot be resolved; do not guess'}
 
 
+def checker_records(records, value, text):
+    """Join only an explicit scalar mismatch on a preserved unique field."""
+    unavailable = {'alignment': 'unavailable: no unambiguous checker record reference; do not guess'}
+    fragment = checker_fragment(value, text)
+    location = fragment.get('path') or ''
+    steps = re.findall(r'/([^/\[\]]+)|\[(\d+)\]', location[1:])
+    parent = fragment.get('parent')
+    if (len(steps) < 2 or not steps[-1][0] or not steps[-2][1]
+            or not isinstance(parent, dict) or any(isinstance(v, (dict, list)) for v in parent.values())
+            or not records or not all(isinstance(r, dict) for r in records)):
+        return unavailable
+    key = steps[-1][0]
+    # The checker names the field; never guess that a field called id is identity.
+    if any(key not in r or type(r[key]) not in (str, int) for r in records):
+        return unavailable
+    ids = [(type(r[key]).__name__, r[key]) for r in records]
+    if len(set(ids)) != len(ids):
+        return unavailable
+    projected = [o[key] for o in objects(value) if key in o]
+    tokens = [(type(v).__name__, v) for v in projected if type(v) in (str, int)]
+    if len(tokens) != len(projected) or len(set(tokens)) != len(tokens) or not set(tokens) <= set(ids):
+        return unavailable
+    feedback = next((line for line in text.splitlines() if location in line), '')
+    expected = re.search(r'(?:期望|expected)\s*[:：=]?\s*(.*?)\s*[,，]\s*(?:实际|actual)', feedback, re.I)
+    if not expected:
+        return unavailable
+    raw = expected.group(1).strip()
+    try:
+        expected_value = json.loads(raw)
+        candidates = [i for i, r in enumerate(records) if type(r[key]) is type(expected_value) and r[key] == expected_value]
+    except ValueError:
+        candidates = [i for i, r in enumerate(records) if type(r[key]) is str and r[key] == raw]
+    actual_value = fragment.get('actual')
+    actual = [i for i, r in enumerate(records) if type(r[key]) is type(actual_value) and r[key] == actual_value]
+    if len(candidates) != 1 or len(actual) != 1:
+        return unavailable
+    current, neighbors = value, []
+    try:
+        for field, index in steps[:-1]:
+            if index:
+                pos = int(index)
+                neighbors = current[max(0, pos-2):pos+3]
+            current = current[field] if field else current[int(index)]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return unavailable
+    def original(index):
+        return {'input_index': index, 'record': bounded(records[index])}
+    near_ids = [o[key] for o in objects(neighbors) if key in o]
+    nearby = [original(i) for v in near_ids for i, r in enumerate(records)
+              if type(r[key]) is type(v) and r[key] == v][:5]
+    return {'alignment': 'checker field is unique and preserved', 'identity_field': key,
+            'expected': original(candidates[0]), 'actual': original(actual[0]),
+            'output_neighbors': bounded(neighbors), 'neighbor_inputs': bounded(nearby, 3000),
+            'note': 'Record mismatch may involve order or membership; no business rule inferred.'}
+
+
 stage = 'input'
 try:
     data = read(CONFIG['cases'])
@@ -351,6 +407,7 @@ try:
             'checker_feedback_truncated': checker_size > 16000, 'checker_output_path': out.name,
             'checker_read_command': 'READ ' + shlex.quote(out.name) + ' 0',
             'output_fragment': checker_fragment(values[-1], text),
+            'record_context': checker_records(records, values[-1], text),
             'input_summary': numeric_summary(records),
             'sample_evidence': [record_evidence(c['input'], c.get('expected', c.get('output')), values[i])
                                 for i,c in enumerate(cases[:3])],
