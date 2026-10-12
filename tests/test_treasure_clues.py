@@ -90,14 +90,15 @@ class TreasureClueTests(unittest.TestCase):
         self.assertEqual(next(iter(with_hints.sessions.values())).calls,
                          next(iter(without_hints.sessions.values())).calls)
 
-    def test_later_complete_plan_uses_existing_validation_and_old_format_works(self):
+    def test_complete_plan_requires_source_checked_location(self):
         for extra in ({}, {'treasureClues': []}):
             data = payload(2)
             data['weaponShopList'] = [{'name': 'StarSand', 'price': 15}]
             plan = dict(position=[4, 4], items=['StarSand'], startRound=10,
                         endRound=20, confidence=.99, evidence=['synthetic complete fixture'])
+            plan['location'] = dict(status='confirmed', mode='direct', position=[4,4], day=1, quote='synthetic complete fixture')
             data['llmResp'] = json.dumps({'treasure': plan, **extra})
-            mem = Memory(pending=('news', 1))
+            mem = Memory(pending=('news', 1), news=[dict(day=1, folkLegends='synthetic complete fixture')])
             mem.observe(Turn(data, Config()), Config())
             self.assertEqual(mem.treasure, plan)
             self.assertFalse(mem.treasure_attempted)

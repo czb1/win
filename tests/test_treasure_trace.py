@@ -32,11 +32,12 @@ class TreasureTraceTests(unittest.TestCase):
         data = payload(2)
         data['weaponShopList'] = [{'name': 'StarSand', 'price': 15}]
         old = {'position': [4, 4], 'items': ['StarSand'], 'startRound': 10,
-               'endRound': 20, 'confidence': .99, 'evidence': ['clue']}
+               'endRound': 20, 'confidence': .99, 'evidence': ['clue'],
+               'location': dict(status='confirmed', mode='direct', position=[4,4], day=1, quote='clue')}
         for candidate, expected in ((None, 'no_candidate'), ({**old, 'confidence': .1}, 'confidence'),
                                     (old, '"accepted": true')):
             with self.subTest(candidate=candidate):
-                mem = Memory(pending=('news', 1), treasure=old.copy())
+                mem = Memory(pending=('news', 1), treasure=old.copy(), news=[dict(day=1, folkLegends='clue')])
                 data['llmResp'] = json.dumps({'treasure': candidate})
                 with self.assertLogs('agent.intelligence', 'INFO') as logs:
                     mem.observe(Turn(data, Config()), Config())
@@ -49,7 +50,7 @@ class TreasureTraceTests(unittest.TestCase):
         self.assertTrue(prompt)
         self.assertIn('event=news_request', '\n'.join(logs.output))
 
-    def test_result_codes_do_not_change_existing_retry_policy(self):
+    def test_results_keep_attempt_blocked_until_evidence_checked(self):
         for code in range(5):
             with self.subTest(code=code):
                 data = payload(2)
