@@ -229,7 +229,7 @@ class DuskResourceTests(unittest.TestCase):
         uses = [cmd for cmd in l.commands.values() if cmd["action"] == "use"]
         self.assertEqual(len(uses), 1)
 
-    def test_ten_turn_replay_spends_cash_and_delivers_all_purchases(self):
+    def test_ten_turn_replay_delivers_defenses_and_holds_base_healing(self):
         # Keep the shop, all upgrade targets and operator post adjacent so
         # route length cannot hide a failure to spend/use. No model required.
         for mirror in (False, True):
@@ -262,7 +262,7 @@ class DuskResourceTests(unittest.TestCase):
                 p["lastRoundRoleActionResults"] = {uid: True for uid in response["roleCommandMap"]}
             self.assertEqual(p["teamOur"]["roles"][2]["level"], 3)
             self.assertEqual(p["teamOur"]["roles"][3]["level"], 3)
-            self.assertEqual(p["teamOur"]["roles"][0]["backpack"], [])
-            self.assertEqual(p["teamOur"]["roles"][1]["level"], 3)
-            self.assertEqual(p["teamOur"]["goldNum"], 150)
+            self.assertEqual(p["teamOur"]["roles"][0]["backpack"], ['StationUpgradeVoucher1'])
+            self.assertEqual(p["teamOur"]["roles"][1]["level"], 1)
+            self.assertEqual(p["teamOur"]["goldNum"], 300)
 

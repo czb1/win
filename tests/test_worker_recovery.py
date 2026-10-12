@@ -27,6 +27,7 @@ class WorkerRecoveryTests(unittest.TestCase):
 
     def test_paid_station_voucher_precedes_sale_trip(self):
         p = self.case(backpack=['StationUpgradeVoucher1', 'copper'])
+        p['teamOur']['roles'][1]['health'] = 499
         # Not next to the shop, and the station is within use range.
         p['mapInfo']['zones'][1]['pos'] = {'x': 10, 'y': 10}
         t, cfg, nav, ledger = setup_case(p)
@@ -65,6 +66,7 @@ class WorkerRecoveryTests(unittest.TestCase):
 
     def test_delivery_keeps_target_and_loop_releases_it(self):
         p = self.case(backpack=['StationUpgradeVoucher1', 'WeaponUpgradeVoucher1'])
+        p['teamOur']['roles'][1]['health'] = 499
         p['teamOur']['roles'][0]['pos'] = {'x': 9, 'y': 5}
         p['teamOur']['roles'][2]['level'] = 1
         t, cfg, nav, ledger = setup_case(p)

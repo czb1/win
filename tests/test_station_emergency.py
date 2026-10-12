@@ -61,7 +61,7 @@ class StationEmergencyTests(unittest.TestCase):
                 self.assertEqual(mem.wall_rebuild_levels, {(5, 8): 3})
 
     def test_noncritical_base_still_waits_for_wall_recovery(self):
-        for round_no, health in ((131, 750), (391, 375), (391, 1500)):
+        for round_no, health in ((131, 750), (391, 500), (391, 1500)):
             with self.subTest(round_no=round_no, health=health):
                 p = self.case(round_no, health=health, worker_pos=(4, 9))
                 turn, _, nav, ledger = self.setup(p)

@@ -14,7 +14,6 @@ from .wall_health import needs_night_repair, needs_day_repair
 
 DUSK_SPEND_TICK = 60
 DUSK_USE_TICK = 65
-BASE_MAX_HEALTH = 1500
 RESOURCE_POLICY_DAY = 4
 
 
@@ -193,14 +192,9 @@ def walls_ready_for_station(turn, mem):
 
 
 def critical_station(turn, building, mem=None):
-    """A base upgrade is an emergency only below one quarter health."""
-    # The protocol exposes current health only. Retain the observed peak for
-    # each level; 1500 is the existing fixture fallback, not a verified cap.
-    if turn.day < RESOURCE_POLICY_DAY:
-        return building.kind == "station" and building.level < 3 and building.health < 750
-    maximum = max(BASE_MAX_HEALTH, mem.station_health_peaks.get(building.level, 0) if mem else 0)
+    """Reserve upgrades for healing strictly below the requested 500 HP."""
     return (building.kind == "station" and building.level < 3
-            and 0 < 4 * building.health < maximum)
+            and 0 < building.health < 500)
 
 
 def late_wall_phase(turn):
@@ -282,10 +276,13 @@ def voucher_for(building):
 
 def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
                   target_only=None, name_only=None, urgent_only=False, upgrades_only=False):
-    if hero.health <= (165 if hero.kind == "worker" else 150) and hero.inventory["Medicine"]:
+    if (hero.health <= (165 if hero.kind == "worker" else 150) and hero.inventory["Medicine"]
+            and (name_only is None or name_only == 'Medicine')):
         return ledger.add(hero.id, command("use", name="Medicine"))
     upgrades = []
     for building in turn.ours:
+        if building.kind == 'station' and not critical_station(turn, building, mem):
+            continue
         if turn.day == 1 and building.kind in WEAPONS:
             continue
         if target_only is not None and building.pos != target_only:
@@ -303,7 +300,10 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
                 and hero.inventory[name] and wall_upgrade_allowed(turn, building, mem, paid=True)
                 and building.id not in ledger.upgrade_claims
                 and not (mem and mem.movement.avoids(hero.id, building.pos))):
-            if (building.kind == 'wall' and mem and turn.is_day and turn.day >= 4
+            if building.kind == 'station' and hero.kind == 'pioneer':
+                # Emergency healing must not depend on a post-use dusk return.
+                route = nav.approach(hero, building.cells, ledger.reserved)
+            elif (building.kind == 'wall' and mem and turn.is_day and turn.day >= 4
                     and hero.id == mem.wall_watch_id):
                 from .wall_watch import watch_route
                 route = watch_route(turn, nav, ledger, mem, hero, ledger.wall_cells, building)
