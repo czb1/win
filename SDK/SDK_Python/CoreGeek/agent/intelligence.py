@@ -377,6 +377,7 @@ class Memory:
     sale_targets: dict = field(default_factory=dict)
     mine_targets: dict = field(default_factory=dict)
     daytime_jobs: dict = field(default_factory=dict)
+    wall_batches: dict = field(default_factory=dict)
     mine_kinds: dict = field(default_factory=dict)
     mine_collected: dict = field(default_factory=dict)
     supply_worker: int | None = None
@@ -458,6 +459,7 @@ class Memory:
             self.sale_targets.clear()
             self.mine_targets.clear()
             self.daytime_jobs.clear()
+            self.wall_batches.clear()
             self.supply_worker = None
             self.build_targets.clear()
             self.stone_reserves.clear()
