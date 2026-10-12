@@ -14,6 +14,8 @@ def save_daytime_jobs(turn, mem, ledger):
     mem.daytime_jobs = dict(ledger.work_jobs) if turn.is_day else {}
     # A remembered mining preference must not look like an active mine claim
     # after this worker actually starts shopping, delivering or returning.
+    if not turn.is_day:
+        mem.wall_batches.clear()
     if turn.is_day:
         mem.mine_targets = {uid: p for uid, p in mem.mine_targets.items()
                             if uid in ledger.mine_claims}
@@ -166,6 +168,9 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
                           refresh_stone_reserves, critical_station)
 
     refresh_stone_reserves(turn, cfg, mem, ledger)
+    for uid in list(mem.wall_batches):
+        if uid in returning or uid not in turn.units or uid in ledger.used:
+            mem.wall_batches.pop(uid, None)
     free = [h for h in turn.workers if h.id not in ledger.used and h.id not in returning]
     for hero in free:
         job = mem.daytime_jobs.get(hero.id)
@@ -175,14 +180,19 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
             buy_supply(turn, ledger, hero,
                        supplies(turn, cfg, mem, nav, ledger, hero, urgent_only=True))
             mem.daytime_jobs.pop(hero.id, None)
-        elif (turn.station and critical_station(turn, turn.station, mem)
-              and (not job or job['target'] != turn.station.pos)):
+            mem.wall_batches.pop(hero.id, None)
+        elif turn.station and critical_station(turn, turn.station, mem):
             use_inventory(turn, nav, ledger, hero, mem=mem, urgent_only=True,
                           target_only=turn.station.pos)
-        if hero.id not in ledger.used and (not job or job['kind'] != 'use'):
+        if hero.id not in ledger.used and hero.id in mem.wall_batches:
+            from .wall_batches import continue_batch
+            continue_batch(turn, cfg, mem, nav, ledger, hero, towers, walls)
+            job = mem.daytime_jobs.get(hero.id)
+        if hero.id not in ledger.used and (not job or job['kind'] not in ('use', 'sell')):
             use_inventory(turn, nav, ledger, hero, mem=mem, urgent_only=True)
         if (hero.id not in ledger.used and job
                 and (hero.inventory['WallUpgradeVoucher1'] or hero.inventory['WallUpgradeVoucher2'])
+                and hero.id not in mem.wall_batches
                 and (job['kind'] in ('mine', 'spare') and not job.get('want_stone')
                      or job['kind'] == 'buy' and job['name'].startswith('WallUpgradeVoucher'))):
             use_inventory(turn, nav, ledger, hero, mem=mem)
@@ -190,7 +200,7 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
     # simply because they have active income jobs. The normal allocator handles
     # first-time jobs; this early call only protects emergency preemption.
     repair_job = mem.daytime_jobs.get(mem.wall_repair_worker, {})
-    if mem.daytime_jobs and repair_job.get('kind') not in ('mine', 'build'):
+    if mem.daytime_jobs and repair_job.get('kind') not in ('mine', 'build', 'use', 'sell'):
         repair_walls(turn, cfg, mem, nav, ledger,
                      [h for h in free if h.id not in ledger.used], walls)
     from .spending import prepare_paid_upgrades

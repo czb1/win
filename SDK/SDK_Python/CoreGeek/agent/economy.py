@@ -275,12 +275,15 @@ def voucher_for(building):
 
 
 def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
-                  target_only=None, name_only=None, urgent_only=False, upgrades_only=False):
+                  target_only=None, name_only=None, urgent_only=False, upgrades_only=False,
+                  target_sites=None):
     if (hero.health <= (165 if hero.kind == "worker" else 150) and hero.inventory["Medicine"]
             and (name_only is None or name_only == 'Medicine')):
         return ledger.add(hero.id, command("use", name="Medicine"))
     upgrades = []
     for building in turn.ours:
+        if target_sites is not None and building.pos not in target_sites:
+            continue
         if building.kind == 'station' and not critical_station(turn, building, mem):
             continue
         if turn.day == 1 and building.kind in WEAPONS:
@@ -363,10 +366,16 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
         if route[1] is None:
             used = ledger.add(hero.id, command("use", building.nearest_cell(hero.pos), name=name))
             if used and mem:
+                if building.kind == "wall":
+                    from .wall_batches import start_batch
+                    start_batch(turn, mem, ledger, hero, building.pos)
                 mem.upgrade_targets.pop(hero.id, None)
             return used
         if ledger.add(hero.id, command("move", route[1])):
             if mem:
+                if building.kind == "wall":
+                    from .wall_batches import start_batch
+                    start_batch(turn, mem, ledger, hero, building.pos)
                 mem.upgrade_targets[hero.id] = building.pos
             (ledger.repair_claims if name == "WallFixer" else ledger.upgrade_claims).add(building.id)
             ledger.remember_work(hero, 'use', building.pos, name=name)
@@ -375,7 +384,8 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
 
 
 def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
-             planned=(), bulk=False, item_only=None, shop_only=None, quantity=None):
+             planned=(), bulk=False, item_only=None, shop_only=None, quantity=None,
+             target_sites=None):
     """Return an affordable, applicable purchase and its shopping route.
 
     Routes are checked before committing to shopping. A full backpack can be
@@ -417,6 +427,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
         first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
         for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
+            if target_sites is not None and building.pos not in target_sites:
+                continue
             if building.kind == "station" and not station_purchase_allowed(turn, building, mem):
                 continue
             name = voucher_for(building)
@@ -446,6 +458,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                 continue
             candidates.append((upgrade_order(turn, building, mem), name, building.cells))
         damaged = sorted((w for w in turn.ours if needs_day_repair(w, turn)
+                          and (target_sites is None or w.pos in target_sites)
                           and w.id not in ledger.repair_claims
                           and not (w.health >= 500 and voucher_for(w) in turn.shop
                                    and wall_purchase_allowed(turn, w, mem)
@@ -455,6 +468,9 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
             mem.wall_watch.stock_target(turn) if h.id == mem.wall_watch_id else 0)) for h in turn.heroes)
         for wall in damaged[available:]:
             candidates.append(((1.5 if wall.health < 500 else 1.8, wall.health, wall.id), 'WallFixer', wall.cells))
+    if target_sites is not None:
+        candidates = [c for c in candidates if set(c[2]) & set(target_sites)]
+        paid_walls = [c for c in paid_walls if set(c[2]) & set(target_sites)]
     candidates.sort(key=lambda c: c[0])
     if not candidates:
         reject('no_applicable_item')
@@ -777,6 +793,9 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
         if ledger.add(hero.id, action):
             ledger.build_claims[target] = (hero.id, name)
             mem.build_targets[hero.id] = target
+            if name == "wall":
+                from .wall_batches import start_batch
+                start_batch(turn, mem, ledger, hero, target)
             if route[1] is not None:
                 ledger.remember_work(hero, 'build', target, name=name, work_cell=route[2])
             return True
@@ -902,7 +921,7 @@ def repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
     gaps = {p for p in gaps if p not in structures and turn.zones.get(p, "land") == "land"}
     options = []
     for hero in free:
-        if hero.health <= 110:
+        if hero.health <= 110 or mem.daytime_jobs.get(hero.id, {}).get("kind") == "sell":
             continue
         reachable = [p for p in sorted(gaps) if not mem.movement.avoids(hero.id, p)
                      and (r := nav.approach(hero, [p], ledger.reserved)) is not None
@@ -910,6 +929,11 @@ def repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
                      and wall_keeps_access(turn, nav, ledger, p)]
         if not reachable:
             continue
+        if turn.day > 1:
+            from .wall_batches import face_sites
+            anchor = min(reachable, key=lambda p: (nav.approach(hero, [p], ledger.reserved)[0], p))
+            face = face_sites(wall_sites, anchor)
+            reachable = [p for p in reachable if p in face]
         held = hero.inventory["stone"]
         capacity = (held + hero.space) // cfg.wall_stones
         direct = nav.approach(hero, reachable, ledger.reserved)[0]
@@ -946,6 +970,8 @@ def repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
         if not mem.wall_repair_delivering and held < goal:
             if mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
                     stone_goal=goal, stone_sites=sites):
+                from .wall_batches import start_batch
+                start_batch(turn, mem, ledger, hero, sites[0])
                 return gaps
         if held >= cfg.wall_stones:
             mem.wall_repair_delivering = True
