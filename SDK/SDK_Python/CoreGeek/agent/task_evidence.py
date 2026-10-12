@@ -193,31 +193,44 @@ def valid_record(value):
             and isinstance(value[0], str) and type(value[2]) is bool
             and (value[1] is not None or value[2] is False))
 
+line_parser_depth = 0
+
 def audited_function(function):
     signature = inspect.signature(function)
     @functools.wraps(function)
     def observed(*args, **kwargs):
+        global line_parser_depth
         name = function.__name__
+        is_line = name == 'parse_line' or name.endswith('_line')
+        nested_line = is_line and line_parser_depth > 0
         entry = log_report['parsers'].setdefault(name, {'calls': 0, 'returned_records': 0})
         entry['calls'] += 1
         before = {path: info['read_lines'] for path, info in log_report['files'].items()}
+        if is_line:
+            line_parser_depth += 1
         try:
             value = function(*args, **kwargs)
         except Exception as error:
             entry['error'] = type(error).__name__ + ': ' + str(error)[:240]
             log_error('parser', type(error).__name__ + ': ' + str(error))
             raise
-        if name == 'parse_line' or name.endswith('_line'):
+        finally:
+            if is_line:
+                line_parser_depth -= 1
+        if is_line:
             bound = signature.bind(*args, **kwargs)
             bound.apply_defaults()
             system = (str(value.get('system', 'unknown')) if isinstance(value, dict) else
                       value[0] if isinstance(value, (tuple, list)) and value and isinstance(value[0], str) else
                       name[6:-5] if name != 'parse_line' else
                       str(bound.arguments.get('system', 'unknown')))[:80]
-            systems = report.setdefault('parse_systems', {})
+            # Nested functions retain their own diagnostics, but the outer line
+            # parser alone contributes to system coverage. Identical lines count.
+            aggregate = {} if nested_line else report
+            systems = aggregate.setdefault('parse_systems', {})
             counts = systems.setdefault(system, {'total': 0, 'matched': 0, 'failures': 0,
                                                   'normal': 0, 'invalid': 0, 'unmatched': []})
-            coverage = report.setdefault('parse_lines', {'total': 0, 'matched': 0, 'unmatched': []})
+            coverage = aggregate.setdefault('parse_lines', {'total': 0, 'matched': 0, 'unmatched': []})
             counts['total'] += 1
             coverage['total'] += 1
             valid = (isinstance(value, dict) and isinstance(value.get('system'), str)
@@ -297,11 +310,11 @@ def audit_merge(function):
     return observed
 
 def task_parse(system, path, **parameters):
-    function = learned_scope.get('parse_' + system + '_log')
+    function = scope.get('parse_' + system + '_log')
     if function:
         return function(path, **parameters)
-    line_function = learned_scope.get('parse_' + system + '_line')
-    function = line_function or learned_scope.get('parse_line')
+    line_function = scope.get('parse_' + system + '_line')
+    function = line_function or scope.get('parse_line')
     if function:
         def parse_current(line):
             if line_function:

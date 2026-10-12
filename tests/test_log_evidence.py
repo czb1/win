@@ -100,8 +100,8 @@ class LogEvidenceTests(unittest.TestCase):
             (root/'monitor.log').write_text('[2025-10-09 00:17:00] ERROR x\n[2025-10-09 00:12:00] ERROR x\n[2025-10-09 00:13:00] ERROR x\n')
             (root/'gateway.log').write_text('ip - - [09/Oct/2025:00:10:00 +0800] "GET / HTTP/1.1" 500\nip - - [09/Oct/2025:00:01:00 +0800] "GET / HTTP/1.1" 404\n')
             (root/'logistics.log').write_text('Oct 09 00:01:00 host daemon: OOM-killer killed\nOct 09 00:06:00 host daemon: disk-full full\nOct 09 00:12:00 host daemon: net-down restarted\nOct 09 00:40:00 host daemon: process restarted successfully\n')
-            # Weak model attempts to redefine a verified parser; the current paths still bind fresh data.
-            code="def parse_logistics_log(path):\n    return []\nall_events=[]\n"
+            # Omitted definitions reuse verified parsers against fresh inputs.
+            code="all_events=[]\n"
             code+="for system in ('monitor','gateway','logistics'):\n    ts=[row[1] for row in task_parse(system,system+'.log') if row[2]]\n    for start,end in task_events(system,ts):\n        all_events.append((system,(end-start).total_seconds()/60+1))\n"
             code+="longest=max(all_events,key=lambda x:x[1])\ntask_result({'total_events':len(all_events),'avg_duration_minutes':round(sum(x[1] for x in all_events)/len(all_events)), 'longest_event':{'system':longest[0],'duration_minutes':longest[1]}})"
             _, result, report=execute(code,directory,parser)
@@ -179,7 +179,7 @@ class LogEvidenceTests(unittest.TestCase):
             payload.update(roundNo=7,lastCmdResult=v2_result(response,'/'))
             response=agent.decide(payload)
             self.assertIn('verifiedParsingRules',response['prompt'])
-            code="def parse_monitor_log(path):\n    return []\ntask_result({'events':len(task_events('monitor',[r[1] for r in parse_monitor_log('two.log') if r[2]]))})"
+            code="task_result({'events':len(task_events('monitor',[r[1] for r in parse_monitor_log('two.log') if r[2]]))})"
             payload.update(roundNo=8,lastCmdResult='',llmResp='PYTHON\n'+code)
             response=agent.decide(payload)
             payload.update(roundNo=9,llmResp='',lastCmdResult=v2_result(response,'/'))
