@@ -98,6 +98,8 @@ class FirstDayFrontTests(unittest.TestCase):
         t, c, n, l = setup_case(p)
         first_day_front(t, c, m, n, l, list(l.wall_cells))
         self.assertEqual(l.commands['10']['action'], 'collect')
+        self.assertEqual(l.notes[10]['conditions']['expected_units'], 10)
+        self.assertEqual(len(l.notes[10]['conditions']['construction_targets']), 10)
         p['teamOur']['roles'][1]['backpack'] = ['stone']
         t, c, n, l = setup_case(p)
         first_day_front(t, c, m, n, l, list(l.wall_cells))
@@ -105,12 +107,41 @@ class FirstDayFrontTests(unittest.TestCase):
         p['teamOur']['roles'][1]['backpack'] = ['stone'] * 6
         t, c, n, l = setup_case(p)
         first_day_front(t, c, m, n, l, list(l.wall_cells))
-        self.assertNotEqual(l.commands['10']['action'], 'collect')
-        self.assertTrue(m.day1_wall_delivering)
-        p['teamOur']['roles'][1]['backpack'] = ['stone'] * 5
+        self.assertEqual(l.commands['10']['action'], 'collect')
+        p['teamOur']['roles'][1]['backpack'] = ['stone'] * 10
         t, c, n, l = setup_case(p)
         first_day_front(t, c, m, n, l, list(l.wall_cells))
         self.assertNotEqual(l.commands['10']['action'], 'collect')
+        self.assertTrue(m.day1_wall_delivering)
+        p['teamOur']['roles'][1]['backpack'] = ['stone'] * 9
+        t, c, n, l = setup_case(p)
+        first_day_front(t, c, m, n, l, list(l.wall_cells))
+        self.assertNotEqual(l.commands['10']['action'], 'collect')
+
+    def test_perimeter_material_stays_within_demand_and_configured_batch(self):
+        for batch, expected in ((10, 3), (2, 2)):
+            with self.subTest(batch=batch):
+                p = self.case()
+                p['teamOur']['roles'] = p['teamOur']['roles'][:2]
+                p['teamOur']['roles'][1].update(pos={'x': 5, 'y': 7}, backpack=[])
+                p['mapInfo']['zones'] = [dict(neutralType='stone', pos=dict(x=4, y=6), remain=10)]
+                t, c, n, l = setup_case(p, layout_mode='explicit', stone_batch=batch,
+                                       wall_cells=[[6, 8], [6, 9], [5, 9]])
+                first_day_front(t, c, Memory(), n, l, list(l.wall_cells))
+                self.assertEqual(l.commands['10']['action'], 'collect')
+                self.assertEqual(l.notes[10]['conditions']['expected_units'], expected)
+
+    def test_late_front_trip_reduces_extra_material_to_fit_construction(self):
+        p = self.case(55)
+        p['teamOur']['roles'] = p['teamOur']['roles'][:2]
+        p['teamOur']['roles'][1].update(pos={'x': 5, 'y': 7}, backpack=[])
+        p['mapInfo']['zones'] = [dict(neutralType='stone', pos=dict(x=4, y=6), remain=10)]
+        t, c, n, l = setup_case(p)
+        first_day_front(t, c, Memory(), n, l, list(l.wall_cells))
+        self.assertEqual(l.commands['10']['action'], 'collect')
+        facts = l.notes[10]['conditions']
+        self.assertLess(facts['expected_units'], c.stone_batch)
+        self.assertLessEqual(facts['expected_units'] + facts['construction_steps'], 67 - t.tick)
 
     def test_missing_material_route_never_creates_wait_lock(self):
         p = self.case()
