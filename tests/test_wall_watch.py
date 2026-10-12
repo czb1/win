@@ -3,6 +3,7 @@ import unittest
 from test_agent import payload, unit, setup_case
 from agent.brain import Agent
 from agent.config import Config
+from agent.commands import command
 from agent.intelligence import Memory
 from agent.wall_watch import select_watch, prepare_watch, repair_watch, geometry, staging_wall
 from agent.navigation import layout
@@ -97,11 +98,45 @@ class WallWatchTests(unittest.TestCase):
                             self.assertEqual(use_inventory(t, nav, ledger, t.heroes[0], local_only=True,
                                                            mem=Memory()), health < threshold)
 
-    def test_daytime_inventory_retains_existing_repair_policy(self):
-        p = payload(40, [unit(1, 'worker', 5, 5, health=220, backpack=['WallFixer']),
-                         unit(30, 'wall', 6, 5, health=400)])
-        t, _, nav, ledger = setup_case(p)
-        self.assertTrue(use_inventory(t, nav, ledger, t.workers[0], mem=Memory()))
+    def test_daytime_inventory_never_dispatches_wall_repairs(self):
+        for day in (1, 4, 10):
+            for kind in ('worker', 'pioneer'):
+                for health in (1, 149, 400, 1440):
+                    with self.subTest(day=day, kind=kind, health=health):
+                        p = payload((day - 1) * 130 + 40, [
+                            unit(1, kind, 4, 5, health=220, backpack=['WallFixer'] * 20),
+                            unit(30, 'wall', 6, 5, level=3, health=health)])
+                        t, _, nav, ledger = setup_case(p)
+                        self.assertFalse(use_inventory(t, nav, ledger, t.heroes[0], mem=Memory()))
+                        self.assertFalse(ledger.commands)
+                        self.assertFalse(ledger.repair_claims)
+
+    def test_ledger_wall_fixer_follows_game_day_boundaries(self):
+        for origin in (0, 1, 13):
+            for day in (1, 4, 10):
+                for tick in (0, 69, 70, 129):
+                    with self.subTest(origin=origin, day=day, tick=tick):
+                        p = payload(origin + (day - 1) * 130 + tick, [
+                            unit(1, 'worker', 5, 5, backpack=['WallFixer', 'Medicine']),
+                            unit(30, 'wall', 6, 5, health=99)])
+                        _, _, _, ledger = setup_case(p, round_origin=origin)
+                        self.assertEqual(ledger.add(1, command('use', (6, 5), name='WallFixer')),
+                                         tick >= 70)
+                        if tick < 70:
+                            self.assertFalse(ledger.commands)
+                            self.assertFalse(ledger.used)
+                            self.assertFalse(ledger.repair_claims)
+                            self.assertTrue(ledger.add(1, command('use', name='Medicine')))
+
+    def test_agent_never_uses_wall_fixer_during_daylight(self):
+        for day in (1, 3, 4, 10):
+            for tick in (0, 40, 69):
+                for mirror in (False, True):
+                    with self.subTest(day=day, tick=tick, mirror=mirror):
+                        p = self.case(day=day, tick=tick, mirror=mirror, packs=20)
+                        result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
+                        self.assertFalse(any(c['action'] == 'use' and c.get('name') == 'WallFixer'
+                                             for c in result.values()))
 
     def test_repaired_wall_is_not_healed_again_until_below_threshold(self):
         p = self.case()
@@ -179,7 +214,7 @@ class WallWatchTests(unittest.TestCase):
         self.assertTrue(locked)
         self.assertEqual(ledger.commands['2'], {'action': 'buy', 'name': 'WallFixer', 'num': 4})
 
-    def test_watch_worker_repairs_low_wall_on_last_daylight_turn(self):
+    def test_watch_worker_preserves_fixer_on_last_daylight_turn(self):
         for mirror in (False, True):
             for health in (350, 500):
                 with self.subTest(mirror=mirror, health=health):
@@ -191,8 +226,7 @@ class WallWatchTests(unittest.TestCase):
                     mem = Memory(wall_watch_id=2)
                     prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
                     action = ledger.commands.get('2', {})
-                    self.assertEqual(action.get('action') == 'use' and action.get('name') == 'WallFixer',
-                                     health < 500)
+                    self.assertFalse(action.get('action') == 'use' and action.get('name') == 'WallFixer')
 
     def test_lower_right_can_buy_when_weakest_wall_approach_is_blocked(self):
         p = self.case(day=7, tick=40, packs=0, damaged=False)
@@ -263,10 +297,14 @@ class WallWatchTests(unittest.TestCase):
             self.assertNotEqual(result.get('2', {}).get('action'), 'collect')
             self.assertNotEqual(result.get('2', {}).get('name'), 'WallFixer')
 
-    def test_early_critical_walls_start_nearby_stock_purchase(self):
+    def test_early_critical_walls_reserve_night_stock_without_stopping_work(self):
         p = self.case(tick=5, packs=0)
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(gunner_post=(4, 11))
+        self.assertEqual(prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]), (False, 30))
+        self.assertFalse(ledger.commands)
+        p['roundNo'] += 35
+        t, cfg, nav, ledger = setup_case(p)
         self.assertEqual(prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]), (True, 0))
         self.assertEqual(ledger.commands['2'], {'action': 'buy', 'name': 'WallFixer', 'num': 4})
 
@@ -299,11 +337,14 @@ class WallWatchTests(unittest.TestCase):
         self.assertEqual(prepare_watch(t, cfg, Memory(wall_watch_id=2), nav, ledger,
                                        t.workers[1], layout(t, cfg)[1]), (False, 30))
 
-    def test_no_money_no_pack_still_recalls_watch_worker(self):
-        p = self.case(tick=50, packs=0)
-        p['teamOur']['goldNum'] = 0
-        t, cfg, nav, ledger = setup_case(p)
-        self.assertEqual(prepare_watch(t, cfg, Memory(), nav, ledger, t.workers[1], layout(t, cfg)[1]), (True, 0))
+    def test_no_money_no_pack_recalls_watch_worker_at_return_deadline(self):
+        for tick, locked in ((50, False), (69, True)):
+            with self.subTest(tick=tick):
+                p = self.case(tick=tick, packs=0)
+                p['teamOur']['goldNum'] = 0
+                t, cfg, nav, ledger = setup_case(p)
+                self.assertEqual(prepare_watch(t, cfg, Memory(), nav, ledger, t.workers[1], layout(t, cfg)[1]),
+                                 (locked, 0))
 
     def test_inside_routes_never_enter_front_or_flank_boundary(self):
         p = self.case()

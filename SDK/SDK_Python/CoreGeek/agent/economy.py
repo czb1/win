@@ -10,7 +10,7 @@ from .mining import mine, earn, spare_mine, sale_inventory, return_destination
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit, delivery_destination, development_pending, reserve_income_worker
 from .economy_plan import maxed_weapon_mining_phase
 from .treasure_clues import treasure_active
-from .wall_health import needs_night_repair, needs_day_repair
+from .wall_health import needs_night_repair
 
 
 DUSK_SPEND_TICK = 60
@@ -319,30 +319,14 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
                          else nav.approach(hero, building.cells, ledger.reserved))
             if route and (not local_only or route[0] == 0):
                 upgrades.append((upgrade_order(turn, building, mem), route[0], name, building, route))
-        if (not upgrades_only and building.kind == "wall" and (name_only is None or name_only == 'WallFixer')
+        if (not turn.is_day and not upgrades_only and building.kind == "wall"
+                and (name_only is None or name_only == 'WallFixer')
                 and hero.inventory["WallFixer"]
-                and (needs_day_repair(building, turn) if turn.is_day else needs_night_repair(building, turn, mem))
+                and needs_night_repair(building, turn, mem)
                 and building.id not in ledger.repair_claims
-                and not (mem and not turn.is_day and turn.day >= 4
+                and not (mem and turn.day >= 4
                          and hero.id == mem.wall_watch_id)):
-            if turn.is_day and building.health >= 500:
-                # A funded upgrade restores HP and adds permanent strength.
-                if name and (hero.inventory[name] or name in turn.shop
-                             and ledger.gold >= turn.shop[name]
-                             and wall_purchase_allowed(turn, building, mem)):
-                    continue
-                if mem and hero.id == mem.wall_watch_id and hero.inventory['WallFixer'] <= mem.wall_watch.stock_target(turn):
-                    continue
-            if mem and turn.is_day and turn.day >= 4 and hero.id == mem.wall_watch_id:
-                # This worker spends the night inside the wall, not at a gun.
-                # The ordinary dusk route to an operator post rejects even an
-                # adjacent repair on the final daylight turn.
-                from .wall_watch import watch_route
-                route = watch_route(turn, nav, ledger, mem, hero, ledger.wall_cells, building)
-            else:
-                route = (dusk_route(turn, nav, ledger, hero, building.cells)
-                         if turn.is_day and (turn.tick >= DUSK_SPEND_TICK or late_wall_phase(turn))
-                         else nav.approach(hero, building.cells, ledger.reserved))
+            route = nav.approach(hero, building.cells, ledger.reserved)
             if route and (not local_only or route[0] == 0):
                 upgrades.append(((1.5 if building.health < 500 else 1.8, building.health, building.id), route[0], "WallFixer", building, route))
     if upgrades:
@@ -458,17 +442,6 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                     and any(b.level < 3 and b.kind in WEAPONS for b in buildings)):
                 continue
             candidates.append((upgrade_order(turn, building, mem), name, building.cells))
-        damaged = sorted((w for w in turn.ours if needs_day_repair(w, turn)
-                          and (target_sites is None or w.pos in target_sites)
-                          and w.id not in ledger.repair_claims
-                          and not (w.health >= 500 and voucher_for(w) in turn.shop
-                                   and wall_purchase_allowed(turn, w, mem)
-                                   and ledger.gold - reserve >= turn.shop[voucher_for(w)])),
-                         key=lambda w: (w.health, w.id))
-        available = sum(max(0, h.inventory['WallFixer'] - (
-            mem.wall_watch.stock_target(turn) if h.id == mem.wall_watch_id else 0)) for h in turn.heroes)
-        for wall in damaged[available:]:
-            candidates.append(((1.5 if wall.health < 500 else 1.8, wall.health, wall.id), 'WallFixer', wall.cells))
     if target_sites is not None:
         candidates = [c for c in candidates if set(c[2]) & set(target_sites)]
         paid_walls = [c for c in paid_walls if set(c[2]) & set(target_sites)]

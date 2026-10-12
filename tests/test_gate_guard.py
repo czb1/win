@@ -353,11 +353,10 @@ class GateGuardTests(unittest.TestCase):
         data, agent = logged_morning_case(), Agent(Config(llm_enabled=False))
         commands = agent.decide(data)['roleCommandMap']
         self.assertIn(pos(commands['20014']['targetPos'][0]), ((34, 9), (34, 11)))
-        self.assertEqual(commands['20010']['action'], 'use')
+        action = commands.get('20010', {})
+        self.assertFalse(action.get('action') == 'use' and action.get('name') == 'WallFixer')
         advance(data, commands)
-        # The supplied feedback confirms the pack was consumed and this wall repaired.
-        next(u for u in data['teamOur']['roles'] if u['id'] == 20010)['backpack'] = []
-        next(u for u in data['teamOur']['roles'] if u['id'] == 41015)['health'] = 1500
+        # The gate is now clear; the worker resumes without consuming a daytime pack.
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['20010']['action'], 'move')
         self.assertIn(commands['20012']['action'], ('move', 'collect'))

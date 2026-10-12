@@ -158,7 +158,7 @@ class MaxedWeaponMiningPhaseTests(unittest.TestCase):
                         self.assertFalse(l.commands)
                     else:
                         self.assertEqual((locked, funds), (True, 0))
-                        self.assertEqual(l.commands['1'], command('buy', name='WallFixer', num=10))
+                        self.assertEqual(l.commands['1'], command('buy', name='WallFixer', num=8))
 
     def test_new_robot_purchase_waits_but_paid_order_can_be_used(self):
         for tick in (34, 35):
