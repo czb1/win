@@ -150,9 +150,33 @@ def escape(turn, nav, ledger, hero, dangers):
                    destination=destination, safe_exit=safe, threats=len(dangers))
 
 
+def rear_waiting_posts(turn, walls=(), gate=None):
+    """Wait behind the base with an empty tile between the imp and the wall."""
+    if not turn.station:
+        return []
+    walls = set(walls) | {w.pos for w in turn.ours if w.kind == 'wall'}
+    xs, ys = zip(*turn.station.cells)
+    outward = -1 if min(xs) + max(xs) < turn.width - 1 else 1
+    rear = (min if outward < 0 else max)([*xs, *(p[0] for p in walls)])
+    middle = gate[1] if gate else (min(ys) + max(ys)) // 2
+    points = [(rear + outward * back, middle + side)
+              for back in (2, 3) for side in (-2, 2, -3, 3, -4, 4)]
+    legal = [p for p in points if turn.inside(p)
+             and all(distance(p, w) >= 2 for w in walls)
+             and p not in turn.station.cells]
+    if not legal:
+        # Near a map edge, stand beyond a rear corner rather than against the
+        # wall. The same two-cell clearance still applies in both directions.
+        edge_ys = [*ys, *(p[1] for p in walls)]
+        legal = [(rear + outward, y) for y in (min(edge_ys) - 2, max(edge_ys) + 2)
+                 if turn.inside((rear + outward, y))
+                 and all(distance((rear + outward, y), w) >= 2 for w in walls)]
+    return legal
+
+
 def retreat(turn, nav, ledger, hero, avoided):
     if turn.station:
-        goals = {p for cell in turn.station.cells for p in neighbours(cell)} - turn.station.cells
+        goals = set(rear_waiting_posts(turn, ledger.wall_cells))
         route = nav.search(hero, goals - avoided, ledger.reserved | avoided)
         if route and route[1] is not None and ledger.add(hero.id, command("move", route[1])):
             ledger.explain(hero.id, "imp_safe_retreat", threats_avoided=len(avoided))
@@ -227,10 +251,14 @@ def act_imps(turn, memory, nav, ledger):
                                    confirmed_rounds=memory.progress.get(hero.id, 0), remaining=remaining)
                     continue
         # Revalidate each turn rather than forcing an unsafe or illegal action.
-        if (not turn.is_day or turn.day_left < DESTROY_ROUNDS) and retreat(turn, nav, ledger, hero, avoided):
+        near_home = bool(turn.station and (turn.base_distance(hero.pos) <= 2
+                         or any(distance(hero.pos, p) <= 1 for p in ledger.wall_cells)))
+        if (not turn.is_day or turn.day_left < DESTROY_ROUNDS or near_home) and retreat(
+                turn, nav, ledger, hero, avoided):
             memory.progress.pop(hero.id, None)
             continue
         ledger.used.add(hero.id)
         ledger.reserved.add(hero.pos)
         ledger.explain(hero.id, "imp_wait_for_safe_enemy_mine", enemy_mines=len(mines),
                        day_left=turn.day_left)
+

@@ -1,9 +1,10 @@
 """Dusk staging and a night gatekeeper that yields to actual friendly traffic."""
+from dataclasses import replace
 from .commands import command
 from .model import HEROES, distance, neighbours, pos
 from .navigation import DeadlineExceeded
 from .projectiles import wall_gates
-from .sabotage import escape, exposed, threats
+from .sabotage import escape, exposed, threats, rear_waiting_posts
 
 
 class GateGuard:
@@ -14,6 +15,7 @@ class GateGuard:
         self.catches = catches
         self.initial_blocked = set(turn.blocked)
         self.requests = {}
+        self.request_reservations = {}
 
     def observe_search(self, helper, goals, reserved, route):
         """Record a blocked real search, without changing its result or legality.
@@ -35,6 +37,7 @@ class GateGuard:
             self.turn.blocked = original
         if freed is not None and freed[0] > 0:
             self.requests.setdefault(helper.id, set()).update(goals)
+            self.request_reservations.setdefault(helper.id, set()).update(reserved)
 
     def _traffic(self):
         traffic = {}
@@ -57,14 +60,31 @@ class GateGuard:
         forbidden = (self.ledger.tower_cells | self.ledger.wall_cells
                      | set(self.ledger.operator_posts.values()))
         points = list(self.posts)
-        if self.state.get('post') is not None:
+        if self.state.get('post') in self.posts:
             points.append(self.state['post'])
-        if traffic:
-            # A normal waiting post can itself become a narrow aisle when
-            # mines/NPCs constrain the outside route. Clear that aisle too.
-            points.extend(p for p in neighbours(self.hero.pos)
-                          if ((p[0] - self.gate[0]) * self.inward[0]
-                              + (p[1] - self.gate[1]) * self.inward[1]) < 0)
+        def blocked_requests(landing):
+            self.turn.blocked = (original - {self.hero.pos}) | {landing}
+            try:
+                return sum(bool(goals) and self.nav._search(self.turn.units[uid], goals,
+                    self.ledger.reserved | self.request_reservations.get(uid, set())) is None
+                           for uid, goals in traffic.items())
+            finally:
+                self.turn.blocked = original
+
+        def add_option(point, route):
+            landing = route[1] or self.hero.pos
+            if self.state.get('traffic_only') and exposed(landing, self.catches):
+                return
+            if blocked_requests(point):
+                return  # The eventual waiting point must leave traffic open.
+            blocked = blocked_requests(landing)
+            if blocked and landing == self.hero.pos:
+                return
+            risk = sum(r.power for r in self.turn.robots
+                       if distance(point, r.pos) <= r.attack_range)
+            options.append((blocked, route[0], risk,
+                            point != self.state.get('post'), point, route))
+
         try:
             for point in dict.fromkeys(points):
                 if (not self.turn.inside(point) or point in forbidden or point in self.ledger.reserved
@@ -74,22 +94,21 @@ class GateGuard:
                 route = self.nav._search(self.hero, {point}, self.ledger.reserved | forbidden)
                 if route is None:
                     continue
-                # A side step must leave the waiting worker's route open, too.
-                landing = route[1] or self.hero.pos
-                if self.state.get('traffic_only') and exposed(landing, self.catches):
-                    continue
-                self.turn.blocked = (original - {self.hero.pos}) | {landing}
-                if any(goals and self.nav._search(self.turn.units[uid], goals,
-                                                self.ledger.reserved) is None
-                       for uid, goals in traffic.items()):
+                add_option(point, route)
+            if traffic and (not options or min(o[0] for o in options)):
+                # The shortest path to a distant post can occupy the worker's
+                # next tile. Prefer a legal first step that opens traffic now.
+                for landing in neighbours(self.hero.pos):
+                    if (not self.turn.inside(landing) or landing in original
+                            or landing in forbidden or landing in self.ledger.reserved
+                            or blocked_requests(landing)):
+                        continue
+                    self.turn.blocked = original - {self.hero.pos}
+                    onward = self.nav._search(replace(self.hero, pos=landing), set(points),
+                                             self.ledger.reserved | forbidden, with_endpoint=True)
                     self.turn.blocked = original
-                    continue
-                self.turn.blocked = original
-                risk = sum(r.power for r in self.turn.robots
-                           if distance(point, r.pos) <= r.attack_range)
-                preferred = point in self.posts or point == self.state.get('post')
-                options.append((route[0], not preferred, risk,
-                                point != self.state.get('post'), point, route))
+                    if onward:
+                        add_option(onward[2], (onward[0] + 1, landing))
         finally:
             self.turn.blocked = original
         if not options:
@@ -128,13 +147,17 @@ class GateGuard:
         except DeadlineExceeded:
             # Traffic clearance still gets a cheap legal side step if the
             # global search budget expires after the worker requests arrived.
-            if self.hero.pos == self.gate and (self.turn.is_day or yielding):
-                for point in self.posts:
+            if self.turn.is_day or yielding:
+                forbidden = (self.ledger.tower_cells | self.ledger.wall_cells
+                             | set(self.ledger.operator_posts.values())
+                             | (self.nav.memory.blocked(self.hero.id) if self.nav.memory else set()))
+                steps = sorted(neighbours(self.hero.pos), key=lambda p: (
+                    min((distance(p, post) for post in self.posts), default=999), p))
+                for point in steps:
                     if self.state.get('traffic_only') and exposed(point, self.catches):
                         continue
-                    if point not in self.ledger.operator_posts.values() and self.ledger.add(
+                    if point not in forbidden and self.ledger.add(
                             self.hero.id, command('move', point)):
-                        self.state['post'] = point
                         self.ledger.explain(self.hero.id, reason, gate=self.gate,
                                             teammates=sorted(traffic), budget_fallback=True)
                         return
@@ -144,15 +167,13 @@ class GateGuard:
 
 
 def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
-    """Stage for a completed perimeter; guard only while a local wave remains."""
+    """Clear home traffic even before completion; guard only a live local wave."""
     gates = wall_gates(turn, walls)
     if not turn.imps:
         return None
     hero = turn.imps[0]
     built = {u.pos for u in turn.ours if u.kind == 'wall'}
-    # The blueprint describes the intended doorway, not the observed holes.
-    # Dead/missing walls and a wall filling the doorway invalidate this job.
-    if len(gates) != 1 or not set(walls) <= built or gates & built:
+    if len(gates) != 1 or gates & built:
         mem.sabotage.gate_states.pop(hero.id, None)
         return None
     gate = next(iter(gates))
@@ -173,26 +194,30 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     facing = gate[0] + inward[0], gate[1] + inward[1]
     if facing not in towers:
         return None  # Explicit layouts are authoritative; never invent a gate.
-    posts = [(gate[0] - inward[0] + sign * inward[1],
-              gate[1] - inward[1] + sign * inward[0]) for sign in (-1, 1)]
-    posts = [p for p in posts if turn.inside(p)]
+    posts = rear_waiting_posts(turn, walls, gate)
     if not posts:
         return None
-    # With a smaller sabotage region there may be no target. An idle imp at
-    # the doorway must still use the shared traffic clearance, without being
-    # recalled from elsewhere or holding the gate on a quiet night.
+    # Interior aisles and unfinished wall cells need clearance too. A passive
+    # imp must not strand the watcher while the last wall is still being built.
     state = mem.sabotage.gate_states.get(hero.id, {})
+    has_mines = any(turn.enemy_mine(p) for p in turn.zones)
     waiting_post = (state.get('day') == turn.day and state.get('traffic_only')
-                    and hero.pos == state.get('post'))
-    traffic_only = ((turn.is_day or quiet_night) and (hero.pos in {gate, *posts} or waiting_post)
-                    and not any(turn.enemy_mine(p) for p in turn.zones))
-    if quiet_night and not traffic_only:
+                    and hero.pos == state.get('post') and not has_mines)
+    near_home = (min(xs) <= hero.pos[0] <= max(xs) and min(ys) <= hero.pos[1] <= max(ys)
+                 or any(distance(hero.pos, p) <= 1 for p in walls) or hero.pos == gate)
+    traffic_only = ((turn.is_day or quiet_night) and (near_home or waiting_post)
+                    and (quiet_night or not has_mines))
+    if (quiet_night or not set(walls) <= built) and not traffic_only:
         # Keep any valid mine target and channel progress when releasing guard.
         mem.sabotage.gate_states.pop(hero.id, None)
         return None
+    if quiet_night and not state.get('traffic_only'):
+        # A cleared wave releases stale combat/yield timing. Real traffic in
+        # finish() can still request a fresh window before the next wave.
+        state['yield_until'] = -1
     returning = state.get('day') == turn.day and state.get('recalling', False)
     yielding = state.get('day') == turn.day and state.get('yield_until', -1) >= turn.round
-    if turn.is_day and not returning and not yielding:
+    if turn.is_day and not traffic_only and not returning and not yielding:
         original = turn.blocked
         try:
             # Estimate future friendly congestion only. Actual moves below
@@ -227,4 +252,5 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     mem.sabotage.progress.pop(hero.id, None)
     ledger.used.add(hero.id)  # Suppress the daytime sabotage action for this imp.
     return GateGuard(turn, nav, ledger, hero, gate, inward, posts, state, catches)
+
 
