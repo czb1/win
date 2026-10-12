@@ -5,7 +5,10 @@ from .commands import command
 from .model import distance, neighbours, SUMMON_ORDERS
 from .navigation import check_time
 from .projectiles import line_cells
-from .robot_assault import base_distance, enemy_base, rear_approach
+from .robot_assault import base_distance, enemy_base, enemy_entries, rear_approach
+
+
+FIRST_DAY_SCOUT_TICK = 40
 
 
 @dataclass
@@ -13,6 +16,109 @@ class ScoutMemory:
     key: tuple | None = None
     worker_id: int | None = None
     post: tuple | None = None
+    wall_entry: tuple | None = None
+
+
+def _sync_scout(turn, memory, base):
+    key = (turn.day, base.id, base.pos) if base else None
+    if memory.key != key:
+        memory.key, memory.worker_id, memory.post, memory.wall_entry = key, None, None, None
+
+
+def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=None):
+    """From tick 40, occupy an unbuilt upper/lower enemy wall cell until dusk."""
+    base = enemy_base(turn)
+    _sync_scout(turn, memory, base)
+    if not turn.is_day or turn.day != 1 or turn.tick < FIRST_DAY_SCOUT_TICK or base is None:
+        return None
+    if memory.worker_id is not None and not any(w.id == memory.worker_id for w in turn.workers):
+        memory.worker_id, memory.post, memory.wall_entry = None, None, None
+    xs, ys = zip(*base.cells)
+    entries = [p for p in enemy_entries(turn, base)
+               if p[1] in (min(ys) - 2, max(ys) + 2)]
+    jobs = jobs or {}
+    candidates = []
+    for scout in turn.workers:
+        incumbent = scout.id == memory.worker_id
+        if scout.id in ledger.used or scout.id in excluded:
+            continue
+        if not incumbent and (scout.health <= 165
+                or any('UpgradeVoucher' in item or item == 'WallFixer' or item in SUMMON_ORDERS
+                       for item in scout.backpack)
+                or jobs.get(scout.id, {}).get('kind') in ('sell', 'buy', 'use', 'robot_buy')):
+            continue
+        for entry in entries:
+            check_time(nav.deadline)
+            if entry in (turn.blocked - {scout.pos}) | ledger.reserved:
+                continue
+            route = nav.search(scout, {entry}, ledger.reserved)
+            # Leave at least the last daylight action for a carried order.
+            if route is None or route[0] >= turn.day_left:
+                continue
+            if not any(turn.summon_position_legal(p) and base_distance(base, p) >= 3
+                       and p not in (turn.blocked - {scout.pos}) | ledger.reserved
+                       for p in neighbours(entry)):
+                continue
+            candidates.append((not incumbent, entry != memory.wall_entry,
+                               jobs.get(scout.id, {}).get('kind') == 'build',
+                               entry[0] not in xs, route[0], scout.id, entry, scout, route))
+    if not candidates:
+        # Do not preserve a wall target after a wall/occupant closes it.
+        if memory.wall_entry in turn.blocked and not any(
+                w.id == memory.worker_id and w.pos == memory.wall_entry for w in turn.workers):
+            memory.wall_entry = None
+        return None
+    _, _, _, _, _, _, entry, scout, route = min(candidates, key=lambda row: row[:7])
+    memory.worker_id, memory.post, memory.wall_entry = scout.id, entry, entry
+    if route[1] is None:
+        ledger.used.add(scout.id)
+        ledger.reserved.add(scout.pos)
+        ledger.explain(scout.id, 'first_day_wall_block_hold', entry=entry)
+    elif ledger.add(scout.id, command('move', route[1])):
+        ledger.explain(scout.id, 'first_day_wall_block_approach', entry=entry,
+                       route_steps=route[0], departure_tick=FIRST_DAY_SCOUT_TICK)
+    else:
+        return None
+    return scout
+
+
+def yield_wall_entry(turn, memory, nav, ledger):
+    """Vacate the occupied gap before robot planning; retain real occupancy."""
+    base = enemy_base(turn)
+    _sync_scout(turn, memory, base)
+    scout = next((w for w in turn.workers if w.id == memory.worker_id), None)
+    if (turn.is_day or turn.day != 1 or base is None or scout is None
+            or scout.pos != memory.wall_entry or scout.id in ledger.used):
+        return None
+    if scout.abnormal_state == 'dizzy':
+        ledger.used.add(scout.id)
+        ledger.reserved.add(scout.pos)
+        ledger.explain(scout.id, 'night_scout_dizzy')
+        return scout
+    lanes = set()
+    for robot in turn.summon_robots:
+        for cell in base.cells:
+            lanes.update(line_cells(robot.pos, cell))
+    for cell in base.cells:
+        lanes.update(line_cells(scout.pos, cell))
+    threats = [r for r in turn.robots if r.id not in turn.summon_robot_ids]
+    def risk(point):
+        return sum(r.power for r in threats if distance(point, r.pos) <= r.attack_range + 1)
+    avoided = nav.memory.blocked(scout.id) if nav.memory else set()
+    options = [p for p in neighbours(scout.pos) if turn.inside(p)
+               and p not in turn.blocked | ledger.reserved | lanes | avoided]
+    if options:
+        step = min(options, key=lambda p: (risk(p), base_distance(base, p) < 3,
+                   -sum(distance(p, cell) <= 4 for cell in base.cells), p))
+        if ledger.add(scout.id, command('move', step)):
+            memory.post = step
+            ledger.explain(scout.id, 'night_scout_yield_wall_entry', entry=memory.wall_entry,
+                           next_risk=risk(step))
+            return scout
+    ledger.used.add(scout.id)
+    ledger.reserved.add(scout.pos)
+    ledger.explain(scout.id, 'night_scout_wall_entry_blocked', entry=memory.wall_entry)
+    return scout
 
 
 def _observation_points(turn, base):
@@ -55,13 +161,14 @@ def _routes(turn, memory, nav, ledger, scout, base, reserved):
 
 
 def prepare_night_scout(turn, memory, nav, ledger, excluded=(), jobs=None):
-    """Leave near dusk, as late as the route permits, without taking paid work."""
+    """Stage an observer, using wall denial on day one and timed dusk otherwise."""
+    scout = prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded, jobs)
+    if scout:
+        return scout
     base = enemy_base(turn)
     if not turn.is_day or base is None or turn.tick < 50:
         return None
-    key = turn.day, base.id, base.pos
-    if memory.key != key:
-        memory.key, memory.worker_id, memory.post = key, None, None
+    _sync_scout(turn, memory, base)
     jobs = jobs or {}
     candidates = []
     for scout in turn.workers:
@@ -98,10 +205,8 @@ def prepare_night_scout(turn, memory, nav, ledger, excluded=(), jobs=None):
 
 def act_night_scout(turn, memory, nav, ledger, home_roles=()):
     base = enemy_base(turn)
-    key = (turn.day, base.id, base.pos) if base and not turn.is_day else None
-    if key != memory.key:
-        memory.key, memory.worker_id, memory.post = key, None, None
-    if key is None:
+    _sync_scout(turn, memory, base)
+    if turn.is_day or base is None:
         return None
     workers = {h.id: h for h in turn.workers}
     scout = workers.get(memory.worker_id)

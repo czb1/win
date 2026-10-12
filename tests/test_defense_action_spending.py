@@ -172,11 +172,11 @@ class DefenseActionSpendingTests(unittest.TestCase):
         self.assertEqual((ledger.commands['1']['action'], ledger.commands['1']['name']),
                          ('use', BOSS))
 
-    def test_first_day_keeps_boss_purchase_and_carried_order_priority(self):
+    def test_first_day_keeps_boss_purchase_and_delays_uses_until_scout_departure(self):
         for stock, gold, action in (([VOUCHER], 360, 'buy'),
                                     ([VOUCHER, BOSS], 0, 'use')):
             with self.subTest(stock=stock):
-                data = case(stock, gold=gold, round_no=10)
+                data = case(stock, gold=gold, round_no=10 if action == 'buy' else 40)
                 result = self.agent(data).decide(data)['roleCommandMap']['1']
                 self.assertEqual((result['action'], result['name']), (action, BOSS))
                 if action == 'buy':

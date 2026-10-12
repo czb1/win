@@ -28,7 +28,8 @@ from .gate_guard import prepare_gate_guard
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position, enemy_base
 from .spending import (first_day_boss_phase, first_day_boss_staging, plan_day_spending, robot_purchase_plan,
                        prepare_paid_upgrades, prepare_defense_purchase)
-from .scouting import act_night_scout, prepare_night_scout
+from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scout,
+                       prepare_first_day_wall_blocker, yield_wall_entry)
 from .task_schedule import task_options, switch_task_option
 
 LOG = logging.getLogger(__name__)
@@ -102,6 +103,17 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                        if hero.inventory[name]), key=lambda row: row[:3])
     can_use = (turn.is_day and state["count"] < DAILY_SUMMON_LIMIT
                and not (state["pending"] and state["pending"][0] == turn.round))
+    if turn.day == 1:
+        scout = mem.night_scout
+        base = enemy_base(turn)
+        entry = None
+        if scout.key == (turn.day, base.id, base.pos):
+            entry = ledger.robot_assault_entry = scout.wall_entry
+        occupying = any(w.id == scout.worker_id and w.pos == entry for w in turn.workers)
+        if (turn.tick < FIRST_DAY_SCOUT_TICK or
+                (entry and not occupying and turn.tick < DEFENCE_RETURN_TICK)):
+            can_use = False
+            ledger.spending_plan['robot_use_blocked'] = 'first_day_wall_block_pending'
     if carriers and can_use and not stage_only:
         position = choose_summon_position(turn, ledger, nav.deadline)
         ledger.robot_summon_target = position
@@ -359,6 +371,19 @@ class Agent:
         budget_reached = False
         gate_guard = None
         try:
+            if turn.is_day:
+                scout = prepare_first_day_wall_blocker(
+                    turn, mem.night_scout, nav, ledger,
+                    excluded={mem.gatling_operator_id} if mem.gatling_operator_id is not None else (),
+                    jobs=mem.daytime_jobs)
+            else:
+                scout = yield_wall_entry(turn, mem.night_scout, nav, ledger)
+            if scout and turn.is_day:
+                mem.daytime_jobs.pop(scout.id, None)
+                ledger.work_jobs.pop(scout.id, None)
+            base = enemy_base(turn)
+            if turn.day == 1 and base and mem.night_scout.key == (turn.day, base.id, base.pos):
+                ledger.robot_assault_entry = mem.night_scout.wall_entry
             # Opening offense gets an action before ordinary job continuation,
             # recall, or voucher budgets can take every available buyer.
             opening_stage = first_day_boss_staging(turn, self.cfg)
@@ -413,7 +438,7 @@ class Agent:
                 # Establish the existing gunner before choosing a new scout.
                 # Prefer releasing the other worker's watch over this operator.
                 fixed_gatling_crew(turn, mem, nav, ledger)
-            scout = act_night_scout(turn, mem.night_scout, nav, ledger,
+            scout = scout or act_night_scout(turn, mem.night_scout, nav, ledger,
                                     home_roles=(mem.gatling_operator_id, mem.wall_watch_id))
             pioneer_gunner = bool(h and turn.weapons and (not turn.is_day or not hold_task))
             if not turn.is_day and pioneer_gunner:
@@ -628,9 +653,9 @@ class Agent:
                     returning.add(watcher.id)
                 ledger.gold -= min(watch_gold, ledger.gold)
                 scout_excluded = returning | ({watcher.id} if watcher else set())
-                staged_scout = None
+                staged_scout = scout
                 enemy_station = enemy_base(turn)
-                if (enemy_station and mem.night_scout.worker_id is not None
+                if (not staged_scout and enemy_station and mem.night_scout.worker_id is not None
                         and mem.night_scout.key == (turn.day, enemy_station.id, enemy_station.pos)):
                     staged_scout = prepare_night_scout(
                         turn, mem.night_scout, nav, ledger,
