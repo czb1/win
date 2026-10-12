@@ -11,7 +11,6 @@ from agent.economy_plan import delivery_destination
 from agent.intelligence import Memory
 from agent.model import pos
 from agent.spending import defenses_ready, plan_day_spending
-from agent.wall_health import needs_day_repair
 from agent.wall_watch import prepare_watch
 from agent.worker_jobs import resume_daytime_jobs
 
@@ -98,7 +97,7 @@ class DaylightSpendingTests(unittest.TestCase):
         ledger.operator_posts[2]=(7,5)
         self.assertEqual(delivery_destination(turn,nav,ledger,turn.workers[1]), ([(7,5)],True))
 
-    def test_stock_trip_starts_after_mining_and_includes_daylight_repairs(self):
+    def test_stock_trip_starts_after_mining_and_only_buys_night_reserve(self):
         data,cfg=case(tick=35,packs=1)
         data['teamOur']['roles'][1]['pos']={'x':6,'y':10}
         for p,hp in (((8,4),1440),((8,5),1545)):
@@ -108,26 +107,29 @@ class DaylightSpendingTests(unittest.TestCase):
         locked,funds=prepare_watch(turn,cfg,mem,nav,ledger,turn.workers[0],list(ledger.wall_cells))
         self.assertTrue(locked)
         self.assertEqual(funds,0)
-        self.assertEqual(ledger.commands['1'],command('buy',name='WallFixer',num=10))
-        self.assertEqual(ledger.gold,431)
+        self.assertEqual(ledger.commands['1'],command('buy',name='WallFixer',num=8))
+        self.assertEqual(ledger.gold,461)
 
     def test_fully_stocked_watcher_can_work_before_actual_recall_deadline(self):
         data,cfg=case(tick=40,packs=9)
+        next(r for r in data['teamOur']['roles'] if r['roleType']=='wall' and pos(r['pos'])==(8,5))['health']=1
         turn,cfg,nav,ledger=setup(data,cfg)
         locked,funds=prepare_watch(turn,cfg,Memory(wall_watch_id=1),nav,ledger,
                                     turn.workers[0],list(ledger.wall_cells))
         self.assertEqual((locked,funds),(False,0))
         self.assertFalse(ledger.commands)
 
-    def test_day_repair_uses_ratio_and_missing_hp(self):
+    def test_daytime_damage_does_not_trigger_fixer_purchase(self):
         data,cfg=case()
-        for hp,expected in ((1745,False),(1675,False),(1600,False),(1545,True),(1440,True)):
-            next(r for r in data['teamOur']['roles'] if r['roleType']=='wall' and pos(r['pos'])==(8,5))['health']=hp
-            turn,_,_,_=setup(data,cfg)
-            wall=next(w for w in turn.ours if w.pos==(8,5))
-            self.assertEqual(needs_day_repair(wall,turn),expected)
+        data['teamOur']['roles'][1]['pos']={'x':6,'y':10}
+        for hp in (1,149,400,1440,1545):
+            with self.subTest(health=hp):
+                next(r for r in data['teamOur']['roles'] if r['roleType']=='wall' and pos(r['pos'])==(8,5))['health']=hp
+                turn,cfg,nav,ledger=setup(data,cfg)
+                self.assertIsNone(supplies(turn,cfg,Memory(),nav,ledger,turn.workers[0],
+                                           item_only='WallFixer'))
 
-    def test_pre_wave_repairs_do_not_consume_night_safety_stock(self):
+    def test_spare_packs_are_preserved_for_night(self):
         data,cfg=case(packs=9)
         data['teamOur']['roles'][1]['pos']={'x':7,'y':5}
         next(r for r in data['teamOur']['roles'] if r['roleType']=='wall' and pos(r['pos'])==(8,5))['health']=1440
@@ -135,8 +137,19 @@ class DaylightSpendingTests(unittest.TestCase):
         self.assertFalse(use_inventory(turn,nav,ledger,turn.workers[0],mem=Memory(wall_watch_id=1)))
         data['teamOur']['roles'][1]['backpack'].append('WallFixer')
         turn,cfg,nav,ledger=setup(data,cfg)
-        self.assertTrue(use_inventory(turn,nav,ledger,turn.workers[0],mem=Memory(wall_watch_id=1)))
-        self.assertEqual(ledger.commands['1'],command('use',(8,5),name='WallFixer'))
+        self.assertFalse(use_inventory(turn,nav,ledger,turn.workers[0],mem=Memory(wall_watch_id=1)))
+        self.assertFalse(ledger.commands)
+
+    def test_stale_daytime_fixer_delivery_job_is_released(self):
+        data,cfg=case(packs=10)
+        data['teamOur']['roles'][1]['pos']={'x':7,'y':5}
+        next(r for r in data['teamOur']['roles'] if r['roleType']=='wall' and pos(r['pos'])==(8,5))['health']=99
+        turn,cfg,nav,ledger=setup(data,cfg)
+        mem=Memory(daytime_jobs={1:{'kind':'use','target':(8,5),'name':'WallFixer'}})
+        resume_daytime_jobs(turn,cfg,mem,nav,ledger,[(7,4)],list(ledger.wall_cells),set())
+        self.assertNotIn(1,mem.daytime_jobs)
+        self.assertNotIn('1',ledger.commands)
+        self.assertNotIn(1,ledger.used)
 
     def test_healthy_base_is_eligible_with_unfinished_side_wall_levels(self):
         data,cfg=case(tick=35)

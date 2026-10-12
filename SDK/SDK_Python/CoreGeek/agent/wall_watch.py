@@ -75,11 +75,8 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         return False, 0
     held = hero.inventory['WallFixer']
     price = turn.shop.get('WallFixer')
-    from .wall_health import needs_day_repair
-    # Buy planned daylight repairs in addition to the adaptive night reserve.
-    repairs = [w for w in walls if needs_day_repair(w, turn) and w.health >= 500
-               and w.level == 3 and watch_route(turn, nav, ledger, mem, hero, sites, w)]
-    target = min(mem.wall_watch.stock_target(turn) + len(repairs), hero.capacity)
+    # Daylight shopping only prepares the adaptive night reserve.
+    target = min(mem.wall_watch.stock_target(turn), hero.capacity)
     need = max(0, target - held)
     # Guarantee up to three packs first. Optional stock must leave money for
     # missing weapons, the next firepower upgrade and a needed wall voucher.
@@ -182,17 +179,16 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     firepower_ready = bool(turn.weapons and all(w.level >= 3 for w in turn.weapons))
     near_batch = bool(buying and shop[1][0] <= 2 and (quota >= 2 or shop[1][0] == 0))
     continuing_order = bool(buying and previous_shop is not None)
-    urgent_repair = any(w.health < 500 for w in walls)
     paid_work = (held >= mem.wall_watch.stock_target(turn)
                  and (hero.inventory['stone'] >= cfg.wall_stones
                       or any('UpgradeVoucher' in k for k in hero.backpack)))
     if (hero.id == ledger.income_worker_id and held >= min(safety_stock, target)
-            and not urgent_repair and turn.day_left > home[0] + cfg.return_margin + 2):
+            and turn.day_left > home[0] + cfg.return_margin + 2):
         ledger.watch_pack_slots[hero.id] = 0
         funds = 0
         report('work', 'income_worker_reserved', steps=home[0])
         return False, 0
-    if (not urgent_repair and not paid_work
+    if (not paid_work
             and (maxed_weapon_mining_phase(turn, cfg)
                  or turn.day_left > budget + 2 and not continuing_order
                  and not (near_batch and (firepower_ready or turn.tick >= cfg.economy_rounds)))):
@@ -210,16 +206,6 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
             ledger.daytime_waits[hero.id] = 'command_rejected'
             ledger.watch_pack_slots[hero.id] = 0
         return True, funds if added else 0
-    if held and any(w.health < 500 for w in walls):
-        from .economy import use_inventory
-        if use_inventory(turn, nav, ledger, hero, mem=mem):
-            report('repair', 'daytime_low_wall')
-            return True, 0
-    if held > mem.wall_watch.stock_target(turn) and repairs:
-        from .economy import use_inventory
-        if use_inventory(turn, nav, ledger, hero, mem=mem, name_only='WallFixer'):
-            report('repair', 'pre_wave_repair')
-            return True, 0
     if held >= mem.wall_watch.stock_target(turn):
         from .economy import use_inventory
         from .worker_jobs import finish_wall_work
@@ -283,7 +269,7 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         ledger.daytime_waits[hero.id] = 'empty_watch'
         report('work', 'resume_local_production', steps=home[0])
         return True, 0
-    if not urgent_repair and turn.day_left > home[0] + cfg.return_margin + 2:
+    if turn.day_left > home[0] + cfg.return_margin + 2:
         report('work', 'use_remaining_daylight', steps=home[0])
         return False, 0
     if home[1] is not None:

@@ -257,6 +257,8 @@ class Ledger:
             elif action == "use":
                 if name not in unit.inventory:
                     return self._reject("item_not_in_inventory")
+                if name == "WallFixer" and self.turn.is_day:
+                    return self._reject("wall_repair_daytime_disabled")
                 if name in SUMMON_ORDERS:
                     if (len(points) != 1 or not self.turn.summon_position_legal(target)
                             or target in self.summon_pending_positions

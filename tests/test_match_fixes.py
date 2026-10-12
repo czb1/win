@@ -178,8 +178,10 @@ class SuppliesTests(unittest.TestCase):
         self.assertEqual(result["roleCommandMap"]["1"], command("move", (5, 6)))
         self.assertEqual(result["roleCommandMap"]["2"], command("collect", (6, 7)))
 
-    def test_repair_carrier_walks_back_and_uses_fixer(self):
+    def test_repair_carrier_walks_back_and_uses_fixer_at_night(self):
         p = self.case()
+        p['roundNo'] = 200
+        p['robot']['roles'] = [unit(90, 'smallRobot', 12, 12, targetTeam='challenger')]
         p["teamOur"]["roles"][0]["backpack"] = ["Medicine", "WallFixer"]
         p["teamOur"]["roles"].append(unit(30, "wall", 2, 7, health=100))
         for _ in range(10):

@@ -7,18 +7,6 @@ WALL_MAX_HEALTH = (1000, 1500, 2000)
 ROBOT_POWER = {"smallRobot": 5, "middleRobot": 10, "largeRobot": 20, "bossRobot": 40}
 
 
-def needs_day_repair(wall, turn):
-    """Pre-wave repair after firepower is ready; upgrades still heal first."""
-    if wall.kind != 'wall' or wall.health <= 0:
-        return False
-    if wall.health < 500:
-        return True
-    maximum = WALL_MAX_HEALTH[wall.level - 1]
-    return bool(turn.is_day and turn.day >= 4 and turn.weapons
-                and all(w.level >= 3 for w in turn.weapons)
-                and maximum - wall.health >= 300 and wall.health * 5 < maximum * 4)
-
-
 def active_hostiles(turn):
     return [r for r in turn.robots if turn.threatens_us(r) and r.abnormal_state != "dizzy"]
 
