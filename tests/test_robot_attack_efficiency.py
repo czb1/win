@@ -9,9 +9,10 @@ from agent.model import distance, pos
 from agent.robot_assault import RobotAssaultMemory, act_robots
 
 
-def decide(data, memory=None):
+def decide(data, memory=None, entry=None):
     memory = memory if memory is not None else RobotAssaultMemory()
     turn, _, nav, ledger = setup_case(data, layout_mode="explicit")
+    ledger.robot_assault_entry = entry
     act_robots(turn, memory, nav, ledger)
     return ledger, memory
 
@@ -26,6 +27,95 @@ def base_corner_case():
 
 
 class RobotAttackEfficiencyTests(unittest.TestCase):
+    def opening_case(self, positions):
+        # Relevant r71-r75 geometry; no unseen occupants or match identifiers.
+        data = payload(71, [unit(10013, "station", 9, 22),
+                            unit(10012, "worker", 29, 6)])
+        data["mapInfo"].update(width=41, height=32, zones=[])
+        data["teamEnemy"]["roles"] = [unit(20013, "station", 30, 10, health=1500)]
+        data["teamOur"]["summonRobotList"] = [
+            controlled_robot(30035 + i, *point) for i, point in enumerate(positions)]
+        return data
+
+    def test_opening_retains_two_shots_then_all_three_can_attack(self):
+        data = self.opening_case(((30, 6), (29, 5), (31, 6)))
+        first, memory = decide(data, entry=(30, 7))
+        for uid in (30035, 30037):
+            self.assertEqual(first.commands[str(uid)]["action"], "attack")
+        self.assertEqual(first.commands["30036"], command("move", (28, 6)))
+        # Next observed position confirms the move. No damage is simulated.
+        data["roundNo"] += 1
+        data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 28, "y": 6}
+        data["lastRoundRoleActionResults"] = {str(uid): True for uid in (30035, 30036, 30037)}
+        ledger, _ = decide(data, memory, entry=(30, 7))
+        self.assertEqual(len(ledger.commands), 3)
+        for uid in (30035, 30036, 30037):
+            self.assertEqual(ledger.commands[str(uid)]["action"], "attack")
+            self.assertEqual(ledger.notes[uid]["conditions"]["target_id"], 20013)
+
+    def test_gap_does_not_pull_clear_shooters_under_reflection_or_id_changes(self):
+        for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
+            for ids in ((30035, 30036, 30037), (900, 800, 700)):
+                with self.subTest(flip_x=flip_x, flip_y=flip_y, ids=ids):
+                    data = self.opening_case(((30, 7), (28, 6), (31, 6)))
+                    for robot, uid in zip(data["teamOur"]["summonRobotList"], ids):
+                        robot["id"] = uid
+                    for roles in (data["teamOur"]["roles"], data["teamEnemy"]["roles"],
+                                  data["teamOur"]["summonRobotList"]):
+                        for role in roles:
+                            x, y = pos(role["pos"])
+                            station = role["roleType"] == "station"
+                            role["pos"] = {"x": 40 - x - int(station) if flip_x else x,
+                                           "y": 31 - y + int(station) if flip_y else y}
+                    entry = (10 if flip_x else 30, 24 if flip_y else 7)
+                    original = copy.deepcopy(data)
+                    ledger, _ = decide(data, entry=entry)
+                    self.assertEqual(data, original)
+                    for uid in ids:
+                        self.assertEqual(ledger.commands[str(uid)]["action"], "attack")
+
+    def test_observed_side_step_continues_route_instead_of_returning_to_gap(self):
+        data = self.opening_case(((29, 8), (29, 7), (30, 7)))
+        first, memory = decide(data, entry=(30, 7))
+        self.assertEqual(first.commands["30036"], command("move", (28, 7)))
+        data["roundNo"] += 1
+        # Reported r75 positions, including the other robot's observed move.
+        data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 28, "y": 7}
+        data["teamOur"]["summonRobotList"][2]["pos"] = {"x": 30, "y": 8}
+        data["lastRoundRoleActionResults"] = {"30036": True}
+        ledger, _ = decide(data, memory, entry=(30, 7))
+        self.assertEqual(ledger.commands["30036"]["action"], "move")
+        self.assertNotEqual(pos(ledger.commands["30036"]["targetPos"][0]), (29, 7))
+        self.assertLess(ledger.notes[30036]["conditions"]["route_steps"],
+                        first.notes[30036]["conditions"]["route_steps"])
+
+    def test_occupied_scout_gap_does_not_interrupt_another_clear_shot(self):
+        data = self.opening_case(((31, 6),))
+        data["teamOur"]["roles"][1]["pos"] = {"x": 30, "y": 7}
+        ledger, _ = decide(data, entry=(30, 7))
+        self.assertEqual(ledger.commands["30035"], command("attack", (31, 9)))
+
+    def test_occupied_gap_does_not_prevent_an_alternative_firing_route(self):
+        data = self.opening_case(((26, 5),))
+        data["teamOur"]["roles"][1]["pos"] = {"x": 30, "y": 7}
+        ordinary, _ = decide(data)
+        ledger, _ = decide(data, entry=(30, 7))
+        self.assertEqual(ledger.commands, ordinary.commands)
+        self.assertEqual(ledger.commands["30035"]["action"], "move")
+
+    def test_scout_wait_requires_a_firing_route_after_the_worker_leaves(self):
+        from test_first_day_wall_block import block_case, seal_ring, ENTRY, SPAWN
+        data = seal_ring(block_case(71, held=True))
+        # A second, fully closed inner ring remains after the scout vacates.
+        data["teamEnemy"]["roles"] += [
+            unit(1000 + i, "wall", *p, health=1000)
+            for i, p in enumerate((x, y) for x in range(29, 33) for y in range(8, 12)
+                                  if x in (29, 32) or y in (8, 11))]
+        data["teamOur"]["summonRobotList"] = [controlled_robot(30035, *SPAWN)]
+        ledger, _ = decide(data, entry=ENTRY)
+        self.assertNotEqual(ledger.notes[30035]["reason"], "robot_wait_scout_gap")
+        self.assertNotIn("route_steps_after_yield", ledger.notes[30035].get("conditions", {}))
+
     def test_rejected_base_cell_tries_another_cell_without_moving(self):
         for key in ("30000", 30000):
             with self.subTest(key=key):

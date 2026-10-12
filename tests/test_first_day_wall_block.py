@@ -227,7 +227,7 @@ class FirstDayWallBlockTests(unittest.TestCase):
         self.assertEqual(distance(spawn, ENTRY), 1)
         self.assertTrue(turn.summon_position_legal(spawn))
 
-    def test_agent_yields_then_enters_then_attacks_observed_base(self):
+    def test_agent_yields_then_attacks_through_observed_gap(self):
         agent = Agent(Config(llm_enabled=False))
         data = seal_ring(block_case(69, held=True, stock=[BOSS]))
         before = copy.deepcopy(data)
@@ -247,9 +247,10 @@ class FirstDayWallBlockTests(unittest.TestCase):
         data['roundNo'] = 71
         data['teamOur']['roles'][1]['pos'] = {'x': step[0], 'y': step[1]}
         response = agent.decide(data)
-        self.assertEqual(response['roleCommandMap']['30000'], command('move', ENTRY))
+        self.assertEqual(response['roleCommandMap']['30000']['action'], 'attack')
         data['roundNo'] = 72
-        data['teamOur']['summonRobotList'][0]['pos'] = {'x': ENTRY[0], 'y': ENTRY[1]}
+        data['lastRoundRoleActionResults'] = {'30000': True}
+        # Keep the observed spawn position: an open firing lane needs no move.
         response = agent.decide(data)
         shot = response['roleCommandMap']['30000']
         self.assertEqual(shot['action'], 'attack')
