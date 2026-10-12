@@ -13,7 +13,8 @@ from agent.intelligence import Memory
 from agent.model import Turn, distance, neighbours, pos
 from agent.navigation import layout
 from agent.projectiles import wall_gates
-from agent.sabotage import act_imps
+from agent.sabotage import act_imps, rear_waiting_posts
+from agent.wall_watch import watch_route
 
 
 GATE, POSTS, TOWERS = (3, 10), {(2, 9), (2, 11)}, [(4, 12), (5, 12), (4, 10)]
@@ -124,8 +125,11 @@ class GateGuardEligibilityTests(unittest.TestCase):
             commands = agent.decide(data)['roleCommandMap']
             self.assertNotEqual(commands.get('14', {}).get('action'), 'destroy')
             advance(data, commands)
-            self.assertIn(pos(data['teamOur']['roles'][3]['pos']), POSTS)
+            self.assertNotEqual(pos(data['teamOur']['roles'][3]['pos']), GATE)
             self.assertTrue(next(iter(agent.sessions.values())).sabotage.gate_states[14]['traffic_only'])
+        walls = [pos(r['pos']) for r in data['teamOur']['roles'] if r['roleType'] == 'wall']
+        self.assertGreaterEqual(min(distance(pos(data['teamOur']['roles'][3]['pos']), p)
+                                    for p in walls), 2)
 
     def test_idle_daytime_gate_clearance_releases_when_corner_mine_appears(self):
         data, agent = gate_case(130, worker=(1, 1)), Agent(Config(llm_enabled=False))
@@ -226,8 +230,9 @@ class GateGuardEligibilityTests(unittest.TestCase):
                 data = gate_case()
                 data['robot']['roles'] = [unit(90, 'largeRobot', *point, attackRange=attack_range)]
                 _, _, ledger, _, guard = guard_setup(data)
-                self.assertEqual(guard is not None, expected)
-                self.assertEqual(14 in ledger.used, expected)
+                self.assertIsNotNone(guard)
+                self.assertEqual(not guard.state['traffic_only'], expected)
+                self.assertIn(14, ledger.used)
 
     def test_nearby_opponent_bound_and_stunned_robots_still_require_guard(self):
         for target_team in ('challenger', 'defender', ''):
@@ -256,7 +261,8 @@ class GateGuardEligibilityTests(unittest.TestCase):
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['14']['action'], 'move')
         self.assertIn(pos(commands['14']['targetPos'][0]), POSTS)
-        self.assertEqual(mem.sabotage.gate_states, {})
+        self.assertTrue(mem.sabotage.gate_states[14]['traffic_only'])
+        self.assertNotEqual(mem.sabotage.gate_states[14]['post'], pos(commands['14']['targetPos'][0]))
         data['roundNo'] = 72
         data['teamOur']['roles'][3]['pos'] = commands['14']['targetPos'][0]
         data['robot']['roles'] = [unit(90, 'largeRobot', 9, 14, attackRange=3)]
@@ -290,10 +296,10 @@ class GateGuardEligibilityTests(unittest.TestCase):
 
 
 class GateGuardTests(unittest.TestCase):
-    def test_recorded_aisle_clearance_post_keeps_daytime_traffic_role(self):
+    def test_daytime_aisle_clears_without_a_valid_recorded_post(self):
         for day_offset, post, expected in ((0, (34, 8), True),
-                                          (0, (34, 9), False),
-                                          (-1, (34, 8), False)):
+                                          (0, (34, 9), True),
+                                          (-1, (34, 8), True)):
             with self.subTest(day_offset=day_offset, post=post):
                 data = logged_morning_case()
                 next(u for u in data['teamOur']['roles'] if u['id'] == 20014)['pos'] = dict(x=34, y=8)
@@ -376,7 +382,8 @@ class GateGuardTests(unittest.TestCase):
         self.assertIsNotNone(guard)
         act_imps(turn, mem.sabotage, nav, ledger)
         guard.finish()
-        self.assertNotIn('20014', ledger.commands)
+        self.assertEqual(ledger.commands['20014']['action'], 'move')
+        self.assertNotEqual(pos(ledger.commands['20014']['targetPos'][0]), (33, 10))
         self.assertEqual(ledger.notes[20014]['reason'], 'imp_daytime_gate_yield')
         self.assertEqual(mem.sabotage.targets[20014], ((14, 20), 'stone'))
         self.assertNotIn(20014, mem.sabotage.progress)
@@ -386,7 +393,7 @@ class GateGuardTests(unittest.TestCase):
         self.assertIsNone(prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls))
         self.assertNotIn(20014, ledger.used)
 
-    def test_last_day_turn_stages_beside_gap_and_first_night_enters(self):
+    def test_last_day_turn_leaves_gap_and_first_night_enters_for_local_wave(self):
         data, agent = gate_case(69), Agent(Config(llm_enabled=False, return_margin=5))
         commands = agent.decide(data)['roleCommandMap']
         self.assertIn(pos(commands['14']['targetPos'][0]), POSTS)
@@ -400,7 +407,9 @@ class GateGuardTests(unittest.TestCase):
         self.assertEqual(commands['14']['action'], 'move')
         state = next(iter(agent.sessions.values())).sabotage.gate_states[14]
         self.assertTrue(state['recalling'])
-        self.assertIn(state['post'], POSTS)
+        walls = [pos(r['pos']) for r in data['teamOur']['roles'] if r['roleType'] == 'wall']
+        self.assertLess(state['post'][0], min(p[0] for p in walls))
+        self.assertGreaterEqual(min(distance(state['post'], p) for p in walls), 2)
 
     def test_robot_damage_does_not_make_guard_flee(self):
         data = gate_case()
@@ -439,7 +448,7 @@ class GateGuardTests(unittest.TestCase):
         advance(data, commands)
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['1']['action'], 'move')
-        self.assertEqual(next(iter(agent.sessions.values())).sabotage.gate_states, {})
+        self.assertTrue(next(iter(agent.sessions.values())).sabotage.gate_states[14]['traffic_only'])
 
     def test_outside_wall_watcher_enters_and_imp_waits_for_observed_clearance(self):
         data, agent = gate_case(460, worker=(2, 10)), Agent(Config(llm_enabled=False))
@@ -449,11 +458,12 @@ class GateGuardTests(unittest.TestCase):
         advance(data, commands)
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['1'], command('move', GATE))
-        self.assertNotIn('14', commands)
+        self.assertNotEqual(pos(commands['14']['targetPos'][0]), GATE)
         advance(data, commands)
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['1']['action'], 'move')
-        self.assertNotIn('14', commands)
+        if '14' in commands:
+            self.assertNotEqual(pos(commands['14']['targetPos'][0]), GATE)
         advance(data, commands)
 
     def test_pioneer_also_gets_access_to_common_control_post(self):
@@ -463,7 +473,8 @@ class GateGuardTests(unittest.TestCase):
         advance(data, commands)
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['11'], command('move', GATE))
-        self.assertNotIn('14', commands)
+        if '14' in commands:
+            self.assertNotEqual(pos(commands['14']['targetPos'][0]), GATE)
         advance(data, commands)
 
     def test_accepted_local_collection_does_not_trigger_unneeded_yield(self):
@@ -479,11 +490,14 @@ class GateGuardTests(unittest.TestCase):
         data, agent = gate_case(), Agent(Config(llm_enabled=False))
         agent.decide(data)
         mem = next(iter(agent.sessions.values()))
-        mem.sabotage.gate_states[14].update(yield_until=72, post=(2, 9))
-        data['teamOur']['roles'][3]['pos'] = dict(x=2, y=9)
+        mem.sabotage.gate_states[14].update(yield_until=72, post=(1, 8))
+        data['teamOur']['roles'][3]['pos'] = dict(x=1, y=8)
         data['roundNo'] = 72
         self.assertNotIn('14', agent.decide(data)['roleCommandMap'])
         data['roundNo'] = 73
+        commands = agent.decide(data)['roleCommandMap']
+        self.assertEqual(commands['14'], command('move', (2, 9)))
+        advance(data, commands)
         self.assertEqual(agent.decide(data)['roleCommandMap']['14'], command('move', GATE))
 
     def test_worker_occupying_gate_is_never_swapped_or_displaced(self):
@@ -491,7 +505,7 @@ class GateGuardTests(unittest.TestCase):
         data['mapInfo']['zones'] = [dict(neutralType='copper', pos=dict(x=2, y=10), remain=10)]
         commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
         self.assertEqual(commands['1']['action'], 'collect')
-        self.assertNotIn('14', commands)
+        self.assertNotEqual(pos(commands['14']['targetPos'][0]), GATE)
 
     def test_reserved_side_step_uses_other_post(self):
         turn, nav, ledger, _, guard = guard_setup(gate_case(worker=(4, 9)))
@@ -585,6 +599,147 @@ class GateGuardTests(unittest.TestCase):
             self.assertEqual(agent.decide(data)['roleCommandMap']['1']['action'], 'move')
 
 
+class RearWaitingTests(unittest.TestCase):
+    def home_case(self, round_no=440, complete=False):
+        data = payload(round_no, [unit(20013, 'station', 30, 10, health=880),
+            unit(20010, 'worker', 19, 15, health=285),
+            unit(20012, 'worker', 34, 8, health=250, backpack=['stone']),
+            unit(20011, 'pioneer', 34, 12, health=500),
+            unit(20014, 'imp', 32, 11, health=500, backPackCapability=0),
+            *[unit(20040+i, 'rocket', *p, level=3) for i, p in
+              enumerate(((31, 8), (32, 8), (32, 10)))]])
+        data['mapInfo'].update(width=41, height=32)
+        data['teamOur']['goldNum'] = 276
+        walls = layout(Turn(data, Config()), Config())[1]
+        data['teamOur']['roles'] += [unit(41000+i, 'wall', *p, health=1000)
+                                   for i, p in enumerate(walls)
+                                   if complete or p != (33, 11)]
+        return data
+
+    def setup_home(self, data, mem=None):
+        turn, cfg, nav, ledger = setup_case(data, llm_enabled=False)
+        mem = mem or Memory()
+        mem.observe(turn, cfg)
+        mem.gunner_post, mem.wall_watch_id = (32, 9), 20010
+        nav.memory = mem.movement
+        ledger.daytime_gunner_post = (32, 9)
+        ledger.operator_posts = {20011: (32, 9)}
+        towers, walls = layout(turn, cfg)
+        guard = prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls)
+        nav.gate_guard = guard
+        return turn, nav, ledger, mem, guard
+
+    def test_daytime_inner_aisle_clears_before_last_wall_is_built(self):
+        data = self.home_case()
+        mem = None
+        for _ in range(3):
+            turn, nav, ledger, mem, guard = self.setup_home(data, mem)
+            self.assertIsNotNone(guard)
+            self.assertTrue(guard.state['traffic_only'])
+            self.assertEqual(guard.requests, {})  # Clearance is proactive.
+            guard.finish()
+            self.assertEqual(ledger.commands['20014']['action'], 'move')
+            advance(data, ledger.commands)
+        imp = next(r for r in data['teamOur']['roles'] if r['id'] == 20014)
+        walls = [pos(r['pos']) for r in data['teamOur']['roles'] if r['roleType'] == 'wall']
+        self.assertGreater(pos(imp['pos'])[0], max(p[0] for p in walls))
+        self.assertGreaterEqual(min(distance(pos(imp['pos']), p) for p in walls), 2)
+        turn, nav, ledger, mem, guard = self.setup_home(data, mem)
+        guard.finish()
+        self.assertNotIn('20014', ledger.commands)
+        self.assertIsNotNone(watch_route(turn, nav, ledger, mem,
+                                        turn.units[20010], ledger.wall_cells))
+
+    def test_quiet_night_inner_imp_opens_both_entry_and_exit(self):
+        data = self.home_case(460, complete=True)
+        data['teamOur']['roles'].append(unit(20015, 'worker', 29, 11, health=500))
+        mem = None
+        for _ in range(2):
+            turn, nav, ledger, mem, guard = self.setup_home(data, mem)
+            self.assertIsNotNone(guard)
+            ledger.reserved.add((32, 9))
+            self.assertIsNone(watch_route(turn, nav, ledger, mem,
+                                         turn.units[20010], ledger.wall_cells))
+            self.assertIsNone(nav.search(turn.units[20015], {(35, 10)}, ledger.reserved))
+            self.assertIsNotNone(guard.requests.get(20015))
+            original = turn.blocked
+            guard.finish()
+            self.assertIs(turn.blocked, original)
+            self.assertEqual(ledger.commands['20014']['action'], 'move')
+            advance(data, ledger.commands)
+        turn, nav, ledger, mem, _ = self.setup_home(data, mem)
+        ledger.reserved.add((32, 9))
+        self.assertIsNotNone(watch_route(turn, nav, ledger, mem,
+                                        turn.units[20010], ledger.wall_cells))
+        self.assertIsNotNone(nav.search(turn.units[20015], {(35, 10)}, ledger.reserved))
+
+    def test_blocked_inner_imp_still_moves_when_search_budget_expires(self):
+        data = self.home_case()
+        turn, nav, ledger, mem, guard = self.setup_home(data)
+        original = turn.blocked
+        nav.deadline = monotonic() - 1
+        act_imps(turn, mem.sabotage, nav, ledger)
+        guard.finish()
+        self.assertEqual(ledger.commands['20014'], command('move', (33, 10)))
+        self.assertIs(turn.blocked, original)
+        self.assertTrue(ledger.notes[20014]['conditions']['budget_fallback'])
+
+    def test_unreachable_daytime_mine_does_not_leave_imp_in_home_aisle(self):
+        data = self.home_case(420)
+        data['mapInfo']['zones'] = [dict(neutralType='stone', pos=dict(x=14, y=20), remain=10)]
+        data['teamEnemy']['roles'] = [unit(999, 'pioneer', 14, 21, health=500)]
+        turn, nav, ledger, mem, guard = self.setup_home(data)
+        self.assertTrue(turn.enemy_mine((14, 20)))
+        self.assertIsNone(guard)  # Normal daytime sabotage still gets first choice.
+        act_imps(turn, mem.sabotage, nav, ledger)
+        self.assertEqual(ledger.commands['20014']['action'], 'move')
+        self.assertEqual(ledger.notes[20014]['reason'], 'imp_safe_retreat')
+        self.assertNotIn(20014, mem.sabotage.targets)
+
+    def test_ordinary_retreat_targets_rear_with_wall_clearance(self):
+        data = self.home_case(460)
+        turn, cfg, nav, ledger = setup_case(data, llm_enabled=False)
+        mem = Memory()
+        mem.observe(turn, cfg)
+        act_imps(turn, mem.sabotage, nav, ledger)
+        self.assertEqual(ledger.commands['20014']['action'], 'move')
+        advance(data, ledger.commands)
+        self.assertNotEqual(pos(next(r for r in data['teamOur']['roles']
+                                    if r['id'] == 20014)['pos']), (32, 11))
+
+    def test_idle_daytime_rear_waiting_mirrors_in_all_four_corners(self):
+        for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(flip_x=flip_x, flip_y=flip_y):
+                data, agent = gate_case(130), Agent(Config(llm_enabled=False))
+                data['mapInfo']['zones'], data['robot']['roles'] = [], []
+                for r in data['teamOur']['roles']:
+                    p = r['pos']
+                    if flip_x:
+                        p['x'] = (13 if r['roleType'] == 'station' else 14) - p['x']
+                    if flip_y:
+                        p['y'] = (15 if r['roleType'] == 'station' else 14) - p['y']
+                for _ in range(4):
+                    advance(data, agent.decide(data)['roleCommandMap'])
+                turn = Turn(data, Config())
+                point = turn.imps[0].pos
+                walls = [w.pos for w in turn.ours if w.kind == 'wall']
+                self.assertGreaterEqual(min(distance(point, p) for p in walls), 2)
+                if flip_x:
+                    self.assertGreater(point[0], max(p[0] for p in walls))
+                else:
+                    self.assertLess(point[0], min(p[0] for p in walls))
+
+    def test_rear_corner_waiting_preserves_clearance_near_map_edge(self):
+        data = payload(140, [unit(13, 'station', 3, 11)])
+        turn = Turn(data, Config())
+        _, walls = layout(turn, Config())
+        posts = rear_waiting_posts(turn, walls)
+        self.assertTrue(posts)
+        self.assertTrue(all(turn.inside(p) and p[0] < min(w[0] for w in walls)
+                            and min(distance(p, w) for w in walls) >= 2 for p in posts))
+
+
 if __name__ == '__main__':
     unittest.main()
+
 
