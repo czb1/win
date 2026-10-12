@@ -30,8 +30,9 @@ from .spending import (first_day_boss_phase, first_day_boss_staging, plan_day_sp
                        prepare_paid_upgrades, prepare_defense_purchase, FIRST_DAY_ROBOT_PURCHASE_LIMIT,
                        heal_station_with_pioneer, prepare_station_reserve)
 from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scout,
-                       prepare_first_day_wall_blocker, yield_wall_entry)
+                       yield_wall_entry)
 from .task_schedule import task_options
+from .opening_offense import act_first_day_offense
 
 LOG = logging.getLogger(__name__)
 
@@ -111,7 +112,8 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         state["buyer"] = None
         ledger.spending_plan['robot_blocked'] = 'night'
         return False
-    if (turn.day == 1 and not first_day_boss_phase(turn, cfg)
+    if (turn.day == 1 and ledger.first_day_offense_worker_id is None
+            and not first_day_boss_phase(turn, cfg)
             and not (stage_only and first_day_boss_staging(turn, cfg))):
         ledger.spending_plan['robot_blocked'] = 'first_day_tower_construction'
         return False
@@ -165,7 +167,7 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         state["buyer"] = None
         ledger.spending_plan['robot_blocked'] = 'purchase_days_finished'
         return False
-    if maxed_weapon_mining_phase(turn, cfg):
+    if maxed_weapon_mining_phase(turn, cfg) and ledger.first_day_offense_worker_id is None:
         state["buyer"] = None
         ledger.spending_plan['robot_blocked'] = 'mining_phase'
         return False
@@ -212,6 +214,8 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         return False
     if stage_only:
         free = [hero for hero in free if hero.kind == 'worker']
+    if ledger.first_day_offense_worker_id is not None:
+        free = [hero for hero in free if hero.id == ledger.first_day_offense_worker_id]
     buyers = []
     for name in names:
         price = turn.shop[name]
@@ -424,24 +428,20 @@ class Agent:
             # A paid base heal takes the pioneer before task or gun allocation,
             # including at night and on the final daylight turn.
             heal_station_with_pioneer(turn, mem, nav, ledger)
-            # Do not send either worker scouting while the opening guns still
-            # need construction. A spare worker may stage at the shop instead.
             opening_scout_excluded = ({w.id for w in turn.workers}
-                if turn.day == 1 and not first_day_boss_phase(turn, self.cfg) else set())
+                if turn.day == 1 and len(turn.workers) < 2
+                and not first_day_boss_phase(turn, self.cfg) else set())
             if turn.is_day:
                 # Share current/remembered weapon occupancy before selecting
                 # the wall blocker and this day's summon positions.
                 act_robots(turn, mem.robot_assault, nav, ledger)
-                scout = prepare_first_day_wall_blocker(
-                    turn, mem.night_scout, nav, ledger,
-                    excluded=opening_scout_excluded | ({mem.gatling_operator_id}
-                        if mem.gatling_operator_id is not None else set()),
-                    jobs=mem.daytime_jobs)
+                scout = act_first_day_offense(turn, self.cfg, mem, nav, ledger, towers, walls)
             else:
                 scout = yield_wall_entry(turn, mem.night_scout, nav, ledger)
             if scout and turn.is_day:
                 mem.daytime_jobs.pop(scout.id, None)
-                ledger.work_jobs.pop(scout.id, None)
+                if ledger.first_day_offense_worker_id != scout.id:
+                    ledger.work_jobs.pop(scout.id, None)
             base = enemy_base(turn)
             if turn.day == 1 and base and mem.night_scout.key == (turn.day, base.id, base.pos):
                 ledger.robot_assault_entry = mem.night_scout.wall_entry
@@ -730,7 +730,8 @@ class Agent:
                         excluded=scout_excluded, jobs=mem.daytime_jobs)
                 if staged_scout:
                     mem.daytime_jobs.pop(staged_scout.id, None)
-                    ledger.work_jobs.pop(staged_scout.id, None)
+                    if ledger.first_day_offense_worker_id != staged_scout.id:
+                        ledger.work_jobs.pop(staged_scout.id, None)
                 for hero, tower in pairs:
                     if hero.id in returning and hero.id not in ledger.used:
                         finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)

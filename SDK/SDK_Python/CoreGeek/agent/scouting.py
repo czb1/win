@@ -10,7 +10,7 @@ from .robot_assault import (base_distance, enemy_base, enemy_entries,
                             open_assault_entry, rear_approach)
 
 
-FIRST_DAY_SCOUT_TICK = 40
+FIRST_DAY_SCOUT_TICK = 35
 
 
 @dataclass
@@ -27,11 +27,13 @@ def _sync_scout(turn, memory, base):
         memory.key, memory.worker_id, memory.post, memory.wall_entry = key, None, None, None
 
 
-def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=None):
-    """From tick 40, occupy an unbuilt upper/lower enemy wall cell until dusk."""
+def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=None,
+                                   worker_id=None, departure_tick=FIRST_DAY_SCOUT_TICK,
+                                   reserve_hold=True):
+    """Occupy an unbuilt upper/lower enemy wall cell after the departure tick."""
     base = enemy_base(turn)
     _sync_scout(turn, memory, base)
-    if not turn.is_day or turn.day != 1 or turn.tick < FIRST_DAY_SCOUT_TICK or base is None:
+    if not turn.is_day or turn.day != 1 or turn.tick < departure_tick or base is None:
         return None
     if memory.worker_id is not None and not any(w.id == memory.worker_id for w in turn.workers):
         memory.worker_id, memory.post, memory.wall_entry = None, None, None
@@ -42,10 +44,12 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
     jobs = jobs or {}
     candidates = []
     for scout in turn.workers:
+        if worker_id is not None and scout.id != worker_id:
+            continue
         incumbent = scout.id == memory.worker_id
         if scout.id in ledger.used or scout.id in excluded:
             continue
-        if not incumbent and (scout.health <= 165
+        if worker_id is None and not incumbent and (scout.health <= 165
                 or any('UpgradeVoucher' in item or item == 'WallFixer' or item in SUMMON_ORDERS
                        for item in scout.backpack)
                 or jobs.get(scout.id, {}).get('kind') in ('sell', 'buy', 'use', 'robot_buy')):
@@ -88,12 +92,13 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
     _, _, _, _, _, _, _, _, entry, scout, route = min(candidates, key=lambda row: row[:9])
     memory.worker_id, memory.post, memory.wall_entry = scout.id, entry, entry
     if route[1] is None:
-        ledger.used.add(scout.id)
+        if reserve_hold:
+            ledger.used.add(scout.id)
         ledger.reserved.add(scout.pos)
         ledger.explain(scout.id, 'first_day_wall_block_hold', entry=entry)
     elif ledger.add(scout.id, command('move', route[1])):
         ledger.explain(scout.id, 'first_day_wall_block_approach', entry=entry,
-                       route_steps=route[0], departure_tick=FIRST_DAY_SCOUT_TICK)
+                       route_steps=route[0], departure_tick=departure_tick)
     else:
         return None
     return scout

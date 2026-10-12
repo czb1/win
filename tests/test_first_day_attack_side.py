@@ -167,7 +167,7 @@ class FirstDayAttackSideTests(unittest.TestCase):
 
     def test_daytime_memory_is_available_before_worker_and_summon_selection(self):
         agent = Agent(Config(llm_enabled=False))
-        data = turret(block_case(39))
+        data = turret(block_case(39, stock=[BOSS] * 3))
         agent.decide(data)
         data['roundNo'] = 40
         data['teamEnemy']['roles'] = data['teamEnemy']['roles'][:1]
