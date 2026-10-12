@@ -559,7 +559,8 @@ class Agent:
                     and not danger and not defence_return_due and h.id not in ledger.used
                     and h.id not in returning):
                 alternative = switch_task_option(turn, self.cfg, mem, nav, ledger, h)
-                if alternative and ledger.add(h.id, command('move', alternative['route'][1])):
+                if alternative and nav.move_along(h, ledger, alternative['route'],
+                                                  {alternative['cell']}, alternative['travel_forbidden']):
                     mem.stop_reason = 'task_switch_budget'
                     hold_task = False
                     ledger.explain(h.id, 'task_switch_budget', elapsed=turn.round - mem.task_started,

@@ -80,12 +80,12 @@ def dusk_batch(turn, nav, ledger, hero, candidates, count, elapsed, require_home
 
 
 def walk(nav, ledger, hero, targets):
-    route = nav.approach(hero, targets, ledger.reserved)
+    route = nav.approach(hero, targets, ledger.reserved, with_endpoint=True)
     if route is None:
         ledger.explain(hero.id, "route_unavailable", targets=list(targets))
         return False
     if route[1] is not None:
-        accepted = ledger.add(hero.id, command("move", route[1]))
+        accepted = nav.move_along(hero, ledger, route, {route[2]})
         if accepted:
             ledger.explain(hero.id, "approach_destination", targets=list(targets), route_steps=route[0])
         return accepted
@@ -105,13 +105,13 @@ def vacate_site(turn, nav, ledger, hero, sites):
 def visit(turn, nav, ledger, hero, kind, action):
     targets = [p for p, k in turn.zones.items() if k == kind]
     options = [(route[0], p, route) for p in targets
-               if (route := nav.approach(hero, [p], ledger.reserved)) is not None]
+               if (route := nav.approach(hero, [p], ledger.reserved, with_endpoint=True)) is not None]
     if not options:
         return False
     _, _, route = min(options)
     if route[1] is None:
         return ledger.add(hero.id, action)
-    return ledger.add(hero.id, command("move", route[1]))
+    return nav.move_along(hero, ledger, route, {route[2]})
 
 
 def wall_sector(turn, wall):
@@ -1241,7 +1241,7 @@ def treasure_purchase_plan(turn, cfg, mem, nav, ledger, hero):
         for shop, kind in turn.zones.items():
             if kind != "weaponShop" or mem.movement.avoids(hero.id, shop):
                 continue
-            route = nav.approach(hero, [shop], ledger.reserved)
+            route = nav.approach(hero, [shop], ledger.reserved, with_endpoint=True)
             if route is None:
                 continue
             groups = [[shop]] + ([[tuple(t["position"])]] if t else [])
@@ -1282,9 +1282,9 @@ def prepare_treasure(turn, cfg, mem, nav, ledger, hero):
         return False
     missing, route, _ = plan
     name = next(iter(missing))
-    action = (command("move", route[1]) if route[1] is not None
-              else command("buy", name=name, num=missing[name]))
-    return ledger.add(hero.id, action)
+    if route[1] is not None:
+        return nav.move_along(hero, ledger, route, {route[2]})
+    return ledger.add(hero.id, command("buy", name=name, num=missing[name]))
 
 
 def pioneer_task_options(turn, cfg, mem, nav, ledger, hero):
@@ -1307,7 +1307,7 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
     if t and treasure_active(turn, mem):
         required = Counter(t["items"])
         missing = required - hero.inventory
-        route = nav.approach(hero, [tuple(t["position"])], ledger.reserved)
+        route = nav.approach(hero, [tuple(t["position"])], ledger.reserved, with_endpoint=True)
         reason = ("no_route" if not route else "cannot_arrive_in_time"
                   if turn.round + route[0] > t["endRound"] else "missing_items" if missing
                   else "too_early" if turn.round + route[0] < t["startRound"] else "approach_or_summon")
@@ -1333,7 +1333,7 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
                     return
             elif turn.round + route[0] + cfg.return_margin >= t["startRound"]:
                 if route[1] is not None:
-                    ledger.add(hero.id, command("move", route[1]))
+                    nav.move_along(hero, ledger, route, {route[2]})
                 elif turn.round >= t["startRound"]:
                     if ledger.add(hero.id, command("summonTreasure", tuple(t["position"]), item=t["items"])):
                         mem.treasure_attempted = True
@@ -1364,7 +1364,7 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
         # One compact scheduling record; task contents never enter this planner.
         emit_event('task_plan', dict(reason=reason, **details), 'evolution')
         if route[1] is not None:
-            if ledger.add(hero.id, command("move", route[1])):
+            if nav.move_along(hero, ledger, route, {selected['cell']}, selected['travel_forbidden']):
                 ledger.explain(hero.id, reason, **details)
         elif selected['cooldown'] or not task.get('isValid'):
             ledger.used.add(hero.id)
