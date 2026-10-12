@@ -654,7 +654,8 @@ class Agent:
                 if hold_task:
                     ledger.used.add(h.id)
                     if str(h.id) not in ledger.commands:
-                        ledger.explain(h.id, "task_work_pending", pending=mem.pending,
+                        ledger.explain(h.id, "task_budget_exhausted" if intel.task_gate else "task_work_pending",
+                                       **({'budget_gate': intel.task_gate} if intel.task_gate else {}), pending=mem.pending,
                                        return_steps=task_return, day_left=turn.day_left,
                                        return_margin=self.cfg.return_margin)
                 elif not mem.stop_reason:

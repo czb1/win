@@ -1271,6 +1271,14 @@ class Memory:
 class Intelligence:
     def __init__(self, turn, cfg, memory):
         self.turn, self.cfg, self.mem = turn, cfg, memory
+        self.task_gate = {}
+
+    def budget_wait(self, remaining, required, reason):
+        self.task_gate = dict(reason=reason, remaining_rounds=remaining, required_rounds=required)
+        LOG.info('round=%s task_budget_gate=%s', self.turn.round,
+                 json.dumps(self.task_gate, ensure_ascii=False),
+                 extra={'event': 'task_budget_gate', 'category': 'evolution', 'data': self.task_gate})
+        return '', ''
 
     def can_call(self):
         return self.cfg.llm_enabled and self.mem.pending is None and (
@@ -1351,6 +1359,8 @@ class Intelligence:
         # executeCmd/LLM replies arrive next round. Starting work in the last
         # usable round cannot produce a submission before timeout/recall.
         if remaining <= 1:
+            if self.mem.pending is None:
+                return self.budget_wait(remaining, 2, 'insufficient_rounds_for_new_work')
             return "", ""
         if (self.mem.contract.get("kind") == "check_token" and self.mem.contract.get("workspace")
                 and self.mem.pending is None):
@@ -1436,7 +1446,7 @@ class Intelligence:
         if not self.can_call():
             return "", ""
         if self.mem.contract.get("kind") == "check_token" and remaining <= 2:
-            return "", ""  # Model reply + independent check + submission need three rounds.
+            return self.budget_wait(remaining, 3, 'insufficient_rounds_for_model_execute_submit')
         hints = [s for s in self.mem.skills if compatible(s, self.mem.task_point, self.mem.contract,
                                                         for_hint=True)][-2:]
         # lastAttempt pins the code/output pair; avoid duplicating it in history.

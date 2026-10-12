@@ -213,7 +213,7 @@ def objects(value):
         for item in value:
             yield from objects(item)
 
-def record_evidence(records, expected, actual):
+def record_evidence(records, expected, actual, sample_contrasts=False):
     # Infer identity only when a unique input field survives in both projections.
     if not isinstance(records, list) or not records or not all(isinstance(r, dict) for r in records):
         return {'alignment': 'unavailable: input is not a nonempty record array'}
@@ -269,8 +269,30 @@ def record_evidence(records, expected, actual):
             other = min(opposite, key=proximity)
             contrasts.append({'record': record, 'expected_kept': index in kept,
                               'contrast': records[other], 'contrast_expected_kept': other in kept})
+    if sample_contrasts and not contrasts:
+        # Passing samples can still distinguish candidate rules. Compare observed
+        # kept/dropped records, never fabricate an expectation for hidden input.
+        pairs = []
+        kept_set = set(kept)
+        # Diagnostic search budget only; full samples remain available to READ.
+        for dropped in sorted(set(range(len(records))) - kept_set)[:64]:
+            left = records[dropped]
+            for retained in kept[:64]:
+                right = records[retained]
+                fields = sorted((set(left) | set(right)) - {key})
+                same = [k for k in fields if k in left and k in right
+                        and type(left[k]) is type(right[k]) and left[k] == right[k]]
+                changed = [k for k in fields if k not in same]
+                delta = sum(abs(left[k] - right[k]) / span
+                            for k, span in ranges.items() if span)
+                pairs.append((len(changed), -len(same), delta, dropped, retained, same, changed))
+        for _, _, _, dropped, retained, same, changed in sorted(pairs)[:2]:
+            contrasts.append({'record': records[dropped], 'expected_kept': False,
+                              'contrast': records[retained], 'contrast_expected_kept': True,
+                              'same_fields': same, 'different_fields': changed})
     return {'alignment': 'unique input field preserved in output', 'identity_field': key,
             'contrasts': bounded(contrasts),
+            'contrast_search_truncated': sample_contrasts and (len(kept) > 64 or len(records) - len(kept) > 64),
             'order_pairs': bounded(inversions),
             'order_note': 'Relative projected order only; no business sorting rule inferred.',
             'missing_count': len(missing), 'extra_count': len(extra),
@@ -434,7 +456,8 @@ try:
             'output_fragment': checker_fragment(values[-1], text),
             'record_context': checker_records(records, values[-1], text),
             'input_summary': numeric_summary(records),
-            'sample_evidence': [record_evidence(c['input'], c.get('expected', c.get('output')), values[i])
+            'sample_evidence': [dict(case=i, **record_evidence(
+                                    c['input'], c.get('expected', c.get('output')), values[i], sample_contrasts=True))
                                 for i,c in enumerate(cases[:3])],
             'next_action': 'Public samples may admit multiple rules. Compare kept/dropped boundaries and current input; change one supported rule, never patch the answer.'
         })

@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 
 import test_weak_model_evolution as weak
@@ -82,13 +83,72 @@ class RepairContextTests(unittest.TestCase):
         joined = {'expected':{'record':{'ref':'a'}}, 'actual':{'record':{'ref':'b'}}}
         mem.transform_attempt = {'python':"def transform(records): return sorted(records, key=lambda r:r['weight'])",
                                  'diagnosis':{'stage':'checker','checker_feedback':'[FAIL] exact message',
-                                              'record_context':joined, 'sample_evidence':[{'redundant':True}]}}
+                                              'record_context':joined, 'sample_evidence':[{'case':0, 'alignment':'unavailable'}]}}
         context = json.loads(prompt(mem, 7).split('上下文：')[1])
         self.assertEqual(context['lastAttempt']['diagnosis']['record_context'], joined)
         self.assertEqual(context['lastAttempt']['diagnosis']['checker_feedback'], '[FAIL] exact message')
         self.assertTrue(context['currentExpressions'])
-        self.assertNotIn('sample_evidence', context['lastAttempt']['diagnosis'])
+        self.assertEqual(context['lastAttempt']['diagnosis']['sample_evidence'],
+                         [{'case':0, 'alignment':'unavailable'}])
         self.assertLess(list(context).index('lastAttempt'), list(context).index('repairBase'))
+
+    def test_passing_samples_keep_contrasts_through_checker_repair(self):
+        for identity, quantity, cutoff in [('ref', 'weight', 17), ('ticket', 'load', -4)]:
+            with self.subTest(identity=identity), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                cfg, contract, docs, preview = self.fixture(root)
+                records = [{identity:'off', 'active':False, quantity:cutoff+30},
+                           {identity:'low', 'active':True, quantity:cutoff},
+                           {identity:'edge', 'active':True, quantity:cutoff+1},
+                           {identity:'high', 'active':True, quantity:cutoff+30}]
+                def result(rows):
+                    return {'total':sum(r[quantity] for r in rows),
+                            'rows':[{identity:r[identity]} for r in rows]}
+                (root/'examples.json').write_text(json.dumps([
+                    {'input':records, 'expected':result(records[2:])}]))
+                current = [{identity:'extra', 'active':True, quantity:cutoff-5}, records[-1]]
+                (root/'data.json').write_text(json.dumps(current))
+                (root/'check_custom').write_text(
+                    f'#!{sys.executable}\nimport json\nfrom pathlib import Path\n'
+                    "v=json.loads(Path('report.json').read_text())\n"
+                    f"print('TOKEN: verified' if v == {result(current[1:])!r} else '[FAIL] $/total incorrect')\n")
+                code = (f"def transform(records):\n rows=[r for r in records if r['active'] and r[{quantity!r}] != {cutoff}]\n"
+                        f" return {{'total':sum(r[{quantity!r}] for r in rows),'rows':[{{{identity!r}:r[{identity!r}]}} for r in rows]}}")
+                _, body, answer = self.execute(code, cfg)
+                self.assertIsNone(answer)
+                detail = diagnosis(body)
+                self.assertEqual(detail['samples_passed'], 1)
+                evidence = detail['sample_evidence'][0]
+                self.assertEqual(evidence['case'], 0)
+                pair = next(p for p in evidence['contrasts'] if p['record'] == records[1])
+                self.assertEqual(pair['contrast'], records[2])
+                self.assertEqual(pair['different_fields'], [quantity])
+                mem = Memory(contract=contract, documents=docs, inputs=preview)
+                mem.transform_attempt = {'python':code, 'diagnosis':detail}
+                mem.transform_progress = {'same_checker_failure':True, 'repeat_count':2}
+                original = copy.deepcopy(detail)
+                text = prompt(mem, 7)
+                context = json.loads(text.split('上下文：')[1])
+                self.assertEqual(context['lastAttempt']['diagnosis']['sample_evidence'][0]['contrasts'], evidence['contrasts'])
+                self.assertIn('重新比较规则候选', context['nextAction'])
+                self.assertIn('未定位到唯一输入记录', context['nextAction'])
+                self.assertNotIn('record_context中的完整输入', text)
+                self.assertEqual(detail, original)
+                # Changing the general rule is allowed; only the checker grants a token.
+                _, _, answer = self.execute(code.replace(f'!= {cutoff}', f'> {cutoff}'), cfg)
+                self.assertEqual(json.loads(answer), {'token':'verified'})
+
+    def test_checker_sample_identity_ambiguity_does_not_invent_contrasts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg, *_ = self.fixture(root)
+            records = [{'ref':'same', 'kind':'same'}, {'ref':'same', 'kind':'same'}]
+            (root/'examples.json').write_text(json.dumps([{'input':records, 'expected':records[:1]}]))
+            _, body, answer = self.execute('def transform(records): return records[:1]', cfg)
+            self.assertIsNone(answer)
+            evidence = diagnosis(body)['sample_evidence'][0]
+            self.assertIn('unavailable', evidence['alignment'])
+            self.assertNotIn('contrasts', evidence)
 
     def test_history_keeps_source_and_does_not_claim_new_output_is_verified(self):
         before = {'files':[{'case_samples':[{'input':[{'ref':'a','weight':3}], 'expected':{'total':3}}]}]}

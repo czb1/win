@@ -147,6 +147,26 @@ def focus(detail):
     return result
 
 
+def sample_evidence(detail):
+    """Keep observed contrasts once, without repeating sample output order."""
+    result = []
+    for evidence in (detail or {}).get('sample_evidence', []):
+        item = {k: evidence[k] for k in ('case', 'alignment', 'identity_field', 'contrasts', 'contrast_search_truncated')
+                if k in evidence and evidence[k] not in (None, [], {})}
+        contrasts = evidence.get('contrasts', [])
+        fields = {k for pair in contrasts for k in pair.get('different_fields', [])} if isinstance(contrasts, list) else set()
+        for key in ('expected_kept', 'expected_dropped'):
+            summary = evidence.get(key, {})
+            if summary:
+                item[key] = {k: summary[k] for k in ('count',) if k in summary}
+                numeric = {k: v for k, v in summary.get('numeric_fields', {}).items() if k in fields}
+                if numeric:
+                    item[key]['numeric_fields'] = numeric
+        if item:
+            result.append(item)
+    return result
+
+
 def repair_direction(detail, remaining):
     stage = (detail or {}).get('stage')
     if stage == 'samples':
@@ -190,13 +210,16 @@ def prompt(mem, remaining):
     if detail:
         context['lastAttempt']['diagnosis'] = compact(detail)
     if detail and detail.get('stage') == 'checker':
-        # Keep current counterexample first; do not repeat numeric summaries already in previews.
-        context['lastAttempt']['diagnosis'].pop('sample_evidence', None)
+        context['lastAttempt']['diagnosis']['sample_evidence'] = sample_evidence(detail)
         context['currentExpressions'] = repair_expressions(base.get('python', ''))
         context['progress'] = {k: v for k, v in context['progress'].items() if k != 'checker_feedback'}
         if context['progress'].get('same_checker_failure'):
-            context['nextAction'] = ('同一checker反例仍未解决；对照record_context中的完整输入和原始位置，'
-                                     '重新检查过滤边界与排序条件，不只移动代码位置。' + context['nextAction'])
+            context['nextAction'] = '同一checker反例仍未解决；这不证明其他输出完全相同。' + context['nextAction']
+        record_context = detail.get('record_context', {})
+        if record_context.get('expected') and record_context.get('actual'):
+            context['nextAction'] += '结合record_context中的已关联记录核对原始输入与位置。'
+        else:
+            context['nextAction'] += '未定位到唯一输入记录；结合output_fragment、样例对照和输入摘要核查，不能把聚合差异直接归因于某条记录。'
     if use_best:
         context['repairBase']['diagnosis'] = compact(base_detail)
         context['lastAttempt']['diagnosis'] = {k: detail[k] for k in
@@ -205,9 +228,15 @@ def prompt(mem, remaining):
         context['lastAttempt']['sandbox'] = attempt.get('sandbox', '')
         context['lastAttempt']['runtimeError'] = attempt.get('runtimeError', '')
     if rejected.get('reason') == 'failed_ast':
-        context['rejectedCandidate']['unchangedExpressions'] = repair_expressions(rejected.get('python', ''))
+        if 'currentExpressions' not in context:
+            context['rejectedCandidate']['unchangedExpressions'] = repair_expressions(rejected.get('python', ''))
         context['nextAction'] = ('本次代码与已失败代码的AST相同；注释修改无效。'
                                  '对照原反例修改执行表达式。' + context['nextAction'])
+    reconsider = rejected.get('reason') == 'failed_ast' or context['progress'].get('same_checker_failure')
+    if reconsider:
+        context['nextAction'] = ('重新比较规则候选：在完整函数前用2～3行代码注释简述旧条件、冲突证据和本次修改；'
+                                 '检查等值与范围、边界是否包含及组合条件是否遗漏，不预设修改方向。'
+                                 '仅改注释、变量名或移动语句不能解决原反例。' + context['nextAction'])
     failed = {f['case'] for f in (base_detail or {}).get('failures', []) if 'input' in f}
     for entry in mem.inputs.get('files', []):
         clean = dict(entry)
@@ -238,7 +267,8 @@ def prompt(mem, remaining):
         '第一行 PYTHON，后面只定义转换函数和必要辅助函数；框架负责样例验证、写文件、checker及真实token提交。',
         '按nextAction修复，返回名为 transform、接收 records 参数的完整函数；必要补读使用 READ 路径 偏移（样例按case编号，其他按NEXT_READ）。',
         '分别核对保留条件、排序条件、分组与输出。条件须解释保留和删除的对照，排序须核对同值次序。',
-        '样例恰好保留若干条不证明数量上限，字段恰好同序不证明排序依据；不要硬编码样例答案或按差额改答案。',
+        '允许利用数值差异定位可疑条件并提出通用规则候选，再由checker验证；禁止直接加减结果、硬编码记录或答案。',
+        '样例恰好保留若干条不证明数量上限，字段恰好同序不证明排序依据；样例对照仅表示观测，不能证明唯一规则。',
         '代码注释仅简述依据，不展开长篇试探；不要求额外分析回复。']
     if context.get('focus'):
         guidance.append('focus是差异证据；顺序索引为投影后的遍历位置，不直接证明业务排序规则。关联不明确时查看完整反例。')

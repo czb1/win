@@ -142,6 +142,29 @@ class WeakModelTests(unittest.TestCase):
             _,cmd,ledger=step(mem,15,llmResp='PYTHON\n'+code)
             self.assertFalse(cmd);self.assertFalse(ledger.commands)
 
+    def test_token_budget_gate_distinguishes_wait_from_no_time(self):
+        mem=Memory(task_text='query',task_started=1,task_timeout=15,bootstrap_done=True,
+                   task_failures=5, contract={'kind':'check_token','repair_spec':False})
+        # Rejection count does not block a request with enough time.
+        prompt,cmd,_=step(mem,13)
+        self.assertTrue(prompt)
+        self.assertFalse(cmd)
+        mem.pending=None
+        for turn, remaining, required in [(14,2,3),(15,1,2)]:
+            with self.assertLogs('agent.intelligence', 'INFO') as logs:
+                prompt,cmd,ledger=step(mem,turn)
+            self.assertFalse(prompt or cmd or ledger.commands)
+            gate=next(r.data for r in logs.records if getattr(r,'event',None)=='task_budget_gate')
+            self.assertEqual(gate['remaining_rounds'],remaining)
+            self.assertEqual(gate['required_rounds'],required)
+        # Waiting for an in-flight reply is not reported as an idle budget gate.
+        mem.pending=('cmd',15)
+        with self.assertLogs('agent.intelligence', 'INFO') as logs:
+            import logging
+            logging.getLogger('agent.intelligence').info('capture start')
+            step(mem,15)
+        self.assertFalse(any(getattr(r,'event',None)=='task_budget_gate' for r in logs.records))
+
     def test_raw_code_and_comment_compaction_without_accepting_prose(self):
         code="import json\nresult={'x':3}\nprint(json.dumps(result))"
         self.assertEqual(parse_task_reply(code),{'python':code})
