@@ -666,7 +666,8 @@ def batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
 
 def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
     """Sell complete batches or due loads, then spend feasible daylight."""
-    if not turn.is_day or turn.tick < cfg.economy_rounds:
+    if (not turn.is_day or maxed_weapon_mining_phase(turn, cfg)
+            or turn.tick < cfg.economy_rounds and not late_wall_phase(turn)):
         return
     refresh_stone_reserves(turn, cfg, mem, ledger)
     planned = planned_weapons(turn, cfg, mem, tower_sites)
@@ -1167,6 +1168,7 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
                   or h.id in mem.preparation_workers
                   or h.id in mem.sold_workers
                   or h.id == mem.supply_worker
+                  or late_wall_phase(turn)
                   or any("UpgradeVoucher" in k or k == "WallFixer" for k in h.backpack)}
     if maxed_weapon_mining_phase(turn, cfg):
         # Stale sale/supply flags and spare packs cannot start ordinary
