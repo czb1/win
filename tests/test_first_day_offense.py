@@ -17,7 +17,7 @@ TOWERS = [[8, 23], [9, 23], [8, 21]]
 WALLS = [[10, 20], [10, 19]]
 
 
-def case(tick=35, stock=(), ready=True, gold=433):
+def case(tick=30, stock=(), ready=True, gold=433):
     data = block_case(tick)
     worker = data['teamOur']['roles'][1]
     worker.update(pos={'x': 9, 'y': 20}, backpack=list(stock))
@@ -48,8 +48,8 @@ def step(data, memory, walls=WALLS):
 
 
 class FirstDayOffenseTests(unittest.TestCase):
-    def test_tick_35_preempts_mining_and_releases_old_work_locks(self):
-        data = case(34, stock=['stone', 'iron'])
+    def test_tick_30_preempts_mining_and_releases_old_work_locks(self):
+        data = case(29, stock=['stone', 'iron'])
         memory = Memory(daytime_jobs={10: dict(kind='mine', target=(8, 20), ore='iron')},
                         mine_targets={10: (8, 20)}, build_targets={10: (8, 21)},
                         preparation_workers={10}, return_targets={10: 20},
@@ -57,7 +57,7 @@ class FirstDayOffenseTests(unittest.TestCase):
         worker, ledger = step(data, memory)
         self.assertIsNone(worker)
         self.assertFalse(ledger.used)
-        data['roundNo'] = 35
+        data['roundNo'] = 30
         worker, ledger = step(data, memory)
         self.assertEqual(worker.id, 10)
         self.assertEqual(ledger.commands['10']['action'], 'build')
@@ -66,57 +66,57 @@ class FirstDayOffenseTests(unittest.TestCase):
         self.assertNotIn(10, memory.return_targets)
         self.assertNotIn(10, memory.preparation_workers)
         self.assertIsNone(memory.supply_worker)
-        self.assertEqual(ledger.notes[10]['conditions']['stop_mining_tick'], 35)
+        self.assertEqual(ledger.notes[10]['conditions']['stop_mining_tick'], 30)
 
     def test_order_is_stone_walls_then_all_ores_then_batch_purchase(self):
         memory = Memory()
         data = case(stock=['stone', 'stone', 'iron', 'iron', 'copper'])
-        for tick in (35, 36):
+        for tick in (30, 31):
             data['roundNo'] = tick
             _, ledger = step(data, memory)
             built = ledger.commands['10']
             self.assertEqual((built['action'], built['name']), ('build', 'wall'))
             data['teamOur']['roles'].append(unit(100 + tick, 'wall', *pos(built['targetPos'][0])))
             data['teamOur']['roles'][1]['backpack'].remove('stone')
-        data['roundNo'] = 37
+        data['roundNo'] = 32
         _, ledger = step(data, memory)
         self.assertEqual(ledger.commands['10']['action'], 'move')
         self.assertEqual(memory.first_day_offense['phase'], 'sell')
         data['teamOur']['roles'][1]['pos'] = {'x': 11, 'y': 20}
-        data['roundNo'] = 38
+        data['roundNo'] = 33
         _, ledger = step(data, memory)
         self.assertEqual(ledger.commands['10'], command('sell', name='iron', num=2))
         # Failed sale / unchanged inventory must not advance to purchasing.
-        data['roundNo'] = 39
+        data['roundNo'] = 34
         data['lastRoundRoleActionResults'] = {'10': False}
         _, ledger = step(data, memory)
         self.assertEqual(ledger.commands['10'], command('sell', name='iron', num=2))
         data['teamOur']['roles'][1]['backpack'] = ['copper']
-        data['roundNo'] = 40
+        data['roundNo'] = 35
         _, ledger = step(data, memory)
         self.assertEqual(ledger.commands['10'], command('sell', name='copper', num=1))
         data['teamOur']['roles'][1].update(backpack=[], pos={'x': 14, 'y': 20})
-        data['roundNo'] = 41
+        data['roundNo'] = 36
         _, ledger = step(data, memory)
         self.assertEqual(ledger.commands['10'], command('buy', name=BOSS, num=3))
         self.assertEqual(memory.first_day_offense['phase'], 'buy')
         data['teamOur']['roles'][1]['backpack'] = [BOSS] * 3
-        data['roundNo'] = 42
+        data['roundNo'] = 37
         _, ledger = step(data, memory)
         self.assertEqual(memory.first_day_offense['phase'], 'block')
         self.assertEqual(ledger.commands['10']['action'], 'move')
         self.assertIsNotNone(memory.night_scout.wall_entry)
 
     def test_two_workers_split_purchase_and_construction_before_three_guns(self):
-        data = case(35, ready=False)
+        data = case(30, ready=False)
         data['teamOur']['roles'][1]['pos'] = {'x': 14, 'y': 20}
         data['teamOur']['roles'][2]['pos'] = {'x': 9, 'y': 20}
         response = Agent(cfg(walls=[])).decide(data)['roleCommandMap']
         self.assertEqual(response['10'], command('buy', name=BOSS, num=3))
         self.assertEqual(response['12'], command('build', (8, 21), name='rocket'))
 
-    def test_fixed_tick_35_chain_overrides_a_longer_optional_mining_window(self):
-        data = case(34)
+    def test_fixed_tick_30_chain_overrides_a_longer_optional_mining_window(self):
+        data = case(29)
         data['teamOur']['roles'][1]['pos'] = {'x': 14, 'y': 20}
         for role in data['teamOur']['roles']:
             if role['roleType'] == 'rocket':
@@ -126,7 +126,7 @@ class FirstDayOffenseTests(unittest.TestCase):
         agent = Agent(config)
         response = agent.decide(data)['roleCommandMap']
         self.assertFalse(any(c['action'] == 'buy' and c.get('name') == BOSS for c in response.values()))
-        data['roundNo'] = 35
+        data['roundNo'] = 30
         response = agent.decide(data)['roleCommandMap']
         self.assertEqual(response['10'], command('buy', name=BOSS, num=3))
         self.assertEqual(next(iter(agent.sessions.values())).first_day_offense['worker_id'], 10)
@@ -157,7 +157,7 @@ class FirstDayOffenseTests(unittest.TestCase):
 
     def test_actual_occupation_allows_same_worker_to_use_three_orders_and_hold(self):
         agent = Agent(cfg(walls=[]))
-        data = case(35, stock=[BOSS] * 3, ready=False)
+        data = case(30, stock=[BOSS] * 3, ready=False)
         agent.decide(data)
         memory = next(iter(agent.sessions.values()))
         entry = memory.night_scout.wall_entry
@@ -165,7 +165,7 @@ class FirstDayOffenseTests(unittest.TestCase):
         worker = data['teamOur']['roles'][1]
         worker['pos'] = {'x': entry[0], 'y': entry[1]}
         placements = []
-        for tick, stock in ((40, 3), (41, 2), (42, 1)):
+        for tick, stock in ((31, 3), (32, 2), (33, 1)):
             data['roundNo'] = tick
             worker['backpack'] = [BOSS] * stock
             data['lastRoundRoleActionResults'] = {'10': True}
