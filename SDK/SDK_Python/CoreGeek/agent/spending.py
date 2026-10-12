@@ -1,6 +1,85 @@
 """Reserve construction/upgrades and spend the remaining gold on robots."""
-from .economy_plan import front_sites, planned_weapons
+from .economy_plan import front_sites, planned_weapons, via
 from .model import DEFENCE_RETURN_TICK
+
+FIRST_DAY_ROBOT_PURCHASE_LIMIT = 3
+
+
+def heal_station_with_pioneer(turn, mem, nav, ledger):
+    """Keep the pioneer's base voucher until HP is strictly below 500."""
+    from .economy import critical_station, use_inventory, voucher_for
+    hero, station = turn.pioneer, turn.station
+    if (not hero or hero.id in ledger.used or not station
+            or not critical_station(turn, station, mem)):
+        return False
+    name = voucher_for(station)
+    if not hero.inventory[name]:
+        return False
+    return use_inventory(turn, nav, ledger, hero, mem=mem,
+                         target_only=station.pos, name_only=name, upgrades_only=True)
+
+
+def prepare_station_reserve(turn, cfg, mem, nav, ledger, reserve=0):
+    """Buy one base voucher with gold left after the first three robots."""
+    from .brain import observe_robot_summons
+    from .commands import command
+    from .economy import voucher_for
+    from .mining import return_destination
+    hero, station = turn.pioneer, turn.station
+    state = observe_robot_summons(turn, mem)
+    if (not turn.is_day or turn.day != 1 or turn.tick >= DEFENCE_RETURN_TICK
+            or not first_day_boss_phase(turn, cfg)
+            or not hero or hero.id in ledger.used or turn.phase_task or not hero.space
+            or not station or state.get('station_purchased')):
+        return False
+    name = voucher_for(station)
+    if (not name or name not in turn.shop or turn.shop[name] < 0
+            or (hero.id, name) in mem.buy_failures or name in ledger.purchases
+            or any(h.inventory[name] for h in turn.heroes)):
+        return False
+    remaining = max(0, FIRST_DAY_ROBOT_PURCHASE_LIMIT - state.get('purchased', 0))
+    planned = ledger.spending_plan.get('robot_purchase')
+    if planned and ledger.commands.get(str(planned['actor']), {}).get('action') != 'buy':
+        # Walking/staging already reserved its gold, but is not a purchase.
+        remaining = max(0, remaining - planned['quantity'])
+    boss_price = turn.shop.get('BossRobotSummonOrder')
+    if remaining and (boss_price is None or boss_price < 0):
+        return False
+    available = ledger.gold - reserve - remaining * (boss_price or 0)
+    if available < turn.shop[name]:
+        return False
+    home, exact = return_destination(turn, nav, ledger, hero, mem)
+    if not home:
+        return False
+    options = []
+    for shop, kind in turn.zones.items():
+        if kind != 'weaponShop' or mem.movement.avoids(hero.id, shop):
+            continue
+        route = nav.approach(hero, [shop], ledger.reserved, with_endpoint=True)
+        if route is None:
+            continue
+        trip = via(nav, hero, [[shop], home], ledger.reserved,
+                   final_exact=exact, future_return=True)
+        if trip is not None and trip + 1 + cfg.return_margin <= turn.day_left:
+            options.append((route[0], shop, route))
+    if not options:
+        return False
+    _, shop, route = min(options)
+    if route[1] is None:
+        accepted = ledger.add(hero.id, command('buy', name=name, num=1))
+        if accepted:
+            state['station_purchased'] = True
+            state['station_pending'] = turn.round, hero.id
+    else:
+        accepted = nav.move_along(hero, ledger, route, {route[2]})
+        if accepted:
+            ledger.gold -= turn.shop[name]
+            ledger.purchases.add(name)
+    if accepted:
+        ledger.explain(hero.id, 'reserve_station_healing', item=name, quantity=1,
+                       station_health=station.health, heal_below=500,
+                       shop=shop, purchase_submitted=route[1] is None)
+    return accepted
 
 
 def prepare_paid_upgrades(turn, mem, nav, ledger, heroes, excluded=()):

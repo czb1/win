@@ -62,11 +62,11 @@ class OpeningBossSpendingTests(unittest.TestCase):
         self.assertEqual(ledger.spending_plan['robot_blocked'], 'first_day_tower_construction')
         self.assertFalse(ledger.commands)
 
-    def test_first_day_668_gold_buys_five_boss_orders_with_level_one_defenses(self):
+    def test_first_day_668_gold_buys_three_boss_orders_with_level_one_defenses(self):
         turn, cfg, nav, ledger = fortified_case(self.data())
         self.assertTrue(summon_best_robot(turn, cfg, Memory(), nav, ledger, TOWERS, WALLS))
-        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=5))
-        self.assertEqual(ledger.gold, 68)
+        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=3))
+        self.assertEqual(ledger.gold, 308)
 
     def test_first_day_saves_sub_boss_remainder_instead_of_buying_smaller_orders(self):
         turn, cfg, nav, ledger = fortified_case(self.data(gold=119))
@@ -118,7 +118,7 @@ class OpeningBossSpendingTests(unittest.TestCase):
                 if round_no == 69:
                     self.assertFalse(buys)
                 else:
-                    self.assertIn(command('buy', name='BossRobotSummonOrder', num=5), buys)
+                    self.assertIn(command('buy', name='BossRobotSummonOrder', num=3), buys)
                 self.assertTrue(all(c['name'] == 'BossRobotSummonOrder' for c in buys))
 
     def test_first_day_robot_shopping_continues_without_defense_reservations(self):
@@ -128,8 +128,8 @@ class OpeningBossSpendingTests(unittest.TestCase):
         mem = Memory(daytime_jobs={1: dict(kind='robot_buy', target=(4, 9),
                                          name='BossRobotSummonOrder', quantity=5)})
         resume_daytime_jobs(turn, cfg, mem, nav, ledger, TOWERS, WALLS, set())
-        self.assertEqual(ledger.work_jobs[1]['quantity'], 5)
-        self.assertEqual(ledger.gold, 68)
+        self.assertEqual(ledger.work_jobs[1]['quantity'], 3)
+        self.assertEqual(ledger.gold, 308)
 
     def test_recovery_cannot_use_first_day_weapon_voucher(self):
         data = self.data()
@@ -157,7 +157,8 @@ class OpeningBossSpendingTests(unittest.TestCase):
             items=['AcientTablet'], position=[6, 9], startRound=1, endRound=100)
         response = agent.decide(data)
         buys = [c for c in response['roleCommandMap'].values() if c['action'] == 'buy']
-        self.assertEqual(buys, [command('buy', name='BossRobotSummonOrder', num=5)])
+        self.assertCountEqual(buys, [command('buy', name='BossRobotSummonOrder', num=3),
+                                     command('buy', name='StationUpgradeVoucher1', num=1)])
 
     def test_day_two_agent_buys_weapon_upgrades_without_new_robots(self):
         data = self.data(round_no=140)

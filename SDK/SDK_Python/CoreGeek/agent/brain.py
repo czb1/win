@@ -27,7 +27,8 @@ from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position, enemy_base
 from .spending import (first_day_boss_phase, first_day_boss_staging, plan_day_spending, robot_purchase_plan,
-                       prepare_paid_upgrades, prepare_defense_purchase)
+                       prepare_paid_upgrades, prepare_defense_purchase, FIRST_DAY_ROBOT_PURCHASE_LIMIT,
+                       heal_station_with_pioneer, prepare_station_reserve)
 from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scout,
                        prepare_first_day_wall_blocker, yield_wall_entry)
 from .task_schedule import task_options, switch_task_option
@@ -56,12 +57,34 @@ def observe_robot_summons(turn, mem):
         state = {"day": turn.day, "count": 0, "positions": set(),
                  "pending": None, "observed_round": -1, "buyer": None}
         mem.robot_summon_state = state
+    # Purchases remain counted after an order is used or its carrier dies.
+    # Seed existing stock when attaching to a game already in progress.
+    state.setdefault("purchased", state["count"] + sum(
+        item in SUMMON_ORDERS for role in turn.raw.get("teamOur", {}).get("roles", [])
+        for item in role.get("backpack") or []))
+    state.setdefault("pending_purchase", None)
+    state.setdefault("station_purchased", False)
+    state.setdefault("station_pending", None)
     if state["observed_round"] == turn.round:
         return state
+    results = turn.raw.get("lastRoundRoleActionResults") or {}
+    purchase = state["pending_purchase"]
+    if purchase and purchase[0] < turn.round:
+        previous_round, actor, quantity = purchase
+        if (previous_round == turn.round - 1
+                and results.get(str(actor), results.get(actor)) is False):
+            state["purchased"] -= quantity
+        state["pending_purchase"] = None
+    station_purchase = state["station_pending"]
+    if station_purchase and station_purchase[0] < turn.round:
+        previous_round, actor = station_purchase
+        if (previous_round == turn.round - 1
+                and results.get(str(actor), results.get(actor)) is False):
+            state["station_purchased"] = False
+        state["station_pending"] = None
     pending = state["pending"]
     if pending and pending[0] < turn.round:
         previous_round, actor, position = pending
-        results = turn.raw.get("lastRoundRoleActionResults") or {}
         if (previous_round == turn.round - 1
                 and results.get(str(actor), results.get(actor)) is False):
             state["count"] -= 1
@@ -139,6 +162,12 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     if state["pending"] and state["pending"][0] == turn.round:
         held = max(0, held - 1)
     remaining = DAILY_SUMMON_LIMIT - state["count"] - held
+    if turn.day == 1:
+        remaining = min(remaining, FIRST_DAY_ROBOT_PURCHASE_LIMIT - state["purchased"])
+        if remaining <= 0:
+            state["buyer"] = None
+            ledger.spending_plan['robot_blocked'] = 'first_day_purchase_limit'
+            return False
     if remaining <= 0:
         ledger.spending_plan['robot_blocked'] = 'daily_summon_capacity'
         return False
@@ -207,6 +236,9 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
             ledger.gold -= price * quantity
             ledger.purchases.add(name)
             ledger.remember_work(hero, 'robot_buy', shop, name=name, quantity=quantity)
+        else:
+            state["purchased"] += quantity
+            state["pending_purchase"] = turn.round, hero.id, quantity
         state["buyer"] = hero.id
         ledger.spending_plan.pop('robot_blocked', None)
         ledger.explain(hero.id, "stage_robot_buyer" if stage_only else "prepare_highest_robot", item=name,
@@ -371,6 +403,9 @@ class Agent:
         budget_reached = False
         gate_guard = None
         try:
+            # A paid base heal takes the pioneer before task or gun allocation,
+            # including at night and on the final daylight turn.
+            heal_station_with_pioneer(turn, mem, nav, ledger)
             if turn.is_day:
                 scout = prepare_first_day_wall_blocker(
                     turn, mem.night_scout, nav, ledger,
@@ -394,6 +429,7 @@ class Agent:
                 summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
                                   reserve=opening_reserve, stage_only=opening_stage,
                                   excluded=builders if opening_stage else ())
+                prepare_station_reserve(turn, self.cfg, mem, nav, ledger, opening_reserve)
                 if opening_stage:
                     # Protect the construction action as well as its gold.
                     # Otherwise dusk scouting can take the remaining builder.
@@ -668,6 +704,7 @@ class Agent:
                     priority_gold = prepare_defense_purchase(turn, mem, ledger, priority_gold)
                     summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
                                       excluded=returning | priority_actors, reserve=priority_gold)
+                    prepare_station_reserve(turn, self.cfg, mem, nav, ledger, priority_gold)
                 dusk_resources(turn, self.cfg, mem, nav, ledger, towers)
                 if not staged_scout:
                     staged_scout = prepare_night_scout(
