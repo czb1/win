@@ -280,3 +280,9 @@ LLM 由判题器通过响应中的 `prompt` 调用，程序本身不需要 API K
 
 
 日志加密实现没有独立安全审计，Python 整数运算不保证恒定时间；私钥解密仅用于本地离线工具，不作为对外网络服务。加密核心修改后运行 `python tools/sync_log_crypto.py` 同步单文件提取器，快速测试会核对内嵌代码与核心完全一致。
+
+### 首夜机器人屏障实验分支
+
+本分支 `experiment/day-one-robot-screen` 默认在第一天（含首夜）启用无墙、无炮实验：按预算采购最多8个小机器人，夜间根据公共机器人位置动态拦截到基地四格的攻击线。先购买至少4个小机器人后，有余钱时买一张基地一级升级券；本实验不购买进攻机器人。第二天恢复原策略，暂不用于验证整场无墙生存。
+
+`bash run.sh 8080` 或比赛 `callback` 无需额外参数。显式配置时设置 `"robot_screen_experiment": true`（`config/default.json` 已开启）；设为 false 恢复原调度。关注 `robot_screen_budget`、`robot_screen` 和 `base_damage` 日志。屏障判断基于机器人能挡攻击的实验前提，不能用离线检查通过代替比赛引擎的实际伤害验证。

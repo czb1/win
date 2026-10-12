@@ -32,6 +32,7 @@ from .spending import (first_day_boss_phase, first_day_boss_staging, plan_day_sp
 from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scout,
                        prepare_first_day_wall_blocker, yield_wall_entry)
 from .task_schedule import task_options
+from .robot_screen import run_experiment
 
 LOG = logging.getLogger(__name__)
 
@@ -399,7 +400,8 @@ class Agent:
             LOG.warning("round=%s base_damage=%s health=%s", turn.round,
                         mem.station_health - turn.station.health, turn.station.health)
         mem.station_health = turn.station.health if turn.station else None
-        towers, walls = layout(turn, self.cfg)
+        screen_experiment = self.cfg.robot_screen_experiment and turn.day == 1
+        towers, walls = ([], []) if screen_experiment else layout(turn, self.cfg)
         if getattr(turn, "weapon_layout", None):
             emit_event("weapon_layout", turn.weapon_layout, "decision")
         ledger = Ledger(turn, self.cfg, towers, walls)
@@ -415,358 +417,361 @@ class Agent:
         budget_reached = False
         gate_guard = None
         try:
-            if not hasattr(mem, "robot_assault"):
-                mem.robot_assault = RobotAssaultMemory()
-            # A paid base heal takes the pioneer before task or gun allocation,
-            # including at night and on the final daylight turn.
-            heal_station_with_pioneer(turn, mem, nav, ledger)
-            # Do not send either worker scouting while the opening guns still
-            # need construction. A spare worker may stage at the shop instead.
-            opening_scout_excluded = ({w.id for w in turn.workers}
-                if turn.day == 1 and not first_day_boss_phase(turn, self.cfg) else set())
-            if turn.is_day:
-                # Share current/remembered weapon occupancy before selecting
-                # the wall blocker and this day's summon positions.
-                act_robots(turn, mem.robot_assault, nav, ledger)
-                scout = prepare_first_day_wall_blocker(
-                    turn, mem.night_scout, nav, ledger,
-                    excluded=opening_scout_excluded | ({mem.gatling_operator_id}
-                        if mem.gatling_operator_id is not None else set()),
-                    jobs=mem.daytime_jobs)
+            if screen_experiment:
+                prompt, execute = run_experiment(turn, self.cfg, mem, nav, ledger, intel, summons)
             else:
-                scout = yield_wall_entry(turn, mem.night_scout, nav, ledger)
-            if scout and turn.is_day:
-                mem.daytime_jobs.pop(scout.id, None)
-                ledger.work_jobs.pop(scout.id, None)
-            base = enemy_base(turn)
-            if turn.day == 1 and base and mem.night_scout.key == (turn.day, base.id, base.pos):
-                ledger.robot_assault_entry = mem.night_scout.wall_entry
-            # Opening offense gets an action before ordinary job continuation,
-            # recall, or voucher budgets can take every available buyer.
-            opening_stage = first_day_boss_staging(turn, self.cfg)
-            opening_boss = (turn.is_day and turn.tick < DEFENCE_RETURN_TICK
-                            and (first_day_boss_phase(turn, self.cfg) or opening_stage))
-            if opening_boss:
-                builders, opening_reserve = plan_day_spending(turn, self.cfg, mem, nav, ledger, towers)
-                summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
-                                  reserve=opening_reserve, stage_only=opening_stage,
-                                  excluded=builders if opening_stage else ())
-                prepare_station_reserve(turn, self.cfg, mem, nav, ledger, opening_reserve)
-                if opening_stage:
-                    # Protect the construction action as well as its gold.
-                    # Otherwise dusk scouting can take the remaining builder.
-                    for worker in turn.workers:
-                        if worker.id in builders and worker.id not in ledger.used:
-                            build(turn, self.cfg, mem, nav, ledger, worker, towers,
-                                  lambda i: self.cfg.loadout[i % len(self.cfg.loadout)])
-            gate_guard = prepare_gate_guard(turn, self.cfg, mem, nav, ledger, towers, walls)
-            nav.gate_guard = gate_guard
-            act_imps(turn, mem.sabotage, nav, ledger)
-            if not turn.is_day:
-                act_robots(turn, mem.robot_assault, nav, ledger)
-            h = turn.pioneer
-            within_timeout = bool(h and turn.phase_task and turn.round - mem.task_started <
-                                  min(mem.task_timeout, self.cfg.task_max_rounds))
-            home = [w.cells for w in turn.weapons] or ([turn.station.cells] if turn.station else [])
-            task_return = min((route[0] for cells in home
-                               if (route := nav.approach(h, cells)) is not None), default=130) if within_timeout else 0
-            danger = bool(h and any(turn.threatens_us(r) and (
-                turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius,
-                                                 task_return + self.cfg.return_margin + r.attack_range)
-                or distance(h.pos, r.pos) <= max(self.cfg.task_danger_radius, r.attack_range + 2))
-                for r in turn.robots))
-            # Every day shares one task/recall/wall cutoff, independent of
-            # the operator's distance or the general logistics margin.
-            defence_return_due = turn.is_day and bool(home) and turn.tick >= DEFENCE_RETURN_TICK
-            first_watch = turn.day == 1 and defence_return_due
-            hold_task = within_timeout and not danger and not defence_return_due and not mem.stop_reason
-            if turn.phase_task or mem.log_task_id:
-                emit_event("task_schedule", {"active": bool(turn.phase_task), "within_timeout": within_timeout,
-                           "return_steps": task_return, "return_margin": self.cfg.return_margin,
-                           "day_left": turn.day_left, "danger": danger, "first_watch": first_watch,
-                           "defence_return_due": defence_return_due, "return_tick": DEFENCE_RETURN_TICK,
-                           "hold_task": hold_task, "stop_reason": mem.stop_reason}, "evolution")
-            if not turn.is_day:
-                emergency_items(turn, ledger)
-            mixed = (self.cfg.loadout.count("rocket") == 2 and self.cfg.loadout.count("gatling") == 1
-                     and (any(w.kind == "gatling" for w in turn.weapons)
-                          or mem.gatling_operator_id is not None))
-            if not turn.is_day and mixed:
-                # Establish the existing gunner before choosing a new scout.
-                # Prefer releasing the other worker's watch over this operator.
-                fixed_gatling_crew(turn, mem, nav, ledger)
-            scout = scout or act_night_scout(turn, mem.night_scout, nav, ledger,
-                                    home_roles=(mem.gatling_operator_id, mem.wall_watch_id))
-            pioneer_gunner = bool(h and turn.weapons and (not turn.is_day or not hold_task))
-            if not turn.is_day and pioneer_gunner:
-                hold_task = False
-                if turn.phase_task and not mem.stop_reason:
-                    mem.stop_reason = "defence_threat" if danger else "night_role"
-                    LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
-            excluded = ({h.id} if h and hold_task else set())
-            if scout:
-                excluded.add(scout.id)
-            alive = {hero.id for hero in turn.heroes}
-            mem.operator_yields = {uid: state for uid, state in mem.operator_yields.items()
-                                  if not turn.is_day and uid in alive and state["until"] >= turn.round}
-            unavailable = {uid: {state["gate"]} for uid, state in mem.operator_yields.items()}
-            if pioneer_gunner and not mixed:
-                excluded.update(worker.id for worker in turn.workers)
-            mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items() if uid not in excluded}
-            mem.return_posts = {uid: post for uid, post in mem.return_posts.items() if uid not in excluded}
-            shared = shared_crew(turn, self.cfg, mem, nav, towers, walls, excluded=excluded)
-            if mixed:
-                gatling_pairs = fixed_gatling_crew(turn, mem, nav, ledger,
-                                                  excluded={scout.id} if scout else ())
-            if shared is not None:
-                pairs, posts = shared
-                if mixed:
-                    # Use a separate worker/post, keeping the pioneer's common
-                    # control cell and the other worker available for wall watch.
-                    original = turn.blocked
-                    try:
-                        # Posts are future destinations; friendly congestion
-                        # must not swap the two workers' night responsibilities.
-                        turn.blocked = original - {h.pos for h in turn.heroes}
-                        gatling_posts = operator_posts(turn, nav, gatling_pairs,
-                            walls + ([mem.gunner_post] if mem.gunner_post else []), mem.return_posts,
-                            unavailable=unavailable, gates=wall_gates(turn, walls),
-                            reports=ledger.operator_post_reports)
-                    finally:
-                        turn.blocked = original
-                    if gatling_pairs and not gatling_posts and gatling_pairs[0][0].id in mem.operator_yields:
-                        actor = gatling_pairs[0][0]
-                        gatling_posts = {actor.id: (actor.pos, 0)}
-                    pairs += gatling_pairs
-                    posts.update(gatling_posts)
-                # Release stale assignments while preserving both active posts.
-                crew_ids = {hero.id for hero, _ in pairs}
-                mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items()
-                                      if uid in crew_ids}
-                mem.return_posts = {uid: p for uid, p in mem.return_posts.items()
-                                    if uid in crew_ids}
-            else:
-                if mixed:
-                    pairs = assignments(turn, nav, ledger,
-                        excluded={worker.id for worker in turn.workers} | excluded,
-                        towers=sorted((w for w in turn.weapons if w.kind == "rocket"),
-                                      key=lambda w: (bool(w.cooldown), w.id)))
-                    pairs += gatling_pairs
-                else:
-                    pairs = assignments(turn, nav, ledger, excluded=excluded,
-                                        fixed=mem.return_targets if turn.is_day else None)
-                fixed = ({hero.id: weapon.id for hero, weapon in pairs} if mixed else mem.return_targets)
-                pairs, posts = (return_plan(turn, nav, pairs, walls, fixed, mem.return_posts)
-                                if turn.is_day else (pairs, operator_posts(turn, nav, pairs, walls,
-                                    mem.return_posts, unavailable=unavailable,
-                                    reports=ledger.operator_post_reports)))
-                if not posts and mem.operator_yields:
-                    posts = {hero.id: (hero.pos, 0) for hero, _ in pairs if hero.id in mem.operator_yields}
-            if not turn.is_day:
-                # Recall from the current position early enough for an approaching
-                # wave, but release workers immediately when local danger ends.
-                def needs_defence(hero, tower):
-                    if hero.kind != "worker":
-                        return True
-                    route = (nav.search(hero, {posts[hero.id][0]}) if hero.id in posts
-                             else nav.approach(hero, [tower.pos]))
-                    lead = (route[0] if route else 130) + self.cfg.return_margin
-                    return any(turn.threatens_us(r) and (
-                        turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius, lead + r.attack_range)
-                        or distance(tower.pos, r.pos) <= tower.attack_range + 1)
-                        or distance(hero.pos, r.pos) <= r.attack_range + 2 for r in turn.robots)
-                pairs = [(hero, tower) for hero, tower in pairs
-                         if (shared is not None and tower.kind == "rocket")
-                         or hero.id in mem.operator_yields or needs_defence(hero, tower)]
-                posts = {uid: p for uid, p in posts.items() if uid in {hero.id for hero, _ in pairs}}
-                mem.return_targets.clear()
-                mem.return_posts.clear()
-            # A released gatling operator goes mining, rather than inheriting
-            # the other worker's wall-watch role when the local wave clears.
-            watcher = select_watch(turn, mem, pairs + gatling_pairs,
-                                   fixed_operator=mem.gatling_operator_id if mixed else None,
-                                   excluded={scout.id} if scout else ())
-            ledger.return_pairs = pairs
-            ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
-            for actor, weapon in pairs:
-                current = ledger.operator_post_reports.get((actor.id, weapon.id, actor.pos))
-                if current:
-                    ledger.weapon_diagnostics[weapon.id] = current.copy()
-            if turn.is_day:
-                ledger.daytime_gunner_post = mem.gunner_post if shared is not None else None
-            returning = set()
-            for hero, tower in pairs:
-                route = (nav.search(hero, {posts[hero.id][0]}, ledger.reserved) if hero.id in posts
-                         else nav.approach(hero, [tower.pos], ledger.reserved))
-                # Include today's congestion, not only the route with teammates
-                # removed. A blocked post needs time for its gatekeeper to yield.
-                if route is None and hero.id not in posts:
-                    continue
-                length = route[0] if route else posts[hero.id][1] + self.cfg.return_margin
-                if hero.id in mem.return_targets or not turn.is_day or defence_return_due:
-                    ledger.plans[hero.id] = {"reason": "defence_recall", "return_steps": length,
-                                            "return_margin": self.cfg.return_margin, "day_left": turn.day_left,
-                                            "return_tick": DEFENCE_RETURN_TICK,
-                                            "post": posts.get(hero.id), "tower": tower.id}
-                    if hero.id in posts:
-                        evaluation = ledger.operator_post_reports.get((hero.id, tower.id, posts[hero.id][0]))
-                        if evaluation:
-                            ledger.plans[hero.id]["post_targeting"] = evaluation
-                    returning.add(hero.id)
-                    mem.return_targets[hero.id] = tower.id
-                    if hero.id in posts:
-                        mem.return_posts[hero.id] = posts[hero.id][0]
-                    LOG.debug("round=%s worker_or_pioneer=%s return_to_tower=%s steps=%s day_left=%s",
-                              turn.round, hero.id, tower.id, length, turn.day_left)
-            # A nearby worker can block a distant operator's only entrance long
-            # before its own return deadline. Recall that helper now, so it can
-            # move to its assigned post or yield instead of idling in the gate.
-            if turn.is_day and posts and returning:
-                for hero, _ in pairs:
-                    if hero.id not in returning or nav.search(hero, {posts[hero.id][0]}) is not None:
-                        continue
-                    helpers = [(h, w) for h, w in pairs if h.id not in returning]
-                    original = turn.blocked
-                    try:
-                        turn.blocked = original - {h.pos for h, _ in helpers}
-                        can_clear = nav.search(hero, {posts[hero.id][0]}) is not None
-                    finally:
-                        turn.blocked = original
-                    if can_clear:
-                        for helper, weapon in helpers:
-                            returning.add(helper.id)
-                            mem.return_targets[helper.id] = weapon.id
-                            mem.return_posts[helper.id] = posts[helper.id][0]
-            if h and turn.phase_task and not (not turn.is_day and pioneer_gunner):
-                # Submit a ready answer before a return movement can cancel it.
-                # LLM/sandbox work holds the pioneer at the task point and gets
-                # its own chance before expensive worker connectivity searches.
-                if (within_timeout and not defence_return_due and h.id not in ledger.used
-                        and (mem.answer is not None or hold_task)):
-                    available = min(mem.task_timeout, self.cfg.task_max_rounds) - (turn.round - mem.task_started)
-                    if home:
-                        available = min(available, max(0, DEFENCE_RETURN_TICK - turn.tick))
-                    prompt, execute = intel.task(ledger, available_rounds=available)
-                if hold_task:
-                    ledger.used.add(h.id)
-                    if str(h.id) not in ledger.commands:
-                        ledger.explain(h.id, "task_work_pending", pending=mem.pending,
-                                       return_steps=task_return, day_left=turn.day_left,
-                                       return_margin=self.cfg.return_margin)
-                elif not mem.stop_reason:
-                    mem.stop_reason = ("defence_threat" if danger else
-                                       "first_wave_deadline" if first_watch else
-                                       "defence_return_deadline" if defence_return_due else "task_deadline")
-                    LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
-            if not turn.is_day:
-                yield_gate_operators(turn, nav, ledger, mem, walls, pairs)
-                if shared is not None:
-                    corridor = clear_gunner_route(turn, nav, ledger, mem, pairs)
-                    shared_defend(turn, nav, ledger, mem, pairs, towers,
-                                  siege_radius=self.cfg.task_danger_radius, corridor=corridor or ())
-                    ledger.reserved.update(corridor or ())
-                else:
-                    defend(turn, nav, ledger, pairs, ledger.operator_posts)
-                if shared is not None and mem.gunner_post:
-                    ledger.reserved.add(mem.gunner_post)
-                if not opening_boss:
-                    summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls)
-                for hero in turn.heroes:
-                    if watcher and hero.id == watcher.id and hero.id not in ledger.used:
-                        if hero.health <= 165 and hero.inventory["Medicine"]:
-                            use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem)
-                        else:
-                            repair_watch(turn, mem, nav, ledger, hero, walls)
-                        continue
-                    if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
-                        continue
-                    if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs}:
-                        if shared is not None and hero.pos == mem.gunner_post:
-                            vacate_site(turn, nav, ledger, hero, towers + walls + [mem.gunner_post])
-                        if hero.id in ledger.used:
-                            continue
-                        if hero.kind == "worker":
-                            night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=pioneer_gunner or shared is not None)
-                        elif turn.station:
-                            walk(nav, ledger, hero, turn.station.cells)
-            else:
-                income = reserve_income_worker(turn, mem, nav, ledger, returning)
-                if income:
-                    emit_event('income_reserve', dict(actor=income.id, day_left=turn.day_left), 'economy')
-                # Reserve the watcher's repair budget before other dusk buyers
-                # spend it. The watcher may sell its own ore first.
-                watch_locked, watch_gold = prepare_watch(turn, self.cfg, mem, nav, ledger, watcher, walls)
-                if watch_locked:
-                    returning.add(watcher.id)
-                    if watcher.id == ledger.income_worker_id:
-                        emit_event('income_preempted', dict(actor=watcher.id, reason='wall_watch'), 'economy')
-                        ledger.income_worker_id = None
-                ledger.gold -= min(watch_gold, ledger.gold)
-                scout_excluded = returning | ({watcher.id} if watcher else set()) | opening_scout_excluded
-                staged_scout = scout
-                enemy_station = enemy_base(turn)
-                if (not staged_scout and enemy_station and mem.night_scout.worker_id is not None
-                        and mem.night_scout.key == (turn.day, enemy_station.id, enemy_station.pos)):
-                    staged_scout = prepare_night_scout(
+                if not hasattr(mem, "robot_assault"):
+                    mem.robot_assault = RobotAssaultMemory()
+                # A paid base heal takes the pioneer before task or gun allocation,
+                # including at night and on the final daylight turn.
+                heal_station_with_pioneer(turn, mem, nav, ledger)
+                # Do not send either worker scouting while the opening guns still
+                # need construction. A spare worker may stage at the shop instead.
+                opening_scout_excluded = ({w.id for w in turn.workers}
+                    if turn.day == 1 and not first_day_boss_phase(turn, self.cfg) else set())
+                if turn.is_day:
+                    # Share current/remembered weapon occupancy before selecting
+                    # the wall blocker and this day's summon positions.
+                    act_robots(turn, mem.robot_assault, nav, ledger)
+                    scout = prepare_first_day_wall_blocker(
                         turn, mem.night_scout, nav, ledger,
-                        excluded=scout_excluded, jobs=mem.daytime_jobs)
-                first_day_front(turn, self.cfg, mem, nav, ledger, walls, returning)
-                resume_daytime_jobs(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
-                if not opening_boss:
-                    priority_actors, priority_gold = plan_day_spending(
-                        turn, self.cfg, mem, nav, ledger, towers, returning)
-                    priority_gold = prepare_defense_purchase(turn, mem, ledger, priority_gold)
+                        excluded=opening_scout_excluded | ({mem.gatling_operator_id}
+                            if mem.gatling_operator_id is not None else set()),
+                        jobs=mem.daytime_jobs)
+                else:
+                    scout = yield_wall_entry(turn, mem.night_scout, nav, ledger)
+                if scout and turn.is_day:
+                    mem.daytime_jobs.pop(scout.id, None)
+                    ledger.work_jobs.pop(scout.id, None)
+                base = enemy_base(turn)
+                if turn.day == 1 and base and mem.night_scout.key == (turn.day, base.id, base.pos):
+                    ledger.robot_assault_entry = mem.night_scout.wall_entry
+                # Opening offense gets an action before ordinary job continuation,
+                # recall, or voucher budgets can take every available buyer.
+                opening_stage = first_day_boss_staging(turn, self.cfg)
+                opening_boss = (turn.is_day and turn.tick < DEFENCE_RETURN_TICK
+                                and (first_day_boss_phase(turn, self.cfg) or opening_stage))
+                if opening_boss:
+                    builders, opening_reserve = plan_day_spending(turn, self.cfg, mem, nav, ledger, towers)
                     summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
-                                      excluded=returning | priority_actors, reserve=priority_gold)
-                    prepare_station_reserve(turn, self.cfg, mem, nav, ledger, priority_gold)
-                dusk_resources(turn, self.cfg, mem, nav, ledger, towers)
-                if not staged_scout:
-                    staged_scout = prepare_night_scout(
-                        turn, mem.night_scout, nav, ledger,
-                        excluded=scout_excluded, jobs=mem.daytime_jobs)
-                if staged_scout:
-                    mem.daytime_jobs.pop(staged_scout.id, None)
-                    ledger.work_jobs.pop(staged_scout.id, None)
-                for hero, tower in pairs:
-                    if hero.id in returning and hero.id not in ledger.used:
-                        finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)
-                corridor = (clear_gunner_route(turn, nav, ledger, mem, pairs)
-                            if shared is not None and mem.gunner_id in returning else None)
-                defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning], ledger.operator_posts)
-                ledger.reserved.update(corridor or ())
-                if not turn.phase_task:
-                    mem.recovery.resume(turn, self.cfg, mem, nav, ledger, returning)
-                    mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning, loops_only=True)
-                treasure_reserve = (reserve_treasure_gold(turn, self.cfg, mem, nav, ledger, h)
-                                    if turn.day > 1 and h and h.id not in ledger.used
-                                    and h.id not in returning and not danger else 0)
-                ledger.gold -= treasure_reserve
-                try:
-                    workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
-                finally:
-                    ledger.gold += treasure_reserve
-                mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning)
-                if shared is not None and mem.gunner_post:
-                    for idle in turn.workers:
-                        if idle.id != mem.gunner_id and idle.id not in ledger.used:
-                            vacate_site(turn, nav, ledger, idle, towers + walls + [mem.gunner_post])
-                if h and h.id not in ledger.used and h.id not in returning:
-                    if turn.phase_task:
-                        if not hold_task and turn.station:
-                            walk(nav, ledger, h, turn.station.cells)
+                                      reserve=opening_reserve, stage_only=opening_stage,
+                                      excluded=builders if opening_stage else ())
+                    prepare_station_reserve(turn, self.cfg, mem, nav, ledger, opening_reserve)
+                    if opening_stage:
+                        # Protect the construction action as well as its gold.
+                        # Otherwise dusk scouting can take the remaining builder.
+                        for worker in turn.workers:
+                            if worker.id in builders and worker.id not in ledger.used:
+                                build(turn, self.cfg, mem, nav, ledger, worker, towers,
+                                      lambda i: self.cfg.loadout[i % len(self.cfg.loadout)])
+                gate_guard = prepare_gate_guard(turn, self.cfg, mem, nav, ledger, towers, walls)
+                nav.gate_guard = gate_guard
+                act_imps(turn, mem.sabotage, nav, ledger)
+                if not turn.is_day:
+                    act_robots(turn, mem.robot_assault, nav, ledger)
+                h = turn.pioneer
+                within_timeout = bool(h and turn.phase_task and turn.round - mem.task_started <
+                                      min(mem.task_timeout, self.cfg.task_max_rounds))
+                home = [w.cells for w in turn.weapons] or ([turn.station.cells] if turn.station else [])
+                task_return = min((route[0] for cells in home
+                                   if (route := nav.approach(h, cells)) is not None), default=130) if within_timeout else 0
+                danger = bool(h and any(turn.threatens_us(r) and (
+                    turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius,
+                                                     task_return + self.cfg.return_margin + r.attack_range)
+                    or distance(h.pos, r.pos) <= max(self.cfg.task_danger_radius, r.attack_range + 2))
+                    for r in turn.robots))
+                # Every day shares one task/recall/wall cutoff, independent of
+                # the operator's distance or the general logistics margin.
+                defence_return_due = turn.is_day and bool(home) and turn.tick >= DEFENCE_RETURN_TICK
+                first_watch = turn.day == 1 and defence_return_due
+                hold_task = within_timeout and not danger and not defence_return_due and not mem.stop_reason
+                if turn.phase_task or mem.log_task_id:
+                    emit_event("task_schedule", {"active": bool(turn.phase_task), "within_timeout": within_timeout,
+                               "return_steps": task_return, "return_margin": self.cfg.return_margin,
+                               "day_left": turn.day_left, "danger": danger, "first_watch": first_watch,
+                               "defence_return_due": defence_return_due, "return_tick": DEFENCE_RETURN_TICK,
+                               "hold_task": hold_task, "stop_reason": mem.stop_reason}, "evolution")
+                if not turn.is_day:
+                    emergency_items(turn, ledger)
+                mixed = (self.cfg.loadout.count("rocket") == 2 and self.cfg.loadout.count("gatling") == 1
+                         and (any(w.kind == "gatling" for w in turn.weapons)
+                              or mem.gatling_operator_id is not None))
+                if not turn.is_day and mixed:
+                    # Establish the existing gunner before choosing a new scout.
+                    # Prefer releasing the other worker's watch over this operator.
+                    fixed_gatling_crew(turn, mem, nav, ledger)
+                scout = scout or act_night_scout(turn, mem.night_scout, nav, ledger,
+                                        home_roles=(mem.gatling_operator_id, mem.wall_watch_id))
+                pioneer_gunner = bool(h and turn.weapons and (not turn.is_day or not hold_task))
+                if not turn.is_day and pioneer_gunner:
+                    hold_task = False
+                    if turn.phase_task and not mem.stop_reason:
+                        mem.stop_reason = "defence_threat" if danger else "night_role"
+                        LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
+                excluded = ({h.id} if h and hold_task else set())
+                if scout:
+                    excluded.add(scout.id)
+                alive = {hero.id for hero in turn.heroes}
+                mem.operator_yields = {uid: state for uid, state in mem.operator_yields.items()
+                                      if not turn.is_day and uid in alive and state["until"] >= turn.round}
+                unavailable = {uid: {state["gate"]} for uid, state in mem.operator_yields.items()}
+                if pioneer_gunner and not mixed:
+                    excluded.update(worker.id for worker in turn.workers)
+                mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items() if uid not in excluded}
+                mem.return_posts = {uid: post for uid, post in mem.return_posts.items() if uid not in excluded}
+                shared = shared_crew(turn, self.cfg, mem, nav, towers, walls, excluded=excluded)
+                if mixed:
+                    gatling_pairs = fixed_gatling_crew(turn, mem, nav, ledger,
+                                                      excluded={scout.id} if scout else ())
+                if shared is not None:
+                    pairs, posts = shared
+                    if mixed:
+                        # Use a separate worker/post, keeping the pioneer's common
+                        # control cell and the other worker available for wall watch.
+                        original = turn.blocked
+                        try:
+                            # Posts are future destinations; friendly congestion
+                            # must not swap the two workers' night responsibilities.
+                            turn.blocked = original - {h.pos for h in turn.heroes}
+                            gatling_posts = operator_posts(turn, nav, gatling_pairs,
+                                walls + ([mem.gunner_post] if mem.gunner_post else []), mem.return_posts,
+                                unavailable=unavailable, gates=wall_gates(turn, walls),
+                                reports=ledger.operator_post_reports)
+                        finally:
+                            turn.blocked = original
+                        if gatling_pairs and not gatling_posts and gatling_pairs[0][0].id in mem.operator_yields:
+                            actor = gatling_pairs[0][0]
+                            gatling_posts = {actor.id: (actor.pos, 0)}
+                        pairs += gatling_pairs
+                        posts.update(gatling_posts)
+                    # Release stale assignments while preserving both active posts.
+                    crew_ids = {hero.id for hero, _ in pairs}
+                    mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items()
+                                          if uid in crew_ids}
+                    mem.return_posts = {uid: p for uid, p in mem.return_posts.items()
+                                        if uid in crew_ids}
+                else:
+                    if mixed:
+                        pairs = assignments(turn, nav, ledger,
+                            excluded={worker.id for worker in turn.workers} | excluded,
+                            towers=sorted((w for w in turn.weapons if w.kind == "rocket"),
+                                          key=lambda w: (bool(w.cooldown), w.id)))
+                        pairs += gatling_pairs
                     else:
-                        pioneer(turn, self.cfg, mem, nav, ledger, h, shopping=turn.day > 1)
-                        if h.id not in ledger.used:
-                            park_idle_pioneer(turn, self.cfg, mem, nav, ledger, h)
-                yield_idle_worker_for_traffic(turn, mem, nav, ledger, returning)
-                finish_daytime_work(turn, self.cfg, mem, nav, ledger, returning)
-                emit_event('spending_plan', dict(ledger.spending_plan,
-                           gold_after_reservations=ledger.gold,
-                           purchased_items=sorted(ledger.purchases), supply_reports=ledger.supply_reports), 'economy')
-                if not prompt and not execute:
-                    prompt = intel.news()
-                    if not prompt:
-                        prompt = mem.recovery.prompt(intel)
+                        pairs = assignments(turn, nav, ledger, excluded=excluded,
+                                            fixed=mem.return_targets if turn.is_day else None)
+                    fixed = ({hero.id: weapon.id for hero, weapon in pairs} if mixed else mem.return_targets)
+                    pairs, posts = (return_plan(turn, nav, pairs, walls, fixed, mem.return_posts)
+                                    if turn.is_day else (pairs, operator_posts(turn, nav, pairs, walls,
+                                        mem.return_posts, unavailable=unavailable,
+                                        reports=ledger.operator_post_reports)))
+                    if not posts and mem.operator_yields:
+                        posts = {hero.id: (hero.pos, 0) for hero, _ in pairs if hero.id in mem.operator_yields}
+                if not turn.is_day:
+                    # Recall from the current position early enough for an approaching
+                    # wave, but release workers immediately when local danger ends.
+                    def needs_defence(hero, tower):
+                        if hero.kind != "worker":
+                            return True
+                        route = (nav.search(hero, {posts[hero.id][0]}) if hero.id in posts
+                                 else nav.approach(hero, [tower.pos]))
+                        lead = (route[0] if route else 130) + self.cfg.return_margin
+                        return any(turn.threatens_us(r) and (
+                            turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius, lead + r.attack_range)
+                            or distance(tower.pos, r.pos) <= tower.attack_range + 1)
+                            or distance(hero.pos, r.pos) <= r.attack_range + 2 for r in turn.robots)
+                    pairs = [(hero, tower) for hero, tower in pairs
+                             if (shared is not None and tower.kind == "rocket")
+                             or hero.id in mem.operator_yields or needs_defence(hero, tower)]
+                    posts = {uid: p for uid, p in posts.items() if uid in {hero.id for hero, _ in pairs}}
+                    mem.return_targets.clear()
+                    mem.return_posts.clear()
+                # A released gatling operator goes mining, rather than inheriting
+                # the other worker's wall-watch role when the local wave clears.
+                watcher = select_watch(turn, mem, pairs + gatling_pairs,
+                                       fixed_operator=mem.gatling_operator_id if mixed else None,
+                                       excluded={scout.id} if scout else ())
+                ledger.return_pairs = pairs
+                ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
+                for actor, weapon in pairs:
+                    current = ledger.operator_post_reports.get((actor.id, weapon.id, actor.pos))
+                    if current:
+                        ledger.weapon_diagnostics[weapon.id] = current.copy()
+                if turn.is_day:
+                    ledger.daytime_gunner_post = mem.gunner_post if shared is not None else None
+                returning = set()
+                for hero, tower in pairs:
+                    route = (nav.search(hero, {posts[hero.id][0]}, ledger.reserved) if hero.id in posts
+                             else nav.approach(hero, [tower.pos], ledger.reserved))
+                    # Include today's congestion, not only the route with teammates
+                    # removed. A blocked post needs time for its gatekeeper to yield.
+                    if route is None and hero.id not in posts:
+                        continue
+                    length = route[0] if route else posts[hero.id][1] + self.cfg.return_margin
+                    if hero.id in mem.return_targets or not turn.is_day or defence_return_due:
+                        ledger.plans[hero.id] = {"reason": "defence_recall", "return_steps": length,
+                                                "return_margin": self.cfg.return_margin, "day_left": turn.day_left,
+                                                "return_tick": DEFENCE_RETURN_TICK,
+                                                "post": posts.get(hero.id), "tower": tower.id}
+                        if hero.id in posts:
+                            evaluation = ledger.operator_post_reports.get((hero.id, tower.id, posts[hero.id][0]))
+                            if evaluation:
+                                ledger.plans[hero.id]["post_targeting"] = evaluation
+                        returning.add(hero.id)
+                        mem.return_targets[hero.id] = tower.id
+                        if hero.id in posts:
+                            mem.return_posts[hero.id] = posts[hero.id][0]
+                        LOG.debug("round=%s worker_or_pioneer=%s return_to_tower=%s steps=%s day_left=%s",
+                                  turn.round, hero.id, tower.id, length, turn.day_left)
+                # A nearby worker can block a distant operator's only entrance long
+                # before its own return deadline. Recall that helper now, so it can
+                # move to its assigned post or yield instead of idling in the gate.
+                if turn.is_day and posts and returning:
+                    for hero, _ in pairs:
+                        if hero.id not in returning or nav.search(hero, {posts[hero.id][0]}) is not None:
+                            continue
+                        helpers = [(h, w) for h, w in pairs if h.id not in returning]
+                        original = turn.blocked
+                        try:
+                            turn.blocked = original - {h.pos for h, _ in helpers}
+                            can_clear = nav.search(hero, {posts[hero.id][0]}) is not None
+                        finally:
+                            turn.blocked = original
+                        if can_clear:
+                            for helper, weapon in helpers:
+                                returning.add(helper.id)
+                                mem.return_targets[helper.id] = weapon.id
+                                mem.return_posts[helper.id] = posts[helper.id][0]
+                if h and turn.phase_task and not (not turn.is_day and pioneer_gunner):
+                    # Submit a ready answer before a return movement can cancel it.
+                    # LLM/sandbox work holds the pioneer at the task point and gets
+                    # its own chance before expensive worker connectivity searches.
+                    if (within_timeout and not defence_return_due and h.id not in ledger.used
+                            and (mem.answer is not None or hold_task)):
+                        available = min(mem.task_timeout, self.cfg.task_max_rounds) - (turn.round - mem.task_started)
+                        if home:
+                            available = min(available, max(0, DEFENCE_RETURN_TICK - turn.tick))
+                        prompt, execute = intel.task(ledger, available_rounds=available)
+                    if hold_task:
+                        ledger.used.add(h.id)
+                        if str(h.id) not in ledger.commands:
+                            ledger.explain(h.id, "task_work_pending", pending=mem.pending,
+                                           return_steps=task_return, day_left=turn.day_left,
+                                           return_margin=self.cfg.return_margin)
+                    elif not mem.stop_reason:
+                        mem.stop_reason = ("defence_threat" if danger else
+                                           "first_wave_deadline" if first_watch else
+                                           "defence_return_deadline" if defence_return_due else "task_deadline")
+                        LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
+                if not turn.is_day:
+                    yield_gate_operators(turn, nav, ledger, mem, walls, pairs)
+                    if shared is not None:
+                        corridor = clear_gunner_route(turn, nav, ledger, mem, pairs)
+                        shared_defend(turn, nav, ledger, mem, pairs, towers,
+                                      siege_radius=self.cfg.task_danger_radius, corridor=corridor or ())
+                        ledger.reserved.update(corridor or ())
+                    else:
+                        defend(turn, nav, ledger, pairs, ledger.operator_posts)
+                    if shared is not None and mem.gunner_post:
+                        ledger.reserved.add(mem.gunner_post)
+                    if not opening_boss:
+                        summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls)
+                    for hero in turn.heroes:
+                        if watcher and hero.id == watcher.id and hero.id not in ledger.used:
+                            if hero.health <= 165 and hero.inventory["Medicine"]:
+                                use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem)
+                            else:
+                                repair_watch(turn, mem, nav, ledger, hero, walls)
+                            continue
+                        if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
+                            continue
+                        if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs}:
+                            if shared is not None and hero.pos == mem.gunner_post:
+                                vacate_site(turn, nav, ledger, hero, towers + walls + [mem.gunner_post])
+                            if hero.id in ledger.used:
+                                continue
+                            if hero.kind == "worker":
+                                night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=pioneer_gunner or shared is not None)
+                            elif turn.station:
+                                walk(nav, ledger, hero, turn.station.cells)
+                else:
+                    income = reserve_income_worker(turn, mem, nav, ledger, returning)
+                    if income:
+                        emit_event('income_reserve', dict(actor=income.id, day_left=turn.day_left), 'economy')
+                    # Reserve the watcher's repair budget before other dusk buyers
+                    # spend it. The watcher may sell its own ore first.
+                    watch_locked, watch_gold = prepare_watch(turn, self.cfg, mem, nav, ledger, watcher, walls)
+                    if watch_locked:
+                        returning.add(watcher.id)
+                        if watcher.id == ledger.income_worker_id:
+                            emit_event('income_preempted', dict(actor=watcher.id, reason='wall_watch'), 'economy')
+                            ledger.income_worker_id = None
+                    ledger.gold -= min(watch_gold, ledger.gold)
+                    scout_excluded = returning | ({watcher.id} if watcher else set()) | opening_scout_excluded
+                    staged_scout = scout
+                    enemy_station = enemy_base(turn)
+                    if (not staged_scout and enemy_station and mem.night_scout.worker_id is not None
+                            and mem.night_scout.key == (turn.day, enemy_station.id, enemy_station.pos)):
+                        staged_scout = prepare_night_scout(
+                            turn, mem.night_scout, nav, ledger,
+                            excluded=scout_excluded, jobs=mem.daytime_jobs)
+                    first_day_front(turn, self.cfg, mem, nav, ledger, walls, returning)
+                    resume_daytime_jobs(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
+                    if not opening_boss:
+                        priority_actors, priority_gold = plan_day_spending(
+                            turn, self.cfg, mem, nav, ledger, towers, returning)
+                        priority_gold = prepare_defense_purchase(turn, mem, ledger, priority_gold)
+                        summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
+                                          excluded=returning | priority_actors, reserve=priority_gold)
+                        prepare_station_reserve(turn, self.cfg, mem, nav, ledger, priority_gold)
+                    dusk_resources(turn, self.cfg, mem, nav, ledger, towers)
+                    if not staged_scout:
+                        staged_scout = prepare_night_scout(
+                            turn, mem.night_scout, nav, ledger,
+                            excluded=scout_excluded, jobs=mem.daytime_jobs)
+                    if staged_scout:
+                        mem.daytime_jobs.pop(staged_scout.id, None)
+                        ledger.work_jobs.pop(staged_scout.id, None)
+                    for hero, tower in pairs:
+                        if hero.id in returning and hero.id not in ledger.used:
+                            finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)
+                    corridor = (clear_gunner_route(turn, nav, ledger, mem, pairs)
+                                if shared is not None and mem.gunner_id in returning else None)
+                    defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning], ledger.operator_posts)
+                    ledger.reserved.update(corridor or ())
+                    if not turn.phase_task:
+                        mem.recovery.resume(turn, self.cfg, mem, nav, ledger, returning)
+                        mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning, loops_only=True)
+                    treasure_reserve = (reserve_treasure_gold(turn, self.cfg, mem, nav, ledger, h)
+                                        if turn.day > 1 and h and h.id not in ledger.used
+                                        and h.id not in returning and not danger else 0)
+                    ledger.gold -= treasure_reserve
+                    try:
+                        workers(turn, self.cfg, mem, nav, ledger, towers, walls, returning)
+                    finally:
+                        ledger.gold += treasure_reserve
+                    mem.recovery.recover(turn, self.cfg, mem, nav, ledger, returning)
+                    if shared is not None and mem.gunner_post:
+                        for idle in turn.workers:
+                            if idle.id != mem.gunner_id and idle.id not in ledger.used:
+                                vacate_site(turn, nav, ledger, idle, towers + walls + [mem.gunner_post])
+                    if h and h.id not in ledger.used and h.id not in returning:
+                        if turn.phase_task:
+                            if not hold_task and turn.station:
+                                walk(nav, ledger, h, turn.station.cells)
+                        else:
+                            pioneer(turn, self.cfg, mem, nav, ledger, h, shopping=turn.day > 1)
+                            if h.id not in ledger.used:
+                                park_idle_pioneer(turn, self.cfg, mem, nav, ledger, h)
+                    yield_idle_worker_for_traffic(turn, mem, nav, ledger, returning)
+                    finish_daytime_work(turn, self.cfg, mem, nav, ledger, returning)
+                    emit_event('spending_plan', dict(ledger.spending_plan,
+                               gold_after_reservations=ledger.gold,
+                               purchased_items=sorted(ledger.purchases), supply_reports=ledger.supply_reports), 'economy')
+                    if not prompt and not execute:
+                        prompt = intel.news()
+                        if not prompt:
+                            prompt = mem.recovery.prompt(intel)
         except DeadlineExceeded:
             budget_reached = True
             emit_event("budget_reached", {"validated_actions": len(ledger.commands)}, "runtime", level=logging.WARNING)

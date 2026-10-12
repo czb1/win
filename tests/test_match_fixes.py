@@ -89,7 +89,10 @@ class WaveOwnershipTests(unittest.TestCase):
 class SuppliesTests(unittest.TestCase):
     def test_legacy_sdk_entry_uses_actual_agent(self):
         entry = runpy.run_path(str(ROOT / "SDK" / "main3.py"), run_name="_sdk_test")
-        response = entry["callback"](payload())
+        data = payload()
+        data["mapInfo"]["zones"] = [{"neutralType": "weaponShop", "pos": {"x": 1, "y": 10}}]
+        data["weaponShopList"] = [{"name": "SmallRobotSummonOrder", "price": 15}]
+        response = entry["callback"](data)
         self.assertEqual(set(response), {"roleCommandMap", "prompt", "executeCmd"})
         self.assertTrue(response["roleCommandMap"])
 

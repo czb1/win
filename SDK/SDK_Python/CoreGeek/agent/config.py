@@ -6,6 +6,8 @@ from pathlib import Path
 
 @dataclass
 class Config:
+    # Runtime entry enables this only on the isolated experimental branch.
+    robot_screen_experiment: bool = False
     round_origin: int = 0
     # These three defaults are inferred from the upstream demo, NOT verified rules.
     layout_mode: str = "demo_inferred"
@@ -51,6 +53,8 @@ class Config:
             raise ValueError("layout_mode must be demo_inferred or explicit")
         if cfg.projectile_origin not in ("weapon", "controller"):
             raise ValueError("projectile_origin must be weapon or controller")
+        if type(cfg.robot_screen_experiment) is not bool:
+            raise ValueError("robot_screen_experiment must be boolean")
         if type(cfg.projectile_characters_block) is not bool:
             raise ValueError("projectile_characters_block must be boolean")
         if not cfg.loadout or len(cfg.loadout) > 3 or any(

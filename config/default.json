@@ -1,4 +1,5 @@
 {
+  "robot_screen_experiment": true,
   "round_origin": 0,
   "layout_mode": "demo_inferred",
   "weapon_cost": 25,

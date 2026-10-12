@@ -12,10 +12,18 @@ from agent.server import serve
 _agent = None
 
 
+def competition_config(path=None):
+    cfg = Config.load(path)
+    if path is None:
+        cfg.robot_screen_experiment = True
+    return cfg
+
+
+
 def callback(json_data):
     global _agent
     if _agent is None:
-        _agent = Agent(Config.load(os.environ.get("FUTURE_WAR_CONFIG")))
+        _agent = Agent(competition_config(os.environ.get("FUTURE_WAR_CONFIG")))
     return _agent.decide(json_data)
 
 
@@ -35,7 +43,7 @@ def main():
         configure_logging(args.log_level, args.log_dir, args.log_public_key, args.plaintext_logs)
     except LogCryptoError:
         parser.exit(2, "日志加密公钥缺失或无效；请配置 --log-public-key，或仅本地调试时使用 --plaintext-logs。\n")
-    cfg = Config.load(args.config)
+    cfg = competition_config(args.config)
     if cfg.layout_mode == "demo_inferred":
         logging.warning("Build layout/costs inferred from demo; confirm image-only rules before competition.")
     try:
