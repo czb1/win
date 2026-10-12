@@ -189,14 +189,5 @@ def choose_task(options, mem):
 
 
 def switch_task_option(turn, cfg, mem, nav, ledger, hero):
-    """After the configured effort, leave only for a ready, feasible other task."""
-    if (not turn.phase_task or mem.task_point is None or not turn.is_day
-            or turn.tick >= DEFENCE_RETURN_TICK
-            or turn.round - mem.task_started <= cfg.task_switch_rounds
-            or mem.answer is not None or mem.submitted is not None
-            or mem.stop_reason not in ('', 'task_switch_budget')):
-        return None
-    options = task_options(turn, cfg, mem, nav, ledger, hero, switching=True)
-    options = [o for o in options if o['route'][1] is not None
-               and turn.tick + o['finish'] < DEFENCE_RETURN_TICK]
-    return min(options, key=lambda o: (-o['rate'], o['finish'], o['point']), default=None)
+    """Legacy compatibility: elapsed effort never cancels an active task."""
+    return None
