@@ -5,7 +5,7 @@ from dataclasses import replace
 from .commands import command
 from .economy import use_inventory
 from .mining import spare_mine, return_destination, sale_inventory
-from .model import neighbours
+from .model import distance, neighbours
 from .wall_watch import geometry
 
 LOG = logging.getLogger(__name__)
@@ -140,3 +140,56 @@ def finish_daytime_work(turn, cfg, mem, nav, ledger, returning):
                  'day_left=%s return_steps=%s packs=%s free_space=%s',
                  turn.round, hero.id, role, outcome, reason, turn.day_left,
                  back[0] if back else None, hero.inventory['WallFixer'], hero.space)
+
+
+def yield_idle_worker_for_traffic(turn, mem, nav, ledger, returning):
+    """Move an idle worker aside only when it demonstrably opens a route.
+
+    Recheck the occupied map before submitting the move. This is a one-turn
+    cooperative yield, not permission to walk through an occupied cell.
+    """
+    if not turn.is_day:
+        return
+    for blocker in turn.workers:
+        if (blocker.id in ledger.used or blocker.id in returning
+                or blocker.id == mem.wall_watch_id):
+            continue
+        for requester in turn.heroes:
+            if requester.id == blocker.id or str(requester.id) in ledger.commands:
+                continue
+            post = ledger.operator_posts.get(requester.id)
+            job = mem.daytime_jobs.get(requester.id, {})
+            target = job.get('target')
+            if (post is None and target is None
+                    or requester.id in ledger.used and post is None):
+                continue
+            goals = ({post} if post is not None else
+                     {p for p in neighbours(target)} - {target})
+            if nav.search(requester, goals, ledger.reserved) is not None:
+                continue
+            original = turn.blocked
+            try:
+                turn.blocked = original - {blocker.pos}
+                if nav.search(requester, goals, ledger.reserved) is None:
+                    continue
+                forbidden = (ledger.tower_cells | ledger.wall_cells
+                             | set(ledger.operator_posts.values()) | goals)
+                options = []
+                for side in neighbours(blocker.pos):
+                    if (not turn.inside(side) or side in original or side in ledger.reserved
+                            or side in forbidden or any(turn.threatens_us(r)
+                            and distance(side, r.pos) <= r.attack_range + 1 for r in turn.robots)):
+                        continue
+                    turn.blocked = (original - {blocker.pos}) | {side}
+                    if nav.search(requester, goals, ledger.reserved) is not None:
+                        options.append(side)
+                turn.blocked = original
+                for side in sorted(options, key=lambda p: (distance(p, requester.pos), p), reverse=True):
+                    if ledger.add(blocker.id, command('move', side)):
+                        ledger.explain(blocker.id, 'yield_blocked_route', requester=requester.id,
+                                       previous=blocker.pos, landing=side, target=post or target)
+                        break
+                if blocker.id in ledger.used:
+                    break
+            finally:
+                turn.blocked = original
