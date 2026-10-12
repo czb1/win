@@ -177,6 +177,34 @@ class MaxedWeaponMiningPhaseTests(unittest.TestCase):
                     else:
                         self.assertFalse(l.commands)
 
+    def test_incomplete_maxed_battery_keeps_original_sale_sweep(self):
+        data = case(10, bag=40)
+        data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] not in (21, 22)]
+        t, c, n, l = setup(data)
+        dusk_resources(t, c, Memory(), n, l, TOWERS)
+        self.assertEqual(l.commands['1'], command('sell', name='copper', num=40))
+
+    def test_incomplete_maxed_battery_keeps_original_construction_allocation(self):
+        data = case(10)
+        data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] not in (21, 22)]
+        t, c, n, l = setup(data)
+        workers(t, c, Memory(), n, l, TOWERS, WALLS)
+        self.assertEqual(l.commands['1'], command('collect', (8, 7)))
+        self.assertEqual(l.work_jobs[2]['kind'], 'build')
+        self.assertEqual(l.work_jobs[2]['name'], 'rocket')
+
+    def test_incomplete_maxed_battery_keeps_original_nearby_watch_order(self):
+        from test_daylight_spending import case as watch_case, setup as watch_setup
+        data, cfg = watch_case(tick=10, packs=1)
+        cfg.loadout = ['rocket'] * 3
+        cfg.weapon_cells += [[6, 4], [7, 3]]
+        data['teamOur']['roles'][1]['pos'] = dict(x=6, y=10)
+        t, c, n, l = watch_setup(data, cfg)
+        locked, funds = prepare_watch(t, c, Memory(wall_watch_id=1), n, l,
+                                     t.workers[0], list(l.wall_cells))
+        self.assertEqual((locked, funds), (True, 0))
+        self.assertEqual(l.commands['1'], command('buy', name='WallFixer', num=8))
+
 
 if __name__ == '__main__':
     unittest.main()
