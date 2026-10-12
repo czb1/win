@@ -9,6 +9,7 @@ class MovementMemory:
     failures: dict = field(default_factory=dict)
     failure_counts: dict = field(default_factory=dict)
     trails: dict = field(default_factory=dict)
+    trail_jobs: dict = field(default_factory=dict)
     targets: dict = field(default_factory=dict)
     buildings: dict = field(default_factory=dict)
     looped: set = field(default_factory=set)
@@ -20,6 +21,7 @@ class MovementMemory:
         self.targets = {k: r for k, r in self.targets.items()
                         if r > turn.round and k[0] in turn.units}
         self.trails = {uid: trail for uid, trail in self.trails.items() if uid in turn.units}
+        self.trail_jobs = {uid: job for uid, job in self.trail_jobs.items() if uid in turn.units}
         self.failure_counts = {k: value for k, value in self.failure_counts.items()
                                if k[0] in turn.units and turn.round - value[1] < 130}
         consecutive = mem.last_round == turn.round - 1
@@ -27,7 +29,15 @@ class MovementMemory:
             cmd = mem.last_commands.get(str(hero.id), {}) if consecutive else {}
             if cmd.get("action") != "move":
                 self.trails.pop(hero.id, None)
+                self.trail_jobs.pop(hero.id, None)
                 continue
+            job = mem.daytime_jobs.get(hero.id, {})
+            job_key = tuple(job.get(k) for k in ('kind', 'target', 'name', 'ore'))
+            if hero.id in self.trail_jobs and self.trail_jobs[hero.id] != job_key:
+                # A buy/build reassignment can reverse valid movement. Measure
+                # loops within one destination task, without losing collisions.
+                self.trails.pop(hero.id, None)
+            self.trail_jobs[hero.id] = job_key
             target = pos(cmd["targetPos"][0])
             if hero.pos != target:
                 # A collision is local and temporary, never a permanent wall.
