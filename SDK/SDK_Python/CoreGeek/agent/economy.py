@@ -784,9 +784,10 @@ def first_day_front(turn, cfg, mem, nav, ledger, wall_sites, excluded=()):
         mem.day1_wall_worker = None
         mem.day1_wall_delivering = False
         return
-    front = [p for p in front_sites(turn, wall_sites)
-             if p not in turn.blocked and p not in ledger.reserved
-             and p not in mem.build_failures and p not in ledger.build_claims]
+    material_sites = [p for p in wall_sites
+                      if p not in turn.blocked and p not in ledger.reserved
+                      and p not in mem.build_failures and p not in ledger.build_claims]
+    front = [p for p in front_sites(turn, wall_sites) if p in material_sites]
     if not front:
         mem.day1_wall_worker = None
         mem.day1_wall_delivering = False
@@ -804,7 +805,10 @@ def first_day_front(turn, cfg, mem, nav, ledger, wall_sites, excluded=()):
         if not routes or min(routes) + cfg.return_margin + 2 >= turn.day_left:
             continue
         held = hero.inventory['stone']
-        goal = min(cfg.stone_batch, len(front) * cfg.wall_stones)
+        # Carry a modest flank/rear reserve with the first front-wall batch,
+        # capped by the existing batch size and actual perimeter demand.
+        goal = min(cfg.stone_batch, len(material_sites) * cfg.wall_stones)
+        front_goal = min(goal, len(front) * cfg.wall_stones)
         delivering = hero.id == mem.day1_wall_worker and mem.day1_wall_delivering and held > 0
         # A full/partial carried batch is spent before gathering again. Only
         # gather while starting the job empty or continuing its material trip.
@@ -816,7 +820,9 @@ def first_day_front(turn, cfg, mem, nav, ledger, wall_sites, excluded=()):
                         or p in mem.collect_failures or mem.movement.avoids(hero.id, p)):
                     continue
                 trip = via(nav, hero, [[p], front], ledger.reserved)
-                if trip is not None and trip + goal - held + len(front) + cfg.return_margin < turn.day_left:
+                # Let the complete material forecast shrink the reserve near
+                # dusk; extra flank stone must not prevent a viable front trip.
+                if trip is not None and trip + max(0, front_goal - held) + len(front) + cfg.return_margin < turn.day_left:
                     mines.append((trip, p))
         if not mines and held < cfg.wall_stones:
             continue
@@ -825,7 +831,7 @@ def first_day_front(turn, cfg, mem, nav, ledger, wall_sites, excluded=()):
     for _, _, _, _, hero, mines, goal in sorted(options):
         if mines:
             accepted = mine(turn, cfg, mem, nav, ledger, hero, want_stone=True,
-                            target_only=min(mines)[1], stone_goal=goal, stone_sites=front)
+                            target_only=min(mines)[1], stone_goal=goal, stone_sites=material_sites)
             delivering = False
         else:
             accepted = build(turn, cfg, mem, nav, ledger, hero, front, lambda _: 'wall')
