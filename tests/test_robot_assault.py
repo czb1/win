@@ -148,7 +148,7 @@ class RobotOwnershipTests(unittest.TestCase):
 
 
 class BestRobotSummoningTests(unittest.TestCase):
-    def shop_data(self, gold=120, backpack=None, round_no=260):
+    def shop_data(self, gold=120, backpack=None, round_no=295):
         data = fortified_payload(round_no, backpack)
         data["teamOur"]["goldNum"] = gold
         data["mapInfo"]["zones"] = [{"neutralType": "weaponShop", "pos": {"x": 4, "y": 9}}]

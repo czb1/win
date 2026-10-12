@@ -19,7 +19,7 @@ from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_
 from .economy import reserve_treasure_gold
 from .treasure_clues import treasure_active
 from .economy import first_day_front, build
-from .economy_plan import via, reserve_income_worker
+from .economy_plan import via, reserve_income_worker, maxed_weapon_mining_phase
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
 from .wall_watch import select_watch, prepare_watch, repair_watch
@@ -166,6 +166,10 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     if turn.day > cfg.robot_purchase_last_day:
         state["buyer"] = None
         ledger.spending_plan['robot_blocked'] = 'purchase_days_finished'
+        return False
+    if maxed_weapon_mining_phase(turn, cfg) and ledger.first_day_offense_worker_id is None:
+        state["buyer"] = None
+        ledger.spending_plan['robot_blocked'] = 'mining_phase'
         return False
     # Uses are serialized. Existing orders already occupy future daylight and
     # daily slots, including orders whose carrier is busy with urgent work.

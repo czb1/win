@@ -115,6 +115,22 @@ class FirstDayOffenseTests(unittest.TestCase):
         self.assertEqual(response['10'], command('buy', name=BOSS, num=3))
         self.assertEqual(response['12'], command('build', (8, 21), name='rocket'))
 
+    def test_fixed_tick_35_chain_overrides_a_longer_optional_mining_window(self):
+        data = case(34)
+        data['teamOur']['roles'][1]['pos'] = {'x': 14, 'y': 20}
+        for role in data['teamOur']['roles']:
+            if role['roleType'] == 'rocket':
+                role['level'] = 3
+        config = cfg(walls=[])
+        config.economy_rounds = 60
+        agent = Agent(config)
+        response = agent.decide(data)['roleCommandMap']
+        self.assertFalse(any(c['action'] == 'buy' and c.get('name') == BOSS for c in response.values()))
+        data['roundNo'] = 35
+        response = agent.decide(data)['roleCommandMap']
+        self.assertEqual(response['10'], command('buy', name=BOSS, num=3))
+        self.assertEqual(next(iter(agent.sessions.values())).first_day_offense['worker_id'], 10)
+
     def test_sale_and_shop_movement_keep_their_accepted_job_context(self):
         for stock, kind, target in ((['iron'], 'sell', (12, 20)),
                                     ([], 'robot_buy', (15, 20))):

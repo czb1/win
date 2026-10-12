@@ -505,6 +505,17 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
 
 def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, allow_spare=True,
          vendor_only=None):
+    from .economy_plan import maxed_weapon_mining_phase
+    if maxed_weapon_mining_phase(turn, cfg):
+        # Sale continuation, news cashout and batch deadlines must obey the
+        # same mining window as newly allocated work after maxing firepower.
+        if force_sale:
+            return False
+        mem.sale_workers.discard(hero.id)
+        mem.sale_targets.pop(hero.id, None)
+        if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True):
+            return True
+        return allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero)
     counts = sale_inventory(turn, mem, hero)
     held = hold_inventory(turn, cfg, mem, ledger, hero, counts)
     counts = {k: n - held.get(k, 0) for k, n in counts.items() if n > held.get(k, 0)}

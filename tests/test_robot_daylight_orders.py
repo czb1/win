@@ -113,7 +113,7 @@ class RobotDaylightOrderTests(unittest.TestCase):
         mem = Memory()
         self.assertTrue(summon_best_robot(turn, cfg, mem, nav, ledger, TOWERS, WALLS, excluded={2}))
         self.assertEqual(ledger.commands['1'], command('buy', name=BOSS, num=1))
-        data['roundNo'] = 260
+        data['roundNo'] = 295
         data['teamOur']['roles'][2]['backpack'] = [BOSS] * 2
         turn, cfg, nav, ledger = fortified_case(data)
         mem.robot_summon_state = dict(day=3, count=7, positions=set(), pending=None, observed_round=260)
@@ -121,7 +121,7 @@ class RobotDaylightOrderTests(unittest.TestCase):
         self.assertEqual(ledger.commands['1'], command('buy', name=BOSS, num=1))
 
     def test_batch_never_exceeds_ten_even_with_zero_price(self):
-        data = self.case(0, gold=2400)
+        data = self.case(35, gold=2400)
         for price in (120, 0):
             with self.subTest(price=price):
                 data['weaponShopList'][-1]['price'] = price

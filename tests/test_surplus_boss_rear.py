@@ -18,7 +18,7 @@ from agent.worker_jobs import resume_daytime_jobs
 
 
 class SurplusBossBatchTests(unittest.TestCase):
-    def data(self, gold=492, round_no=260):
+    def data(self, gold=492, round_no=295):
         return assault_fixtures.BestRobotSummoningTests().shop_data(gold=gold, round_no=round_no)
 
     def buy(self, data, *, reserve=0, memory=None, post=None, return_margin=None):
