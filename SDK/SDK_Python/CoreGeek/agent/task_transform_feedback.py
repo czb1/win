@@ -38,7 +38,7 @@ def metadata(inputs, contract):
                     records.extend(preview)
             except (ValueError, TypeError):
                 pass
-    return {'source': contract.get('family'), 'input_schema': schema(records) if records else None,
+    return {'source': contract.get('family'), 'source_document': contract.get('source'), 'input_schema': schema(records) if records else None,
             'output_schema': schema(outputs) if outputs else None,
             'schema_evidence': 'observed_preview_only'}
 
@@ -57,9 +57,16 @@ def history_methods(skills, current):
         candidates.append((exact, skill.get('successes', 0), {
             'id': skill.get('id'), 'source': previous['source'],
             'compatibility': 'observed_schema_match' if exact else 'output_adaptation_required',
-            'evidence': skill.get('evidence'), 'metadata': previous, 'python': skill['transform']}))
+            'evidence': skill.get('evidence'),
+            'source_document': previous.get('source_document'),
+            'reuse_boundary': '旧题通过仅证明旧任务结果通过；新增字段、明细顺序及过滤要求必须按当前题目重新验证。',
+            'output_change': {'previous': previous.get('output_schema'), 'current': current.get('output_schema')}
+                             if not exact else None,
+            'metadata': {k: v for k, v in previous.items()
+                         if k not in ('source', 'source_document') and (exact or k != 'output_schema')},
+            'python': skill['transform']}))
     candidates.sort(key=lambda item: item[:2], reverse=True)
-    return [item[2] for item in candidates[:2]]
+    return [{k: v for k, v in item[2].items() if v is not None} for item in candidates[:2]]
 
 
 def dominates(a, b):
@@ -127,11 +134,16 @@ def compact(detail):
 
 
 def focus(detail):
-    return [{'case': f['case'], 'classification': f.get('classification'),
-             'difference': f.get('difference'),
-             **{k: f.get('record_evidence', {})[k] for k in ('missing_count', 'extra_count')
-                if k in f.get('record_evidence', {})}}
-            for f in (detail or {}).get('failures', [])]
+    result = []
+    for failure in (detail or {}).get('failures', []):
+        evidence = failure.get('record_evidence', {})
+        item = {'case': failure['case'], 'classification': failure.get('classification'),
+                'difference': failure.get('difference')}
+        for key in ('alignment', 'identity_field', 'missing_count', 'extra_count', 'contrasts', 'order_pairs'):
+            if key in evidence and evidence[key] not in (None, [], {}):
+                item[key] = evidence[key]
+        result.append(item)
+    return result
 
 
 def repair_direction(detail, remaining):
@@ -178,11 +190,11 @@ def prompt(mem, remaining):
     if detail and detail.get('stage') == 'checker':
         # Keep current counterexample first; do not repeat numeric summaries already in previews.
         context['lastAttempt']['diagnosis'].pop('sample_evidence', None)
+        context['currentExpressions'] = repair_expressions(base.get('python', ''))
         context['progress'] = {k: v for k, v in context['progress'].items() if k != 'checker_feedback'}
         if context['progress'].get('same_checker_failure'):
             context['nextAction'] = ('同一checker反例仍未解决；对照record_context中的完整输入和原始位置，'
                                      '重新检查过滤边界与排序条件，不只移动代码位置。' + context['nextAction'])
-            context['currentExpressions'] = repair_expressions(base.get('python', ''))
     if use_best:
         context['repairBase']['diagnosis'] = compact(base_detail)
         context['lastAttempt']['diagnosis'] = {k: detail[k] for k in
@@ -202,12 +214,31 @@ def prompt(mem, remaining):
             clean['case_samples'] = [c for c in clean['case_samples'] if c.get('case') not in failed]
         context['inputPreview']['files'].append(clean)
     context['additionalReads'] = [d for d in mem.documents if d.get('kind') == 'read']
-    return ("第一行 PYTHON，后面只定义 transform(records) 和必要辅助函数。框架负责样例验证、写文件、checker及真实token提交。\n"
-            "先根据题目和样例确定规则，再输出完整函数；核对每条推断已落实到代码，并用反例检查矛盾。不要在代码注释中展开长篇试探。\n"
-            "不得硬编码样例答案或特殊回合；字段和条件必须来自本题证据。无法可靠关联记录时不要猜过滤。\n"
-            "按nextAction执行。focus索引指向诊断中的完整反例；混合错误可能同时涉及成员、数值和排序。\n"
-            "repairBase只提供一份修复代码。same_sample_outputs=true表示已测样例输出重复，不代表程序在所有输入上等价。请改变有证据的规则，不只改写法。\n"
-            "rejectedCandidate表示同一失败AST未再执行。verifiedMethods仅为历史参考，仍须通过本题验证。\n"
-            "公开样例通过仅表示规则与这些样例兼容；record_context不完整时按入口补证据，不能猜身份或直接替换答案。\n"
-            "READ 路径 偏移：样例偏移为case编号，其他文件按读取入口和NEXT_READ继续。\n"
-            "上下文：" + json.dumps(context, ensure_ascii=False))
+    # Put concise evidence before code; keep full counterexamples once below it.
+    # Prune only presentation metadata. Never remove empty/false/zero task data.
+    for section in (context['lastAttempt'].get('diagnosis'), context['repairBase'].get('diagnosis')):
+        if section:
+            for failure in section.get('failures', []):
+                evidence = failure.get('record_evidence', {})
+                for key in ('contrasts', 'order_pairs'):
+                    evidence.pop(key, None)  # the focus section already carries these
+    if not base.get('python'):
+        context.pop('repairBase', None)
+    order = ('stage', 'focus', 'lastAttempt', 'currentExpressions', 'progress',
+             'rejections', 'rejectedCandidate', 'repairBase', 'verifiedMethods',
+             'documents', 'inputPreview', 'additionalReads', 'nextAction', 'remainingRounds')
+    context = {key: context[key] for key in order
+               if key in context and context[key] not in (None, '', [], {})}
+    guidance = [
+        '第一行 PYTHON，后面只定义转换函数和必要辅助函数；框架负责样例验证、写文件、checker及真实token提交。',
+        '按nextAction修复，返回名为 transform、接收 records 参数的完整函数；必要补读使用 READ 路径 偏移（样例按case编号，其他按NEXT_READ）。',
+        '分别核对保留条件、排序条件、分组与输出。条件须解释保留和删除的对照，排序须核对同值次序。',
+        '样例恰好保留若干条不证明数量上限，字段恰好同序不证明排序依据；不要硬编码样例答案或按差额改答案。',
+        '代码注释仅简述依据，不展开长篇试探；不要求额外分析回复。']
+    if context.get('focus'):
+        guidance.append('focus是差异证据；顺序索引为投影后的遍历位置，不直接证明业务排序规则。关联不明确时查看完整反例。')
+    if context.get('verifiedMethods'):
+        guidance.append('历史方法仅作候选参考；先核对reuse_boundary和output_change，旧代码实现不等于当前规则已验证。')
+    if context.get('progress', {}).get('same_sample_outputs'):
+        guidance.append('已测样例输出重复；请按证据改变规则，不只改写法。这不证明全输入等价。')
+    return '\n'.join(guidance) + '\n上下文：' + json.dumps(context, ensure_ascii=False)

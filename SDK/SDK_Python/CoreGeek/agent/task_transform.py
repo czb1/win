@@ -228,26 +228,51 @@ def record_evidence(records, expected, actual):
             if (not items or not all(type(v) in (str, int) for v in items)
                     or len(set(items)) != len(items) or not set(items) <= set(ids)):
                 break
-            projected.append(set(items))
+            projected.append(tuple(ids.index(v) for v in items))
         if len(projected) == 2:
-            kept = tuple(i for i, v in enumerate(ids) if v in projected[0])
-            produced = tuple(i for i, v in enumerate(ids) if v in projected[1])
+            kept, produced = projected
             candidates.append((key, kept, produced))
     if not candidates or len({(c[1], c[2]) for c in candidates}) != 1:
         return {'alignment': 'unavailable: no unambiguous preserved unique field; do not infer a filter'}
     key, kept, produced = candidates[0]
     missing, extra = set(kept)-set(produced), set(produced)-set(kept)
+    # Identity candidates must agree on order as well as membership.
+    expected_positions = {index: i for i, index in enumerate(kept)}
+    actual_positions = {index: i for i, index in enumerate(produced)}
+    shared = [index for index in kept if index in actual_positions]
+    inversions = []
+    for left, right in zip(shared, shared[1:]):
+        if actual_positions[left] > actual_positions[right]:
+            inversions.append({
+                'expected_before': {'record': records[left], 'input_index': left,
+                                    'expected_index': expected_positions[left], 'actual_index': actual_positions[left]},
+                'expected_after': {'record': records[right], 'input_index': right,
+                                   'expected_index': expected_positions[right], 'actual_index': actual_positions[right]}})
+            if len(inversions) == 2:
+                break
+    ranges = {}
+    for field in set.intersection(*(set(r) for r in records)) - {key}:
+        values = [r[field] for r in records]
+        if all(type(v) in (int, float) for v in values):
+            ranges[field] = max(values) - min(values)
     contrasts = []
     for index in sorted(missing | extra)[:2]:
         record = records[index]
         opposite = [i for i in range(len(records)) if (i in kept) != (index in kept)]
         if opposite:
-            other = max(opposite, key=lambda i: sum(
-                k != key and k in records[i] and records[i][k] == v for k, v in record.items()))
+            def proximity(i):
+                equal = sum(k != key and k in records[i] and records[i][k] == v
+                            for k, v in record.items())
+                delta = sum(abs(records[i][k] - record[k]) / span
+                            for k, span in ranges.items() if span)
+                return (-equal, delta, i)
+            other = min(opposite, key=proximity)
             contrasts.append({'record': record, 'expected_kept': index in kept,
                               'contrast': records[other], 'contrast_expected_kept': other in kept})
     return {'alignment': 'unique input field preserved in output', 'identity_field': key,
             'contrasts': bounded(contrasts),
+            'order_pairs': bounded(inversions),
+            'order_note': 'Relative projected order only; no business sorting rule inferred.',
             'missing_count': len(missing), 'extra_count': len(extra),
             'input_order': bounded([r[key] for r in records]),
             'expected_order': bounded([o[key] for o in objects(expected) if key in o]),
