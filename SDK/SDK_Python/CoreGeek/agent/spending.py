@@ -90,7 +90,7 @@ def prepare_paid_upgrades(turn, mem, nav, ledger, heroes, excluded=()):
     for hero in sorted(heroes, key=lambda h: (h.id != mem.supply_worker, h.id)):
         if (hero.id in ledger.used or hero.id in excluded
                 or hero.kind == 'pioneer' and turn.phase_task
-                or mem.daytime_jobs.get(hero.id, {}).get('kind') == 'use'
+                or mem.daytime_jobs.get(hero.id, {}).get('kind') in ('use', 'sell')
                 or not any('UpgradeVoucher' in item for item in hero.backpack)):
             continue
         if use_inventory(turn, nav, ledger, hero, mem=mem, upgrades_only=True):

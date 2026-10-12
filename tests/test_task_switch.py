@@ -19,7 +19,7 @@ class TaskSwitchTests(unittest.TestCase):
         return data, t, c, n, l, m
 
     def test_only_after_ten_elapsed_rounds(self):
-        for r, expected in ((20, False), (21, True)):
+        for r, expected in ((20, False), (21, False), (25, False)):
             _, t, c, n, l, m = self.case(r)
             result = switch_task_option(t, c, m, n, l, t.pioneer)
             self.assertEqual(result is not None, expected)
@@ -48,9 +48,9 @@ class TaskSwitchTests(unittest.TestCase):
         c.task_switch_rounds = 12
         self.assertIsNone(switch_task_option(t, c, m, n, l, t.pioneer))
         c.task_switch_rounds = 7
-        self.assertIsNotNone(switch_task_option(t, c, m, n, l, t.pioneer))
+        self.assertIsNone(switch_task_option(t, c, m, n, l, t.pioneer))
 
-    def test_agent_moves_without_issuing_more_model_work(self):
+    def test_agent_keeps_working_after_legacy_switch_limit(self):
         data, _, _, _, _, _ = self.case(10)
         agent = Agent(Config(layout_mode='explicit'))
         agent.decide(data)
@@ -59,19 +59,13 @@ class TaskSwitchTests(unittest.TestCase):
         mem.task_point = (6, 5)
         mem.task_timeout = 30
         mem.answer = None
-        data['roundNo'] = 21
-        with patch('agent.intelligence.Intelligence.task') as work:
-            response = agent.decide(data)
-        self.assertEqual(response['roleCommandMap']['11']['action'], 'move')
-        self.assertEqual(mem.stop_reason, 'task_switch_budget')
-        work.assert_not_called()
-        # Still inside old task range after the first step: keep moving out.
-        data['teamOur']['roles'][0]['pos'] = response['roleCommandMap']['11']['targetPos'][0]
-        data['roundNo'] = 22
-        with patch('agent.intelligence.Intelligence.task') as work:
-            response = agent.decide(data)
-        self.assertEqual(response['roleCommandMap']['11']['action'], 'move')
-        work.assert_not_called()
+        for round_no in (21, 22, 25):
+            data['roundNo'] = round_no
+            with patch('agent.intelligence.Intelligence.task', return_value=('', '')) as work:
+                response = agent.decide(data)
+            self.assertNotEqual(mem.stop_reason, 'task_switch_budget')
+            self.assertNotEqual(response['roleCommandMap'].get('11', {}).get('action'), 'move')
+            work.assert_called_once()
 
     def test_worker_shops_while_pioneer_has_next_task(self):
         for protected_job, expected in ((False, True), (True, False)):

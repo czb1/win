@@ -33,7 +33,7 @@ class Config:
     build_retry_rounds: int = 20
     # A configurable policy cap, not a substitute for playerTasks.timeoutRounds.
     task_max_rounds: int = 1300
-    # Opportunity-based switch check; not a platform timeout or a solve estimate.
+    # Deprecated compatibility field; no longer used to abandon active tasks.
     task_switch_rounds: int = 10
     # Strategy policy: preserve opening purchases, stop new orders afterwards.
     robot_purchase_last_day: int = 1

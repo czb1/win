@@ -15,6 +15,7 @@ from .model import ORES, pos
 from .recovery import Recovery
 from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status, merge_material_plan, resolve_location, retry_allowed
 from .wall_watch_state import WallWatchState
+from .task_history import remember, references
 from .task_schedule import task_descriptor, task_signature
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
 from .task_inputs import input_context, preview_code, zero_without_coverage
@@ -346,6 +347,7 @@ class Memory:
     task_target: tuple | None = None
     task_wait_cell: tuple | None = None
     knowledge: list = field(default_factory=list)
+    task_archive: dict = field(default_factory=dict)
     submission_feedback: str = ""
     stop_reason: str = ""
     history: deque = field(default_factory=lambda: deque(maxlen=6))
@@ -375,6 +377,7 @@ class Memory:
     sale_targets: dict = field(default_factory=dict)
     mine_targets: dict = field(default_factory=dict)
     daytime_jobs: dict = field(default_factory=dict)
+    wall_batches: dict = field(default_factory=dict)
     mine_kinds: dict = field(default_factory=dict)
     mine_collected: dict = field(default_factory=dict)
     supply_worker: int | None = None
@@ -456,6 +459,7 @@ class Memory:
             self.sale_targets.clear()
             self.mine_targets.clear()
             self.daytime_jobs.clear()
+            self.wall_batches.clear()
             self.supply_worker = None
             self.build_targets.clear()
             self.stone_reserves.clear()
@@ -705,6 +709,11 @@ class Memory:
         if purpose == "cmd":
             raw = turn.raw.get("lastCmdResult") or ""
             tool = self.running_tool or {}
+            if tool.get('kind') == 'read':
+                refs, _ = references(self.documents, self.task_archive)
+                target = str(PurePosixPath(self.task_directory() or '.') / tool.get('path', ''))
+                if target in {r.get('source') for r in refs}:
+                    tool = self.running_tool = {**tool, 'kind': 'reference'}
             result, report = runtime_result(raw) if not tool or tool.get('kind') == 'query' else (raw, {})
             status, body, answer = sandbox_result(result)
             if status == 'ok' and not tool and self.contract.get('input_kind') == 'logs':
@@ -781,6 +790,13 @@ class Memory:
                 self.rejected_transform.clear()
                 self.transform_attempt = dict(self.last_attempt)
                 observe_transform(self, self.transform_attempt)
+            if tool.get('kind') == 'reference':
+                if status == 'ok':
+                    remember(self.task_archive, {**tool, 'output': body,
+                             'resolved_path': resolved_document(body) or tool['path']})
+                self.running_tool = None
+                self.running_python = ''
+                return  # Historical input/contract must never replace the current task.
             if status == "ok":
                 if tool.get('kind') in ('discover', 'read', 'inspect'):
                     self.inputs = input_context(body) or self.inputs
@@ -818,6 +834,7 @@ class Memory:
                     resolved = resolved_document(body) if tool.get("kind") != "list" else None
                     if resolved:
                         record["resolved_path"] = resolved
+                    remember(self.task_archive, {**record, 'output': body})
                     pages = [d for d in self.documents if (d.get("path"), d.get("start")) !=
                              (record.get("path"), record.get("start"))]
                     # Keep the first API page alongside recent pages; format
@@ -1360,6 +1377,13 @@ class Intelligence:
             if path:
                 self.mem.python = document_code(path)
                 self.mem.running_tool = {"kind": "discover", "path": path, "start": 0}
+        referenced, missing = references(self.mem.documents, self.mem.task_archive)
+        if (missing and self.mem.python is None and self.mem.pending is None and remaining >= 5):
+            path = next((p for p in missing if p not in self.mem.reference_reads), None)
+            if path:
+                self.mem.reference_reads.add(path)
+                self.mem.python = document_code(path, base=self.mem.task_directory())
+                self.mem.running_tool = {'kind': 'reference', 'path': path, 'start': 0}
         if (self.mem.documents and self.mem.python is None and self.mem.pending is None
                 and self.mem.contract.get("kind") != "check_token"
                 and remaining >= 5 and len(self.mem.reference_reads) < 2):
@@ -1424,6 +1448,7 @@ class Intelligence:
                                    for item in list(self.mem.exploration)[:-1][-2:]],
                    "submissionFeedback": self.mem.submission_feedback,
                    "documents": self.mem.documents,
+                   "referencedTasks": referenced,
                    "submissionContract": self.mem.contract,
                    "taskDirectory": self.mem.task_directory(),
                    "inputPreview": self.mem.inputs,
@@ -1491,7 +1516,7 @@ class Intelligence:
                   "submissionContract 是原题的提交格式；不得添加 task/result 等原题没有的键。\n"
                   "任务按正确字段比例奖励金币与积分，并保留历次提交的最高通过率。已求出的字段应尽早提交，"
                   "再继续补齐；未知字段不能编造，不要等到全部求完才首次提交。\n"
-                  "部署题须实际修改文件后运行 ./check；只有检查通过的 TOKEN 能提交，不得改动 spec.md 或 check。\n"
+                  "有checker的题目必须通过本题官方checker并取得真实TOKEN才可提交；样例通过不代表完成。失败后修正规则、重新生成结果并验证，不得修改checker或猜TOKEN。\n"
                   "查询结果在下一回合lastAttempt中；documents是已读文档，不要重复读取同一页。\n"
                   "如果API返回很多条数据，只打印本题需要的字段；HTTP请求设timeout=8。\n"
                   "exploration保留本题最近查询及错误；复用已获得的接口说明，勿重复失败的路径。\n"

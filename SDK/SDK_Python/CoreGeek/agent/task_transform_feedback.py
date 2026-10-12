@@ -1,5 +1,6 @@
 """Evidence-only transform feedback; never infer business rules or field renames."""
 import json
+from .task_history import references
 from .task_log_repair import repair_expressions
 
 
@@ -181,6 +182,7 @@ def prompt(mem, remaining):
                'lastAttempt': {k: attempt[k] for k in ('status',) if k in attempt},
                'rejections': [rejected['reason']] if rejected else [],
                'rejectedCandidate': {k: rejected[k] for k in ('reason', 'executed') if k in rejected},
+               'referencedTasks': references(mem.documents, mem.task_archive)[0],
                'documents': [{**d, 'output': d.get('output', '').partition('\nTASK_INPUTS ')[0]}
                              for d in mem.documents if d.get('kind') != 'read'],
                'inputPreview': {**mem.inputs, 'files': []},
@@ -224,12 +226,15 @@ def prompt(mem, remaining):
                     evidence.pop(key, None)  # the focus section already carries these
     if not base.get('python'):
         context.pop('repairBase', None)
-    order = ('stage', 'focus', 'lastAttempt', 'currentExpressions', 'progress',
+    order = ('stage', 'nextAction', 'remainingRounds', 'focus', 'lastAttempt', 'currentExpressions', 'progress',
              'rejections', 'rejectedCandidate', 'repairBase', 'verifiedMethods',
-             'documents', 'inputPreview', 'additionalReads', 'nextAction', 'remainingRounds')
+             'documents', 'referencedTasks', 'inputPreview', 'additionalReads')
     context = {key: context[key] for key in order
                if key in context and context[key] not in (None, '', [], {})}
     guidance = [
+        '完成标准：必须通过本题官方checker并取得真实TOKEN才可提交。公开样例通过不代表完成；checker失败必须修正规则、重新生成结果并验证，不得修改checker、猜TOKEN或按差额改答案。',
+        '最新官方反例优先：新代码必须解决该反例，不能用样例通过否定反例。当前题新增要求优先于历史题；旧代码通过不证明全部规则已经实现。',
+        '多种规则都符合样例时仍是候选，结合引用题面和官方反馈区分；自行构造的预期不是规则证据。',
         '第一行 PYTHON，后面只定义转换函数和必要辅助函数；框架负责样例验证、写文件、checker及真实token提交。',
         '按nextAction修复，返回名为 transform、接收 records 参数的完整函数；必要补读使用 READ 路径 偏移（样例按case编号，其他按NEXT_READ）。',
         '分别核对保留条件、排序条件、分组与输出。条件须解释保留和删除的对照，排序须核对同值次序。',
