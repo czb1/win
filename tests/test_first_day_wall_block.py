@@ -47,34 +47,38 @@ def seal_ring(data, gap=ENTRY):
 
 
 class FirstDayWallBlockTests(unittest.TestCase):
-    def test_agent_finishes_last_gun_before_dispatching_wall_blocker(self):
+    def test_agent_reserves_other_worker_for_last_gun_while_offense_worker_buys(self):
         data = block_case(40)
         data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] != 22]
-        data['teamOur']['roles'][1]['pos'] = {'x': 9, 'y': 20}
+        data['teamOur']['roles'][1]['pos'] = {'x': 14, 'y': 20}
+        data['teamOur']['roles'][2]['pos'] = {'x': 9, 'y': 20}
         data['teamOur']['goldNum'] = 433
         cfg = Config(llm_enabled=False, layout_mode='explicit', wall_cells=[],
                      weapon_cells=[[8, 23], [9, 23], [8, 21]])
         agent = Agent(cfg)
         response = agent.decide(data)['roleCommandMap']
         mem = next(iter(agent.sessions.values()))
-        self.assertEqual(response['10'], command('build', (8, 21), name='rocket'))
-        self.assertEqual(mem.daytime_jobs[12]['kind'], 'robot_buy')
-        self.assertIsNone(mem.night_scout.worker_id)
+        self.assertEqual(response['10'], command('buy', name=BOSS, num=3))
+        self.assertEqual(response['12'], command('build', (8, 21), name='rocket'))
+        self.assertEqual(mem.first_day_offense['worker_id'], 10)
+        self.assertEqual(mem.first_day_offense['phase'], 'buy')
 
-    def test_dusk_fallback_does_not_take_workers_before_last_gun_is_observed(self):
+    def test_wall_blocker_does_not_wait_for_last_gun_at_dusk(self):
         data = block_case(54)
         data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] != 22]
-        data['teamOur']['roles'][1]['pos'] = {'x': 9, 'y': 20}
-        data['teamOur']['roles'][2]['pos'] = {'x': 15, 'y': 14}
+        data['teamOur']['roles'][1]['pos'] = {'x': 25, 'y': 17}
+        data['teamOur']['roles'][1]['backpack'] = [BOSS]
+        data['teamOur']['roles'][2]['pos'] = {'x': 9, 'y': 20}
         data['teamOur']['goldNum'] = 25
         agent = Agent(Config(llm_enabled=False, layout_mode='explicit', wall_cells=[],
                              weapon_cells=[[8, 23], [9, 23], [8, 21]]))
         response = agent.decide(data)['roleCommandMap']
-        self.assertEqual(response['10'], command('build', (8, 21), name='rocket'))
-        self.assertIsNone(next(iter(agent.sessions.values())).night_scout.worker_id)
+        self.assertEqual(response['12'], command('build', (8, 21), name='rocket'))
+        self.assertEqual(next(iter(agent.sessions.values())).night_scout.worker_id, 10)
+        self.assertEqual(response['10']['action'], 'move')
 
-    def test_departure_at_40_and_second_day_keeps_existing_policy(self):
-        for tick, expected in ((39, False), (40, True), (41, True), (170, False)):
+    def test_departure_at_35_and_second_day_keeps_existing_policy(self):
+        for tick, expected in ((34, False), (35, True), (39, True), (40, True), (170, False)):
             with self.subTest(tick=tick):
                 turn, _, nav, ledger = setup_case(block_case(tick))
                 memory = ScoutMemory()
@@ -110,7 +114,7 @@ class FirstDayWallBlockTests(unittest.TestCase):
 
     def test_hold_is_stable_and_not_recalled_at_67(self):
         agent = Agent(Config(llm_enabled=False))
-        data = block_case(40)
+        data = block_case(40, stock=[BOSS] * 3)
         agent.decide(data)
         memory = next(iter(agent.sessions.values()))
         entry = memory.night_scout.wall_entry

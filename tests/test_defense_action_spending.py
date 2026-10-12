@@ -179,7 +179,8 @@ class DefenseActionSpendingTests(unittest.TestCase):
             with self.subTest(stock=stock, tick=tick, held=held):
                 data = case(stock, gold=gold, round_no=tick)
                 if held:
-                    data['teamOur']['roles'].append(unit(2, 'worker', 15, 6, health=500))
+                    data['teamOur']['roles'][1]['pos'] = {'x': 15, 'y': 6}
+                    data['teamOur']['roles'].append(unit(2, 'worker', 7, 9, health=500))
                 commands = self.agent(data).decide(data)['roleCommandMap']
                 if action is None:
                     self.assertFalse(any(c['action'] == 'use' and c.get('name') == BOSS

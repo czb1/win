@@ -392,6 +392,7 @@ class Memory:
     return_posts: dict = field(default_factory=dict)
     movement: MovementMemory = field(default_factory=MovementMemory)
     night_scout: ScoutMemory = field(default_factory=ScoutMemory)
+    first_day_offense: dict = field(default_factory=dict)
     sabotage: ImpMemory = field(default_factory=ImpMemory)
     imp_catch_attempted: set = field(default_factory=set)
     imp_catch_next_round: int = 0

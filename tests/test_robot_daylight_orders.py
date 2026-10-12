@@ -160,7 +160,7 @@ class RobotDaylightOrderTests(unittest.TestCase):
         self.assertNotIn(20012, ledger.used)
 
     def test_opening_stages_one_worker_and_keeps_the_last_gun_builder(self):
-        data = opening_data()
+        data = opening_data(34)
         turn, cfg, _, _ = opening_setup(data, llm_enabled=False)
         agent = Agent(cfg)
         response = agent.decide(data)['roleCommandMap']
@@ -236,25 +236,33 @@ class RobotDaylightOrderTests(unittest.TestCase):
         self.assertNotIn(20012, ledger.used)
         self.assertEqual(ledger.gold, 419)
 
-    def test_staged_buyer_buys_and_uses_the_whole_batch_before_first_night(self):
-        data = opening_data(67, ready=True, at_shop=True)
+    def test_fixed_worker_buys_and_uses_the_whole_batch_before_first_night(self):
+        data = opening_data(35, ready=True, at_shop=True)
+        data['teamOur']['roles'][1]['pos'] = {'x': 25, 'y': 19}
+        data['teamOur']['roles'][2]['pos'] = {'x': 31, 'y': 7}
         _, cfg, _, _ = opening_setup(data, llm_enabled=False)
         agent = Agent(cfg)
         response = agent.decide(data)
-        self.assertEqual(response['roleCommandMap']['20012'], command('buy', name=BOSS, num=2))
+        self.assertEqual(response['roleCommandMap']['20010'], command('buy', name=BOSS, num=3))
         following = copy.deepcopy(data)
-        following['teamOur']['goldNum'] = 154
-        buyer = next(r for r in following['teamOur']['roles'] if r['id'] == 20012)
-        for tick, stock in ((68, [BOSS, BOSS]), (69, [BOSS])):
+        following['teamOur']['goldNum'] = 34
+        buyer = next(r for r in following['teamOur']['roles'] if r['id'] == 20010)
+        following['roundNo'] = 36
+        buyer['backpack'] = [BOSS] * 3
+        agent.decide(following)
+        mem = next(iter(agent.sessions.values()))
+        entry = mem.night_scout.wall_entry
+        buyer['pos'] = {'x': entry[0], 'y': entry[1]}
+        for tick, stock in ((40, [BOSS] * 3), (41, [BOSS, BOSS]), (42, [BOSS])):
             following['roundNo'] = tick
-            following['lastRoundRoleActionResults'] = {'20012': True}
+            following['lastRoundRoleActionResults'] = {'20010': True}
             buyer['backpack'] = stock
             response = agent.decide(following)
-            self.assertEqual(response['roleCommandMap']['20012']['action'], 'use')
-            self.assertEqual(response['roleCommandMap']['20012']['name'], BOSS)
+            self.assertEqual(response['roleCommandMap']['20010']['action'], 'use')
+            self.assertEqual(response['roleCommandMap']['20010']['name'], BOSS)
         mem = next(iter(agent.sessions.values()))
-        self.assertEqual(mem.robot_summon_state['count'], 2)
-        self.assertEqual(len(mem.robot_summon_state['positions']), 2)
+        self.assertEqual(mem.robot_summon_state['count'], 3)
+        self.assertEqual(len(mem.robot_summon_state['positions']), 3)
         following['roundNo'] = 70
         buyer['backpack'] = []
         response = agent.decide(following)
