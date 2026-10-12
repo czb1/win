@@ -77,8 +77,8 @@ class FirstDayWallBlockTests(unittest.TestCase):
         self.assertEqual(next(iter(agent.sessions.values())).night_scout.worker_id, 10)
         self.assertEqual(response['10']['action'], 'move')
 
-    def test_departure_at_35_and_second_day_keeps_existing_policy(self):
-        for tick, expected in ((34, False), (35, True), (39, True), (40, True), (170, False)):
+    def test_departure_at_30_and_second_day_keeps_existing_policy(self):
+        for tick, expected in ((29, False), (30, True), (34, True), (35, True), (40, True), (170, False)):
             with self.subTest(tick=tick):
                 turn, _, nav, ledger = setup_case(block_case(tick))
                 memory = ScoutMemory()

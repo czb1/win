@@ -159,8 +159,8 @@ class RobotDaylightOrderTests(unittest.TestCase):
         self.assertIsNone(prepare_night_scout(turn, ScoutMemory(), nav, ledger, excluded={20010}))
         self.assertNotIn(20012, ledger.used)
 
-    def test_opening_stages_one_worker_and_keeps_the_last_gun_builder(self):
-        data = opening_data(34)
+    def test_before_departure_stages_one_worker_and_keeps_the_last_gun_builder(self):
+        data = opening_data(29)
         turn, cfg, _, _ = opening_setup(data, llm_enabled=False)
         agent = Agent(cfg)
         response = agent.decide(data)['roleCommandMap']

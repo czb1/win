@@ -159,7 +159,7 @@ def _buy(turn, cfg, mem, nav, ledger, hero, base, towers):
 
 
 def act_first_day_offense(turn, cfg, mem, nav, ledger, towers, walls):
-    """From tick 35, one stable worker owns walls -> sell -> buy -> wall denial."""
+    """From tick 30, one stable worker owns walls -> sell -> buy -> wall denial."""
     base = enemy_base(turn)
     if turn.day != 1:
         mem.first_day_offense.clear()

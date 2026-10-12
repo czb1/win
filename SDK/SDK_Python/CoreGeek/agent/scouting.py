@@ -10,7 +10,7 @@ from .robot_assault import (base_distance, enemy_base, enemy_entries,
                             open_assault_entry, rear_approach)
 
 
-FIRST_DAY_SCOUT_TICK = 35
+FIRST_DAY_SCOUT_TICK = 30
 
 
 @dataclass
