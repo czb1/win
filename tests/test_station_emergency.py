@@ -42,7 +42,7 @@ class StationEmergencyTests(unittest.TestCase):
                         self.assertTrue(use_inventory(turn, nav, ledger, turn.workers[0],
                                                       local_only=True, urgent_only=True, mem=mem))
                         self.assertEqual(ledger.commands["10"], command(
-                            "use", (3, 11), name=f"StationUpgradeVoucher{station_level}"))
+                            "use", (3, 10), name=f"StationUpgradeVoucher{station_level}"))
                         self.assertEqual(ledger.gold, 0)
                         self.assertEqual(mem.wall_rebuild_levels, {(5, 8): 3})
 
@@ -56,7 +56,7 @@ class StationEmergencyTests(unittest.TestCase):
                              upgrade_targets={10: (5, 8)})
                 self.assertTrue(use_inventory(turn, nav, ledger, turn.workers[0], mem=mem))
                 self.assertEqual(ledger.commands["10"], command(
-                    "use", (3, 11), name="StationUpgradeVoucher1"))
+                    "use", (4, 10), name="StationUpgradeVoucher1"))
                 self.assertEqual(ledger.upgrade_claims, {13})
                 self.assertEqual(mem.wall_rebuild_levels, {(5, 8): 3})
 
@@ -122,7 +122,7 @@ class StationEmergencyTests(unittest.TestCase):
             10: dict(kind="use", target=(5, 8), name="WallUpgradeVoucher1")})
         resume_daytime_jobs(turn, cfg, mem, nav, ledger, [(5, 10)], [(5, 8)], returning=set())
         self.assertEqual(ledger.commands["10"], command(
-            "use", (3, 11), name="StationUpgradeVoucher1"))
+            "use", (4, 10), name="StationUpgradeVoucher1"))
         self.assertEqual(mem.wall_rebuild_levels, {(5, 8): 3})
 
     def test_agent_heals_with_an_observed_destroyed_and_rebuilt_wall(self):
@@ -139,7 +139,7 @@ class StationEmergencyTests(unittest.TestCase):
         p["teamOur"]["roles"].append(unit(99, "wall", 5, 8, health=1000))
         response = agent.decide(copy.deepcopy(p))
         self.assertEqual(response["roleCommandMap"].get("10"), command(
-            "use", (3, 11), name="StationUpgradeVoucher1"))
+            "use", (3, 10), name="StationUpgradeVoucher1"))
         mem = next(iter(agent.sessions.values()))
         self.assertEqual(mem.wall_rebuild_levels, {(5, 8): 3})
         self.assertEqual(agent.decide(copy.deepcopy(p)), response)

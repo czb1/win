@@ -65,6 +65,11 @@ class Unit:
         x, y = self.pos
         return {(x, y), (x + 1, y), (x, y - 1), (x + 1, y - 1)} if self.kind == "station" else {self.pos}
 
+    def nearest_cell(self, origin):
+        """Use the closest footprint cell; ties prefer the shortest axis sum."""
+        return min(self.cells, key=lambda p: (distance(origin, p),
+                   abs(origin[0] - p[0]) + abs(origin[1] - p[1]), p))
+
     @property
     def inventory(self):
         return Counter(self.backpack)

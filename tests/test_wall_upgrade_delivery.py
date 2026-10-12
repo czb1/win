@@ -10,7 +10,7 @@ from agent.economy import (supplies, use_inventory, workers, wall_upgrade_allowe
                            upgrade_order, dusk_batch, wall_sector)
 from agent.economy_plan import preparation_start
 from agent.intelligence import Memory
-from agent.model import Turn
+from agent.model import Turn, pos
 from agent.recovery import Recovery
 
 
@@ -401,7 +401,8 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                         actor["backpack"] += [cmd["name"]] * cmd["num"]
                     elif cmd["action"] == "use":
                         actor["backpack"].remove(cmd["name"])
-                        target = next(r for r in p["teamOur"]["roles"] if r["pos"] == cmd["targetPos"][0])
+                        target_id = next(b.id for b in t.ours if pos(cmd["targetPos"][0]) in b.cells)
+                        target = next(r for r in p["teamOur"]["roles"] if r["id"] == target_id)
                         target["level"] += 1
                         used.append((cmd["name"], target["id"]))
                     elif cmd["action"] == "move":

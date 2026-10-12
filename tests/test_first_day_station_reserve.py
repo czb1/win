@@ -181,7 +181,7 @@ class FirstDayStationReserveTests(unittest.TestCase):
                         mem = Memory(station_health_peaks={level: 4500})
                         self.assertEqual(heal_station_with_pioneer(turn, mem, nav, ledger), health < 500)
                         self.assertEqual(ledger.commands.get('2'), command(
-                            'use', (3, 11), name=f'StationUpgradeVoucher{level}') if health < 500 else None)
+                            'use', (3, 10), name=f'StationUpgradeVoucher{level}') if health < 500 else None)
                         if health >= 500:
                             self.assertFalse(use_inventory(turn, nav, ledger, turn.pioneer, mem=mem))
 
@@ -204,7 +204,7 @@ class FirstDayStationReserveTests(unittest.TestCase):
                                           backpack=['Medicine', 'StationUpgradeVoucher1'])
         turn, _, nav, ledger = fortified_case(data)
         self.assertTrue(heal_station_with_pioneer(turn, Memory(), nav, ledger))
-        self.assertEqual(ledger.commands['2'], command('use', (3, 11), name='StationUpgradeVoucher1'))
+        self.assertEqual(ledger.commands['2'], command('use', (3, 10), name='StationUpgradeVoucher1'))
 
     def test_wrong_tier_max_level_missing_or_claimed_base_cannot_consume_voucher(self):
         for level, name, claimed in ((1, 'StationUpgradeVoucher2', False),
@@ -234,7 +234,7 @@ class FirstDayStationReserveTests(unittest.TestCase):
                 agent = Agent(cfg)
                 result = agent.decide(copy.deepcopy(data))
                 self.assertEqual(result['roleCommandMap'].get('2'), command(
-                    'use', (3, 11), name='StationUpgradeVoucher1'))
+                    'use', (3, 10), name='StationUpgradeVoucher1'))
                 self.assertEqual(agent.decide(copy.deepcopy(data)), result)
 
     def test_agent_buys_three_robots_and_one_pioneer_voucher(self):
