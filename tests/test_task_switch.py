@@ -10,7 +10,7 @@ from agent.task_schedule import switch_task_option
 
 
 class TaskSwitchTests(unittest.TestCase):
-    def case(self, round_no=18, ready=True):
+    def case(self, round_no=21, ready=True):
         data = payload(round_no, [unit(11, 'pioneer', 5, 5)])
         data['phaseTask'] = 'current question'
         data['teamOur']['playerTasks'] = [task(), task(10, 5, valid=ready, cooldown=0 if ready else 20)]
@@ -18,8 +18,8 @@ class TaskSwitchTests(unittest.TestCase):
         m = Memory(task_started=10, task_point=(6, 5), task_timeout=30)
         return data, t, c, n, l, m
 
-    def test_only_after_seven_elapsed_rounds(self):
-        for r, expected in ((17, False), (18, True)):
+    def test_only_after_ten_elapsed_rounds(self):
+        for r, expected in ((20, False), (21, True)):
             _, t, c, n, l, m = self.case(r)
             result = switch_task_option(t, c, m, n, l, t.pioneer)
             self.assertEqual(result is not None, expected)
@@ -37,7 +37,7 @@ class TaskSwitchTests(unittest.TestCase):
             self.assertIsNone(switch_task_option(t, c, m, n, l, t.pioneer))
 
     def test_insufficient_time_and_return_lock_do_not_switch(self):
-        for round_no, lock in ((60, False), (18, True), (67, False)):
+        for round_no, lock in ((60, False), (21, True), (67, False)):
             _, t, c, n, l, m = self.case(round_no)
             if lock:
                 m.return_targets[11] = 99
@@ -45,8 +45,10 @@ class TaskSwitchTests(unittest.TestCase):
 
     def test_configurable_effort(self):
         _, t, c, n, l, m = self.case()
-        c.task_switch_rounds = 9
+        c.task_switch_rounds = 12
         self.assertIsNone(switch_task_option(t, c, m, n, l, t.pioneer))
+        c.task_switch_rounds = 7
+        self.assertIsNotNone(switch_task_option(t, c, m, n, l, t.pioneer))
 
     def test_agent_moves_without_issuing_more_model_work(self):
         data, _, _, _, _, _ = self.case(10)
@@ -57,7 +59,7 @@ class TaskSwitchTests(unittest.TestCase):
         mem.task_point = (6, 5)
         mem.task_timeout = 30
         mem.answer = None
-        data['roundNo'] = 18
+        data['roundNo'] = 21
         with patch('agent.intelligence.Intelligence.task') as work:
             response = agent.decide(data)
         self.assertEqual(response['roleCommandMap']['11']['action'], 'move')
@@ -65,7 +67,7 @@ class TaskSwitchTests(unittest.TestCase):
         work.assert_not_called()
         # Still inside old task range after the first step: keep moving out.
         data['teamOur']['roles'][0]['pos'] = response['roleCommandMap']['11']['targetPos'][0]
-        data['roundNo'] = 19
+        data['roundNo'] = 22
         with patch('agent.intelligence.Intelligence.task') as work:
             response = agent.decide(data)
         self.assertEqual(response['roleCommandMap']['11']['action'], 'move')

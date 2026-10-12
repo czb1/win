@@ -34,7 +34,7 @@ class Config:
     # A configurable policy cap, not a substitute for playerTasks.timeoutRounds.
     task_max_rounds: int = 1300
     # Opportunity-based switch check; not a platform timeout or a solve estimate.
-    task_switch_rounds: int = 7
+    task_switch_rounds: int = 10
     # Strategy policy: preserve opening purchases, stop new orders afterwards.
     robot_purchase_last_day: int = 1
 
