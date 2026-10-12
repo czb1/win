@@ -8,7 +8,7 @@ from .model import ORES, WEAPONS, HEROES, CHARACTERS, DEFENCE_RETURN_TICK, pos, 
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, spare_mine, sale_inventory, return_destination
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit, delivery_destination, development_pending
-from .treasure_clues import preparation_items
+from .treasure_clues import treasure_active
 from .wall_health import needs_night_repair, needs_day_repair
 
 
@@ -1208,85 +1208,77 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
             vacate_site(turn, nav, ledger, hero, sites)
 
 
-def treasure_preparation_plan(turn, cfg, mem, nav, ledger, hero):
-    """Persistent one-set shopping, with travel and emergency gates in code."""
-    if (not cfg.llm_enabled or not hero or not turn.is_day or turn.phase_task or mem.treasure is not None
-            or mem.treasure_done or mem.treasure_attempted):
+def treasure_purchase_plan(turn, cfg, mem, nav, ledger, hero):
+    """One material target for both reservation and execution; no clue guessing."""
+    if (not cfg.llm_enabled or not hero or not turn.is_day or turn.day == 1
+            or turn.phase_task or not treasure_active(turn, mem)):
         return None
-    if not mem.treasure_prep_items:
-        mem.treasure_prep_items = preparation_items(mem.news, turn.shop)
-    items = mem.treasure_prep_items
-    if not items:
+    t = mem.treasure
+    required = (Counter(t["items"]) if t else
+                Counter({i["name"]: i["quantity"] for i in mem.treasure_materials["items"]}))
+    missing = required - hero.inventory
+    if not missing:
         return None
-    missing = [name for name in items if not hero.inventory[name]]
-    cost = sum(turn.shop.get(name, 0) for name in missing)
     emergency = (any(h.health <= (150 if h.kind == "pioneer" else 110) for h in turn.heroes)
                  or any(w.kind == "wall" and w.health < 500 for w in turn.ours)
                  or bool(turn.station and turn.station.health < 500)
                  or any(turn.threatens_us(r) and (turn.base_distance(r.pos) <= max(6, r.attack_range)
                         or distance(hero.pos, r.pos) <= max(6, r.attack_range + 2)) for r in turn.robots))
-    reason = ("ready" if not missing else "backpack_full" if hero.space < len(missing)
-              else "item_unavailable" if any(name not in turn.shop for name in missing)
-              else "budget_limit" if mem.treasure_prep_spent + cost > 45
-              else "emergency" if emergency else "no_route")
-    route, target, return_steps = None, None, None
-    if reason == "no_route":
-        shops = [p for p, kind in turn.zones.items() if kind == "weaponShop"]
-        routes = [(r[0], p, r) for p in shops
-                  if (r := nav.approach(hero, [p], ledger.reserved)) is not None]
-        home = [w.pos for w in turn.weapons] or (list(turn.station.cells) if turn.station else [])
-        if routes:
-            _, target, route = min(routes, key=lambda row: row[:2])
-            return_steps = min((distance(target, q) for q in home), default=0)
-            reason = ("insufficient_daylight" if turn.day_left <= route[0] + len(missing) + return_steps + cfg.return_margin
-                      else "shopping" if ledger.gold >= cost else "saving_gold")
+    reason = ("emergency" if emergency else "backpack_full" if hero.space < sum(missing.values())
+              else "item_unavailable" if any(k not in turn.shop or turn.shop[k] < 0 for k in missing)
+              else "buy_retry_cooldown" if any((hero.id, k) in mem.buy_failures for k in missing)
+              else "no_feasible_trip")
+    cost = sum(turn.shop.get(k, 0) * n for k, n in missing.items())
+    best = None
+    if reason == "no_feasible_trip":
+        home, exact = return_destination(turn, nav, ledger, hero, mem)
+        for shop, kind in turn.zones.items():
+            if kind != "weaponShop" or mem.movement.avoids(hero.id, shop):
+                continue
+            route = nav.approach(hero, [shop], ledger.reserved)
+            if route is None:
+                continue
+            groups = [[shop]] + ([[tuple(t["position"])]] if t else [])
+            travel = via(nav, hero, groups, ledger.reserved)
+            if travel is None:
+                continue
+            wait = max(0, t["startRound"] - (turn.round + travel + len(missing))) if t else 0
+            if t and turn.round + travel + len(missing) + wait > t["endRound"]:
+                continue
+            # Buying can happen days before opening; today only the shopping
+            # and return trip must fit. The full trip must still meet expiry.
+            total = via(nav, hero, [[shop]] + ([home] if home else []), ledger.reserved,
+                        final_exact=exact if home else False, future_return=bool(home))
+            if total is None or total + len(missing) + cfg.return_margin > turn.day_left:
+                continue
+            candidate = (travel, shop, route)
+            if best is None or candidate[:2] < best[:2]:
+                best = candidate
+        if best:
+            reason = "shopping" if ledger.gold >= cost else "saving_gold"
     mem.trace_treasure(turn, "treasure_prepare", dedupe=True, reason=reason,
-                       items=items, missing=missing, spent=mem.treasure_prep_spent,
-                       budget=45, gold=ledger.gold, missing_cost=cost,
-                       position=hero.pos, shop=target, route_steps=route[0] if route else None,
-                       return_steps=return_steps, day_left=turn.day_left)
-    return (missing, route, cost) if reason in ("shopping", "saving_gold") else None
+                       missing=dict(missing), missing_cost=cost, gold=ledger.gold,
+                       day_left=turn.day_left)
+    return (missing, best[2], cost) if best else None
 
 
 def reserve_treasure_gold(turn, cfg, mem, nav, ledger, hero):
-    t = mem.treasure
-    if (hero and turn.is_day and not turn.phase_task and t
-            and not mem.treasure_done and not mem.treasure_attempted
-            and turn.round <= t["endRound"]):
-        missing = Counter(t["items"]) - hero.inventory
-        route = nav.approach(hero, [tuple(t["position"])], ledger.reserved)
-        if (route and turn.round + route[0] <= t["endRound"]
-                and hero.space >= sum(missing.values()) and all(k in turn.shop for k in missing)):
-            amount = min(max(0, ledger.gold), sum(turn.shop[k] * n for k, n in missing.items()))
-            mem.trace_treasure(turn, "treasure_reserve", dedupe=True,
-                               reason="complete_plan", reserved=amount, missing=dict(missing))
-            return amount
-    plan = treasure_preparation_plan(turn, cfg, mem, nav, ledger, hero)
-    if not plan:
-        return 0
-    task_first = bool(pioneer_task_options(turn, cfg, mem, nav, ledger, hero))
-    # Temporarily hide only this set's missing cost from discretionary workers.
-    # Emergency gates above release the whole reserve; no fixed cash threshold.
-    amount = 0 if task_first else min(plan[2], max(0, ledger.gold))
+    plan = treasure_purchase_plan(turn, cfg, mem, nav, ledger, hero)
+    amount = min(plan[2], max(0, ledger.gold)) if plan else 0
     mem.trace_treasure(turn, "treasure_reserve", dedupe=True,
-                       reason="task_priority" if task_first else "reserved",
-                       gold=ledger.gold, missing_cost=plan[2], reserved=amount)
+                       reason="reserved" if amount else "not_actionable", reserved=amount)
     return amount
 
 
 def prepare_treasure(turn, cfg, mem, nav, ledger, hero):
-    plan = treasure_preparation_plan(turn, cfg, mem, nav, ledger, hero)
+    plan = treasure_purchase_plan(turn, cfg, mem, nav, ledger, hero)
     if not plan or ledger.gold < plan[2]:
         return False
     missing, route, _ = plan
-    name = missing[0]
-    if route[1] is not None:
-        return buy_supply(turn, ledger, hero, (name, route, 1))
-    if ledger.add(hero.id, command("buy", name=name, num=1)):
-        # Count issued purchases too: failures must not cause unlimited retries.
-        mem.treasure_prep_spent += turn.shop[name]
-        return True
-    return False
+    name = next(iter(missing))
+    action = (command("move", route[1]) if route[1] is not None
+              else command("buy", name=name, num=missing[name]))
+    return ledger.add(hero.id, action)
 
 
 def pioneer_task_options(turn, cfg, mem, nav, ledger, hero):
@@ -1306,7 +1298,7 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
                 mem.trace_treasure(turn, "treasure_progress", dedupe=True, reason="medicine_supply")
             return
     t = mem.treasure
-    if t and not mem.treasure_done and not mem.treasure_attempted and turn.round <= t["endRound"]:
+    if t and treasure_active(turn, mem):
         required = Counter(t["items"])
         missing = required - hero.inventory
         route = nav.approach(hero, [tuple(t["position"])], ledger.reserved)
@@ -1331,9 +1323,8 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
             if missing:
                 name = next(iter(missing))
                 num = missing[name]
-                if shopping and name in turn.shop and hero.space >= num and ledger.gold >= turn.shop[name]*num:
-                    if visit(turn, nav, ledger, hero, "weaponShop", command("buy", name=name, num=num)):
-                        return
+                if shopping and prepare_treasure(turn, cfg, mem, nav, ledger, hero):
+                    return
             elif turn.round + route[0] + cfg.return_margin >= t["startRound"]:
                 if route[1] is not None:
                     ledger.add(hero.id, command("move", route[1]))
@@ -1351,6 +1342,8 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
                            reason="done" if mem.treasure_done else "already_attempted"
                            if mem.treasure_attempted else "expired")
     if not cfg.llm_enabled:
+        return
+    if shopping and prepare_treasure(turn, cfg, mem, nav, ledger, hero):
         return
     options = pioneer_task_options(turn, cfg, mem, nav, ledger, hero)
     previous = mem.task_target
@@ -1389,5 +1382,3 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
         if previous is not None:
             emit_event('task_plan', dict(reason='target_unavailable_or_budget',
                        previous_target=previous, day_left=turn.day_left), 'evolution')
-        if shopping:
-            prepare_treasure(turn, cfg, mem, nav, ledger, hero)

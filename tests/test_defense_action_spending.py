@@ -34,7 +34,7 @@ def case(backpack=(), gold=360, round_no=140, second=None):
 
 
 def setup(data, **overrides):
-    options = dict(layout_mode='explicit', loadout=['rocket'],
+    options = dict(robot_purchase_last_day=10, layout_mode='explicit', loadout=['rocket'],
                    weapon_cells=[[5, 9]], wall_cells=[], llm_enabled=False)
     options.update(overrides)
     return setup_case(data, **options)

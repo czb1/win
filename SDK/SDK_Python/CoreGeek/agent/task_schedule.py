@@ -7,6 +7,7 @@ from collections import Counter
 from .model import pos, neighbours, DEFENCE_RETURN_TICK
 from .mining import return_destination
 from .task_skills import shape
+from .treasure_clues import treasure_active
 
 
 def task_descriptor(task):
@@ -124,8 +125,7 @@ def task_options(turn, cfg, mem, nav, ledger, hero, *, switching=False):
             if cooldown > route[0] and not wait_cell_safe(turn, nav, ledger, hero, cell, forbidden):
                 continue
             t = mem.treasure
-            if (t and not mem.treasure_done and not mem.treasure_attempted
-                    and turn.round <= t['endRound']
+            if (t and treasure_active(turn, mem)
                     and t['startRound'] < turn.round + turn.day_left):
                 altar = nav.approach(hero, [tuple(t['position'])], ledger.reserved)
                 if altar and turn.round + altar[0] <= t['endRound']:
@@ -159,7 +159,7 @@ def task_options(turn, cfg, mem, nav, ledger, hero, *, switching=False):
                 continue
             # Treasure timing applies to the whole proposed sequence as well.
             t = mem.treasure
-            if t and not mem.treasure_done and not mem.treasure_attempted and turn.round <= t['endRound']:
+            if t and treasure_active(turn, mem):
                 onward = nav.distances_to([tuple(t['position'])], {hero.pos}, forbidden).get(second['cell'])
                 timeout = min(int(second['task'].get('timeoutRounds', cfg.task_max_rounds)), cfg.task_max_rounds)
                 safe_finish = max(first['finish'] + travel, second['cooldown']) + timeout

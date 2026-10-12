@@ -17,6 +17,7 @@ from .combat import (assignments, fixed_gatling_crew, operator_posts, return_pla
 from .projectiles import wall_gates
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .economy import reserve_treasure_gold
+from .treasure_clues import treasure_active
 from .economy import first_day_front
 from .economy_plan import via
 from .intelligence import Memory, Intelligence
@@ -84,7 +85,7 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     ledger.summon_pending_positions = state["positions"].copy()
     ledger.summon_daily_count = state["count"]
     excluded = set(excluded)
-    if turn.phase_task and turn.pioneer:
+    if turn.pioneer and (turn.phase_task or treasure_active(turn, mem)):
         excluded.add(turn.pioneer.id)
     free = [hero for hero in turn.heroes
             if hero.id not in ledger.used and hero.id not in excluded]
@@ -108,6 +109,10 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                     ledger.explain(hero.id, "summon_highest_robot", item=name, summon_position=position,
                                    daily_reserved_uses=state["count"], daily_limit=DAILY_SUMMON_LIMIT)
                     return True
+    if turn.day > cfg.robot_purchase_last_day:
+        state["buyer"] = None
+        ledger.spending_plan['robot_blocked'] = 'purchase_days_finished'
+        return False
     # Protect the next task as well as a task already in progress. Workers can
     # buy and use orders themselves; ordinary mining may yield, urgent work may not.
     pioneer = turn.pioneer

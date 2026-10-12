@@ -36,14 +36,14 @@ def case(tick=10, gold=581, packs=1):
         ('StationUpgradeVoucher1', 100), ('StationUpgradeVoucher2', 150),
         ('SmallRobotSummonOrder', 15), ('MiddleRobotSummonOrder', 20),
         ('LargeRobotSummonOrder', 70), ('BossRobotSummonOrder', 120))]
-    cfg = Config(layout_mode='explicit', loadout=['rocket'], weapon_cells=[[7, 4]],
+    cfg = Config(robot_purchase_last_day=10, layout_mode='explicit', loadout=['rocket'], weapon_cells=[[7, 4]],
                  wall_cells=[list(p) for p in walls], llm_enabled=False)
     return data, cfg
 
 
 def setup(data, cfg):
     return setup_case(data, **{k: getattr(cfg, k) for k in
-                      ('layout_mode', 'loadout', 'weapon_cells', 'wall_cells', 'llm_enabled')})
+                      ('robot_purchase_last_day', 'layout_mode', 'loadout', 'weapon_cells', 'wall_cells', 'llm_enabled')})
 
 
 class DaylightSpendingTests(unittest.TestCase):

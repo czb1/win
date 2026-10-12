@@ -79,7 +79,7 @@ class TaskSwitchTests(unittest.TestCase):
             data['teamOur']['playerTasks'] = [task()]
             data['mapInfo']['zones'] = [{'neutralType': 'weaponShop', 'pos': {'x': 5, 'y': 6}}]
             data['weaponShopList'] = [{'name': 'BossRobotSummonOrder', 'price': 120}]
-            t, c, n, l = setup_case(data, layout_mode='explicit')
+            t, c, n, l = setup_case(data, layout_mode='explicit', robot_purchase_last_day=10)
             m = Memory()
             if protected_job:
                 m.daytime_jobs[10] = {'kind': 'build', 'target': (2, 2)}

@@ -8,6 +8,7 @@ import test_robot_assault as robot_fixtures
 from test_robot_assault import fortified_case, TOWERS, WALLS
 from agent.brain import Agent, summon_best_robot
 from agent.commands import command
+from agent.config import Config
 from agent.economy import supplies, use_inventory
 from agent.intelligence import Memory
 from agent.recovery import Recovery
@@ -155,12 +156,13 @@ class OpeningBossSpendingTests(unittest.TestCase):
         buys = [c for c in response['roleCommandMap'].values() if c['action'] == 'buy']
         self.assertEqual(buys, [command('buy', name='BossRobotSummonOrder', num=5)])
 
-    def test_day_two_agent_buys_weapon_upgrades_and_spends_surplus_on_boss(self):
+    def test_day_two_agent_buys_weapon_upgrades_without_new_robots(self):
         data = self.data(round_no=140)
         data['teamOur']['roles'].append(unit(3, 'worker', 5, 10, health=500))
         _, cfg, _, _ = fortified_case(data)
         cfg.llm_enabled = False
+        cfg.robot_purchase_last_day = Config().robot_purchase_last_day
         response = Agent(cfg).decide(data)
         buys = [c for c in response['roleCommandMap'].values() if c['action'] == 'buy']
         self.assertIn(command('buy', name='WeaponUpgradeVoucher1', num=3), buys)
-        self.assertIn(command('buy', name='BossRobotSummonOrder', num=3), buys)
+        self.assertFalse(any(c['name'].endswith('RobotSummonOrder') for c in buys))
