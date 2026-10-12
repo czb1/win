@@ -7,7 +7,7 @@ from .commands import command
 from .model import ORES, WEAPONS, HEROES, CHARACTERS, DEFENCE_RETURN_TICK, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, spare_mine, sale_inventory, return_destination
-from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit, delivery_destination, development_pending
+from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit, delivery_destination, development_pending, reserve_income_worker
 from .treasure_clues import treasure_active
 from .wall_health import needs_night_repair, needs_day_repair
 
@@ -614,6 +614,9 @@ def refresh_stone_reserves(turn, cfg, mem, ledger):
     mem.stone_reserves.clear()
     for h in sorted(turn.workers, key=lambda h: (h.id != mem.wall_repair_worker,
                                                -h.inventory["stone"], h.id)):
+        if h.id == ledger.income_worker_id and h.id != mem.wall_repair_worker:
+            mem.stone_reserves[h.id] = 0
+            continue
         mem.stone_reserves[h.id] = min(stone_need, h.inventory["stone"])
         stone_need -= mem.stone_reserves[h.id]
 
@@ -641,8 +644,9 @@ def batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
                    future_return=turn.tick < cfg.economy_rounds) if home else route[0]
         if trip is None or trip + len(counts) + cfg.return_margin > turn.day_left:
             continue
+        cutoff = 70 if hero.id == ledger.income_worker_id else min(60, mem.preparation_tick)
         phase_due = (hero.id not in mem.sold_workers
-                     and min(60, mem.preparation_tick) - turn.tick <= route[0] + len(counts))
+                     and cutoff - turn.tick <= route[0] + len(counts))
         return_due = turn.day_left <= trip + len(counts) + cfg.return_margin + 2
         if phase_due or return_due:
             return True
@@ -662,6 +666,10 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
         if hero.health <= 165 and hero.inventory["Medicine"]:
             if ledger.add(hero.id, command("use", name="Medicine")):
                 continue
+        if hero.id == ledger.income_worker_id:
+            if batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
+                earn(turn, cfg, mem, nav, ledger, hero, force_sale=True, allow_spare=False)
+            continue
         # Do not reopen a vendor journey for each newly collected unit.
         sale_ready = hero.kind == 'worker' and batch_sale_ready(turn, cfg, mem, nav, ledger, hero)
         carrying = any("UpgradeVoucher" in k or k == "WallFixer" for k in hero.backpack)
@@ -919,6 +927,13 @@ def repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
     gaps &= set(wall_sites) - set(mem.build_failures)
     structures = {p for u in (*turn.ours, *turn.enemies) if u.kind not in HEROES for p in u.cells}
     gaps = {p for p in gaps if p not in structures and turn.zones.get(p, "land") == "land"}
+
+    def accepted(hero):
+        if hero.id == ledger.income_worker_id:
+            emit_event('income_preempted', dict(actor=hero.id, reason='wall_breach'), 'economy')
+            ledger.income_worker_id = None
+        return gaps
+
     options = []
     for hero in free:
         if hero.health <= 110 or mem.daytime_jobs.get(hero.id, {}).get("kind") == "sell":
@@ -953,15 +968,16 @@ def repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
                 break
         if batches:
             goal, trip = batches[0]
-            options.append((hero.id != mem.wall_repair_worker, -min(held, goal), trip,
+            options.append((hero.id == ledger.income_worker_id,
+                            hero.id != mem.wall_repair_worker, -min(held, goal), trip,
                             hero.id, hero, reachable, goal))
-    for _, _, _, _, hero, sites, goal in sorted(options, key=lambda o: o[:4]):
+    for _, _, _, _, _, hero, sites, goal in sorted(options, key=lambda o: o[:5]):
         if hero.id != mem.wall_repair_worker:
             mem.wall_repair_delivering = False
         mem.wall_repair_worker = hero.id
         if hero.health <= 165 and hero.inventory["Medicine"]:
             if ledger.add(hero.id, command("use", name="Medicine")):
-                return gaps
+                return accepted(hero)
         held = hero.inventory["stone"]
         if held < cfg.wall_stones:
             mem.wall_repair_delivering = False
@@ -972,12 +988,12 @@ def repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
                     stone_goal=goal, stone_sites=sites):
                 from .wall_batches import start_batch
                 start_batch(turn, mem, ledger, hero, sites[0])
-                return gaps
+                return accepted(hero)
         if held >= cfg.wall_stones:
             mem.wall_repair_delivering = True
             if build(turn, cfg, mem, nav, ledger, hero, sites, lambda _: "wall"):
                 mem.mine_targets.pop(hero.id, None)
-                return gaps
+                return accepted(hero)
         mem.wall_repair_worker = None
         mem.wall_repair_delivering = False
     # No feasible action, no exclusive job. The caller immediately resumes
@@ -991,6 +1007,10 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
            develop=True, shopping=True, deadline=None, gather_first=False):
     if hero.health <= 165 and hero.inventory["Medicine"]:
         ledger.add(hero.id, command("use", name="Medicine"))
+        return
+    if hero.id == ledger.income_worker_id:
+        if not use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem, urgent_only=True):
+            earn(turn, cfg, mem, nav, ledger, hero, deadline=70)
         return
     if hero.inventory["WallFixer"] and use_inventory(turn, nav, ledger, hero, mem=mem):
         return
@@ -1108,6 +1128,8 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
 
 def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     """Allocate only today's outstanding jobs; all other worker time earns gold."""
+    if ledger.income_worker_id is None:
+        reserve_income_worker(turn, mem, nav, ledger, excluded)
     free = [h for h in turn.workers if h.id not in ledger.used and h.id not in excluded]
     for h in free:
         if h.health <= 110:
@@ -1136,6 +1158,8 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
                   or h.id == mem.supply_worker
                   or late_wall_phase(turn)
                   or any("UpgradeVoucher" in k or k == "WallFixer" for k in h.backpack)}
+    developing.discard(ledger.income_worker_id)
+    mem.preparation_workers.discard(ledger.income_worker_id)
     repair_sites = repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites)
     free = [h for h in free if h.id not in ledger.used]
     # A rebuilt wall must not wait for the ordinary farming cutoff. Borrow
@@ -1147,10 +1171,14 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
                             sum(w.id < 0 for w in planned) * cfg.weapon_cost,
                             planned=planned, bulk=True)
             if plan and plan[0].startswith("WallUpgradeVoucher"):
-                repair_buyers.append((h.id != mem.supply_worker, plan[1][0], h.id))
-    repair_buyer = min(repair_buyers)[2] if repair_buyers else None
+                repair_buyers.append((h.id == ledger.income_worker_id,
+                                      h.id != mem.supply_worker, plan[1][0], h.id))
+    repair_buyer = min(repair_buyers)[3] if repair_buyers else None
     if repair_buyer is not None:
         developing.add(repair_buyer)
+        if repair_buyer == ledger.income_worker_id:
+            emit_event('income_preempted', dict(actor=repair_buyer, reason='wall_rebuild'), 'economy')
+            ledger.income_worker_id = None
     wall_sites = [p for p in wall_sites if p not in repair_sites]
     # Only the assigned carrier's stone funds its repair batch. Everyone else
     # keeps the original construction, shopping and income allocation.
@@ -1159,6 +1187,8 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     for h in sorted(turn.workers, key=lambda h: (-h.inventory["stone"], h.id)):
         if h.id == mem.wall_repair_worker:
             mem.stone_reserves[h.id] = min(len(repair_sites) * cfg.wall_stones, h.inventory["stone"])
+        elif h.id == ledger.income_worker_id:
+            mem.stone_reserves[h.id] = 0
         else:
             mem.stone_reserves[h.id] = min(stone_need, h.inventory["stone"])
             stone_need -= mem.stone_reserves[h.id]

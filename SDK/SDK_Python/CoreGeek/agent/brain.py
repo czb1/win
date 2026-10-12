@@ -19,7 +19,7 @@ from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_
 from .economy import reserve_treasure_gold
 from .treasure_clues import treasure_active
 from .economy import first_day_front, build
-from .economy_plan import via
+from .economy_plan import via, reserve_income_worker
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
 from .wall_watch import select_watch, prepare_watch, repair_watch
@@ -690,11 +690,17 @@ class Agent:
                         elif turn.station:
                             walk(nav, ledger, hero, turn.station.cells)
             else:
+                income = reserve_income_worker(turn, mem, nav, ledger, returning)
+                if income:
+                    emit_event('income_reserve', dict(actor=income.id, day_left=turn.day_left), 'economy')
                 # Reserve the watcher's repair budget before other dusk buyers
                 # spend it. The watcher may sell its own ore first.
                 watch_locked, watch_gold = prepare_watch(turn, self.cfg, mem, nav, ledger, watcher, walls)
                 if watch_locked:
                     returning.add(watcher.id)
+                    if watcher.id == ledger.income_worker_id:
+                        emit_event('income_preempted', dict(actor=watcher.id, reason='wall_watch'), 'economy')
+                        ledger.income_worker_id = None
                 ledger.gold -= min(watch_gold, ledger.gold)
                 scout_excluded = returning | ({watcher.id} if watcher else set()) | opening_scout_excluded
                 staged_scout = scout
@@ -725,7 +731,7 @@ class Agent:
                     if hero.id in returning and hero.id not in ledger.used:
                         finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)
                 corridor = (clear_gunner_route(turn, nav, ledger, mem, pairs)
-                            if shared is not None and returning else None)
+                            if shared is not None and mem.gunner_id in returning else None)
                 defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning], ledger.operator_posts)
                 ledger.reserved.update(corridor or ())
                 if not turn.phase_task:

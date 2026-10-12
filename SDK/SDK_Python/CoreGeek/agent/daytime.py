@@ -77,7 +77,7 @@ def finish_daytime_work(turn, cfg, mem, nav, ledger, returning):
 
     A blocked recall may use an adjacent resource, never start another trip.
     An empty watcher at home can make a short inside trip, then retry stock
-    preparation next turn. A stocked watcher keeps its intentional standby.
+    preparation next turn. A stocked watcher works until its recall is due.
     """
     if not turn.is_day:
         return
@@ -110,19 +110,24 @@ def finish_daytime_work(turn, cfg, mem, nav, ledger, returning):
                 LOG.info('round=%s worker=%s daytime_role=%s fallback=local_use reason=%s',
                          turn.round, hero.id, role, reason)
                 continue
-        if reason == 'watch_ready':
+        watch_due = back is None or turn.day_left <= back[0] + cfg.return_margin + 2
+        if reason == 'watch_ready' and watch_due:
             outcome = 'stocked_watch_standby'
         elif not hero.space:
             outcome = 'backpack_full'
         else:
-            # A locked operator or blocked watcher must not abandon a recalled
-            # route. Only the empty watcher already inside may walk nearby.
-            max_steps = (2 if hero.id not in returning or watcher and reason == 'empty_watch' else 0)
+            # A stocked watcher with daylight left may use the same bounded
+            # inside fallback as an empty watcher. Actual blocked returns only
+            # permit collection in place, never an optimistic outward walk.
+            max_steps = (2 if hero.id not in returning
+                         or watcher and (reason == 'empty_watch' or not watch_due) else 0)
+            if back is None:
+                max_steps = 0
             if turn.tick >= cfg.economy_rounds and sale_inventory(turn, mem, hero):
                 max_steps = 0
             if spare_mine(turn, cfg, mem, nav, ledger, hero, home=home, exact=exact,
                           reserved=reserved, max_steps=max_steps,
-                          allow_blocked_home=hero.id in returning):
+                          allow_blocked_home=back is None or hero.id in returning):
                 LOG.info('round=%s worker=%s daytime_role=%s fallback=stockpile reason=%s '
                          'day_left=%s return_steps=%s', turn.round, hero.id, role, reason,
                          turn.day_left, back[0] if back else None)

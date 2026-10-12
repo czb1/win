@@ -171,17 +171,37 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         trips = [via(nav, hero, [vendor, *([stop] if stop else []), landing],
                      ledger.reserved, final_exact=True)
                  for vendor in vendors for stop in (shops_for_sale or [None])]
-    budget = (shop[0] if shop else home[0]) + cfg.return_margin + len(ORES)
+    buying = bool(quota and feasible_stock_trip)
+    budget = (shop[0] if buying else home[0]) + cfg.return_margin + (len(ORES) if buying else 1)
     sale_trip = min((trip for trip in trips if trip is not None), default=None)
     if sale_trip is not None:
         budget = max(budget, sale_trip + len(ores) + int(bool(quota)) + cfg.return_margin + 1)
-    # A funded stock trip starts immediately once firepower is ready. Before
-    # that, recall is determined by this complete trip, including sale, not a
-    # fixed tick 60 switch. Keep two turns before the last feasible departure.
+    # A distant single-pack order is not a reason to give up a whole workday.
+    # Finish an accepted order, buy a useful nearby batch, or leave two turns
+    # before the last feasible full trip. Unfunded trips charge only the return.
     firepower_ready = bool(turn.weapons and all(w.level >= 3 for w in turn.weapons))
-    if (turn.tick < cfg.economy_rounds and turn.day_left > budget + 2
-            and not (quota and feasible_stock_trip and firepower_ready)):
-        report('reserve', 'daytime_production')
+    near_batch = bool(buying and shop[1][0] <= 2 and (quota >= 2 or shop[1][0] == 0))
+    continuing_order = bool(buying and previous_shop is not None)
+    urgent_repair = any(w.health < 500 for w in walls)
+    paid_work = (held >= mem.wall_watch.stock_target(turn)
+                 and (hero.inventory['stone'] >= cfg.wall_stones
+                      or any('UpgradeVoucher' in k for k in hero.backpack)))
+    if (hero.id == ledger.income_worker_id and held >= min(safety_stock, target)
+            and not urgent_repair and turn.day_left > home[0] + cfg.return_margin + 2):
+        ledger.watch_pack_slots[hero.id] = 0
+        funds = 0
+        report('work', 'income_worker_reserved', steps=home[0])
+        return False, 0
+    if (turn.day_left > budget + 2 and not urgent_repair and not paid_work
+            and not continuing_order
+            and not (near_batch and (firepower_ready or turn.tick >= cfg.economy_rounds))):
+        # Reserve mandatory safety packs while producing; optional stock is
+        # funded when the shopping journey is actually dispatched.
+        safety_quota = min(quota, max(0, min(safety_stock, target) - held)) if buying else 0
+        funds = safety_quota * price if price is not None and price > 0 else 0
+        ledger.watch_pack_slots[hero.id] = safety_quota
+        report('reserve', 'daytime_production', trip_steps=budget,
+               deferred_quantity=quota, return_steps=home[0])
         return False, funds
     if hero.health <= 165 and hero.inventory['Medicine']:
         added = ledger.add(hero.id, command('use', name='Medicine'))
@@ -254,16 +274,16 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
                 return True, funds if route[1] else 0
     ledger.watch_pack_slots[hero.id] = 0
     inside, _ = geometry(turn, sites)
-    if not held and hero.pos in inside and turn.zones.get(mem.mine_targets.get(hero.id)) in ORES:
+    if (not held and hero.pos in inside and turn.zones.get(mem.mine_targets.get(hero.id)) in ORES
+            and turn.day_left > home[0] + cfg.return_margin + 1):
         # Continue a short inside fallback instead of alternating a mining
         # move with an unconditional empty-handed recall. The final daytime
         # pass rechecks the return budget and recalls when work no longer fits.
         ledger.daytime_waits[hero.id] = 'empty_watch'
         report('work', 'resume_local_production', steps=home[0])
         return True, 0
-    if (held >= mem.wall_watch.stock_target(turn)
-            and turn.day_left > home[0] + 2 * cfg.return_margin):
-        report('work', 'stock_ready_use_remaining_daylight', steps=home[0])
+    if not urgent_repair and turn.day_left > home[0] + cfg.return_margin + 2:
+        report('work', 'use_remaining_daylight', steps=home[0])
         return False, 0
     if home[1] is not None:
         if not ledger.add(hero.id, command('move', home[1])):
