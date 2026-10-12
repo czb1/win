@@ -7,7 +7,7 @@ import test_wall_watch
 from agent.brain import Agent
 from agent.commands import command
 from agent.config import Config
-from agent.daytime import finish_daytime_work
+from agent.daytime import finish_daytime_work, yield_idle_worker_for_traffic
 from agent.economy import worker
 from agent.intelligence import Memory
 from agent.mining import earn, spare_mine, reserve_watch_space
@@ -17,6 +17,22 @@ from agent.model import neighbours
 
 
 class DaytimeWorkerIdleTests(unittest.TestCase):
+    def test_idle_worker_yields_only_when_it_opens_a_real_job_route(self):
+        from time import monotonic
+        from agent.navigation import Navigator
+        from agent.model import Turn
+        from agent.commands import Ledger
+        barrier = [unit(20+i, 'wall', 3, y) for i, y in enumerate(range(15)) if y != 3]
+        p = payload(40, [unit(1, 'worker', 1, 3), unit(2, 'worker', 3, 3), *barrier])
+        t = Turn(p, Config(layout_mode='explicit'))
+        nav = Navigator(t, monotonic()+3)
+        ledger = Ledger(t, Config(layout_mode='explicit'), [], [])
+        mem = Memory(daytime_jobs={1: {'kind': 'mine', 'target': (6, 3)}})
+        self.assertIsNone(nav.approach(t.workers[0], [(6, 3)]))
+        yield_idle_worker_for_traffic(t, mem, nav, ledger, set())
+        self.assertEqual(ledger.commands['2']['action'], 'move')
+        self.assertNotEqual(ledger.commands['2']['targetPos'][0], {'x': 3, 'y': 3})
+
     def watch_case(self, tick=40, packs=0, mirror=False):
         p = test_wall_watch.WallWatchTests().case(tick=tick, packs=packs, damaged=False)
         p['robot']['roles'] = []

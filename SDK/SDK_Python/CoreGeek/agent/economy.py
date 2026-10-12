@@ -742,14 +742,17 @@ def build_options(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=
                 or target in ledger.build_claims or target in mem.build_failures
                 or mem.movement.avoids(hero.id, target)):
             continue
-        route = (nav.search(hero, {work_cell}, ledger.reserved) if work_cell is not None
-                 else nav.approach(hero, [target], ledger.reserved))
+        nearest = nav.approach(hero, [target], ledger.reserved, with_endpoint=True)
+        pinned = (nav.search(hero, {work_cell}, ledger.reserved, with_endpoint=True)
+                  if work_cell is not None and work_cell in neighbours(target) else None)
+        route = (pinned if pinned and (nearest is None or pinned[0] <= nearest[0])
+                 else nearest)
         if route:
-            priority = (wall_priority(turn, cfg, sites, index, mem.wall_hits)
+            priority = (wall_priority(turn, cfg, sites, index, mem.wall_hits)[:3]
                         if name_for(index) == "wall" else (0, 0, route[0]))
             if name_for(index) == "wall":
                 # Close gaps first, then retain the established expansion order.
-                priority = (int(target not in gaps),) + priority[:3] + (0, target != mem.build_targets.get(hero.id))
+                priority = (int(target not in gaps),) + priority[:3]
                 if turn.day == 1:
                     # Prefer a connected segment, but never require it: an
                     # occupied extension must not suppress every other site.
@@ -758,6 +761,8 @@ def build_options(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=
                     priority += (int(not connected),)
             previous = mem.build_targets.get(hero.id)
             continuity = distance(target, previous) if name_for(index) == "wall" and previous else 0
+            # Keep front/breach order, then choose the nearest reachable work
+            # tile instead of the first blueprint index or a stale target.
             options.append((priority, route[0], continuity, index, target, route))
     return sorted(options)
 
@@ -773,7 +778,7 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
             ledger.build_claims[target] = (hero.id, name)
             mem.build_targets[hero.id] = target
             if route[1] is not None:
-                ledger.remember_work(hero, 'build', target, name=name, work_cell=work_cell)
+                ledger.remember_work(hero, 'build', target, name=name, work_cell=route[2])
             return True
     return False
 

@@ -207,6 +207,27 @@ def enemy_entries(turn, base):
             if base_distance(base, (x, y)) == 2]
 
 
+def first_day_clear_sides(turn, base, known_enemies=()):
+    """Upper/lower wall rows with no observed weapon in the inner face.
+
+    Unseen weapons remain unknown. Remembered stationary weapons count until
+    ordinary shared sight or an explicit death disproves their occupancy.
+    """
+    if turn.day != 1:
+        return set()
+    ys = [p[1] for p in base.cells]
+    lower, upper = min(ys) - 2, max(ys) + 2
+    armed = set()
+    for weapon in (*known_enemies, *turn.enemies):
+        if weapon.kind not in WEAPONS or base_distance(base, weapon.pos) != 1:
+            continue
+        if weapon.pos[1] < min(ys):
+            armed.add(lower)
+        elif weapon.pos[1] > max(ys):
+            armed.add(upper)
+    return {lower, upper} - armed
+
+
 def weakness(wall):
     # Absolute observed HP breaks level ties; missing walls always win.
     return (1, wall.level, wall.health) if wall else (0, 0, 0)
@@ -249,7 +270,12 @@ def _entry_walls(turn, base):
     return [(point, walls.get(point)) for point in enemy_entries(turn, base) if point not in fixed]
 
 
-def _spawn_at_entry(turn, ledger, base, entry, wall, deadline, rear_only=False):
+def _on_entry_side(base, point, side_row):
+    return (side_row is None or
+            (point[1] >= side_row if side_row > base.pos[1] else point[1] <= side_row))
+
+
+def _spawn_at_entry(turn, ledger, base, entry, wall, deadline, rear_only=False, side_row=None):
     blocked = turn.blocked | ledger.reserved
     pending = ledger.summon_pending_positions
     if wall:
@@ -267,6 +293,7 @@ def _spawn_at_entry(turn, ledger, base, entry, wall, deadline, rear_only=False):
         # into a wall. Prefer a free adjacent placement, avoiding spawn shift.
         starts = {p for p in neighbours(entry)
                   if turn.inside(p) and p not in blocked and base_distance(base, p) >= 2}
+    starts = {p for p in starts if _on_entry_side(base, p, side_row)}
     if not starts:
         return None
     queue = deque((point, 0) for point in sorted(starts))
@@ -287,24 +314,28 @@ def _spawn_at_entry(turn, ledger, base, entry, wall, deadline, rear_only=False):
                 best = candidate
             continue
         for step in neighbours(point):
-            if step not in seen and turn.inside(step) and step not in blocked:
+            if (step not in seen and turn.inside(step) and step not in blocked
+                    and _on_entry_side(base, step, side_row)):
                 seen.add(step)
                 queue.append((step, length + 1))
     return best
 
 
-def weakest_approach(turn, ledger, deadline=None, *, prefer_rear=False):
+def weakest_approach(turn, ledger, deadline=None, *, prefer_rear=False, preferred_sides=()):
     base = enemy_base(turn)
     if base is None:
         return None
-    entries = sorted((_entry_rank(turn, base, point, wall, prefer_rear), point, wall)
+    entries = sorted(((int(point[1] not in preferred_sides),
+                       *_entry_rank(turn, base, point, wall, prefer_rear)), point, wall)
                      for point, wall in _entry_walls(turn, base))
     chosen, chosen_key = None, None
     for rank, entry, wall in entries:
         if chosen_key is not None and rank > chosen_key[:len(rank)]:
             break
+        preferred = entry[1] in preferred_sides
         spawn = _spawn_at_entry(turn, ledger, base, entry, wall, deadline,
-                                rear_only=prefer_rear and rear_approach(turn, base, entry))
+                                rear_only=prefer_rear and rear_approach(turn, base, entry),
+                                side_row=entry[1] if preferred else None)
         if spawn is None:
             continue
         key = (*rank, *spawn[:3], entry, spawn[3])
@@ -328,8 +359,10 @@ def _summon_at_gap(turn, ledger, base, entry, deadline):
     # The held wall cell is in the no-summon construction ring. Search outward
     # from it, preferring the same column, and keep every reserved spawn unique.
     blocked = turn.blocked | ledger.reserved
+    ys = [p[1] for p in base.cells]
+    side_row = entry[1] if entry[1] in (min(ys) - 2, max(ys) + 2) else None
     starts = {p for p in neighbours(entry) if turn.inside(p) and p not in blocked
-              and base_distance(base, p) >= 3}
+              and base_distance(base, p) >= 3 and _on_entry_side(base, p, side_row)}
     queue = deque((p, 0) for p in sorted(starts))
     seen, options = set(starts), []
     while queue:
@@ -343,7 +376,7 @@ def _summon_at_gap(turn, ledger, base, entry, deadline):
             continue
         for step in neighbours(point):
             if (step not in seen and turn.inside(step) and step not in blocked
-                    and base_distance(base, step) >= 3):
+                    and base_distance(base, step) >= 3 and _on_entry_side(base, step, side_row)):
                 seen.add(step)
                 queue.append((step, steps + 1))
     return min(options)[-1] if options else None
@@ -355,7 +388,11 @@ def choose_summon_position(turn, ledger, deadline=None):
         position = _summon_at_gap(turn, ledger, base, entry, deadline)
         if position is not None:
             return position
-    plan = weakest_approach(turn, ledger, deadline, prefer_rear=True)
+    clear_sides = first_day_clear_sides(turn, base, ledger.robot_known_enemies) if base else set()
+    # An occupied gap stays authoritative. Without one, prefer the unarmed
+    # horizontal face over the old geometric rear; equal faces keep old ties.
+    plan = weakest_approach(turn, ledger, deadline, prefer_rear=True,
+                            preferred_sides=clear_sides if len(clear_sides) == 1 else ())
     return plan.position if plan else None
 
 
@@ -549,6 +586,122 @@ def _advance_toward_base(turn, memory, ledger, robot, base):
     return False
 
 
+def _make_room_inside(turn, memory, nav, ledger, base, occupied):
+    """Pack the inner aisle deeper when our own frontage blocks the queue.
+
+    Vacating controlled robots is a planning comparison only. Every submitted
+    move still uses observed occupancy, and followers wait for the next view.
+    """
+    movable = [r for r in turn.summon_robots
+               if r.id not in ledger.used and r.abnormal_state != 'dizzy']
+    if len(movable) < 2:
+        return False
+    aims = {r.id: _firing_point(r.pos, r, base, memory, occupied)
+            for r in turn.summon_robots if r.abnormal_state != 'dizzy'}
+    waiting = [r for r in movable if aims[r.id] is None]
+    if not waiting:
+        return False
+    inner = {p for cell in base.cells for p in neighbours(cell)
+             if turn.inside(p) and p not in base.cells}
+    positions = {r.pos for r in movable}
+    movable_ids = {r.id for r in movable}
+    fixed = (turn.blocked - positions) | ledger.reserved | set(memory.occupied_steps)
+    future_occupied = {p: hit for p, hit in occupied.items()
+                       if hit[0] is None or hit[0].id not in movable_ids}
+    rays = {r.id: set(line_cells(r.pos, aims[r.id]))
+            for r in turn.summon_robots if aims.get(r.id) is not None
+            and (r.id in movable_ids or ledger.commands.get(str(r.id), {}).get('action') == 'attack')}
+    firing_lanes = set().union(*rays.values()) if rays else set()
+    queue = []
+    for robot in waiting:
+        check_time(nav.deadline)
+        avoided = ledger.reserved | memory.avoided_steps(robot.id)
+        if nav.memory:
+            avoided |= nav.memory.blocked(robot.id)
+        future_goals = {p for p in inner - fixed - avoided
+                        if _firing_point(p, robot, base, memory, future_occupied) is not None}
+        future = nav.distances_to(future_goals, vacated=positions, reserved=avoided,
+                                  exact=True).get(robot.pos)
+        if future is None:
+            # An enemy, public robot or NPC still seals the passage; moving a
+            # shooter cannot open it, so retain the ordinary clearance attack.
+            continue
+        current_goals = {p for p in _attack_goals(turn, base.cells, robot.attack_range)
+                         - (turn.blocked - {robot.pos}) - avoided
+                         if _firing_point(p, robot, base, memory, occupied) is not None}
+        current = nav.search(robot, current_goals, avoided | firing_lanes)
+        if current is None or current[0] >= future + 2:
+            queue.append(robot)
+    if not queue:
+        return False
+
+    # Measure depth from the waiting queue's doorway. An opening on the far
+    # side must not turn its useful next step into another entrance at depth 0.
+    open_entries = set(enemy_entries(turn, base)) - fixed
+    free_inner = inner - fixed
+    front = min(queue, key=lambda r: (base_distance(base, r.pos), r.id))
+    if front.pos in free_inner:
+        entrances = {front.pos}
+    else:
+        avoided = ledger.reserved | memory.avoided_steps(front.id)
+        if nav.memory:
+            avoided |= nav.memory.blocked(front.id)
+        approaches = nav.distances_to({front.pos}, vacated=positions, reserved=avoided,
+                                      exact=True)
+        entries = {e: approaches[e] for e in open_entries if e in approaches
+                   and any(distance(p, e) == 1 for p in free_inner)}
+        if not entries:
+            return False
+        if ledger.robot_assault_entry in entries and front.id not in memory.entry_crossed:
+            entries = {ledger.robot_assault_entry: entries[ledger.robot_assault_entry]}
+        nearest = min(entries.values())
+        entrances = {p for p in free_inner
+                     if any(length == nearest and distance(p, e) == 1
+                            for e, length in entries.items())}
+    depth = dict.fromkeys(entrances, 0)
+    pending = deque(sorted(entrances))
+    while pending:
+        point = pending.popleft()
+        for step in neighbours(point):
+            if step in free_inner and step not in depth:
+                depth[step] = depth[point] + 1
+                pending.append(step)
+    choices = []
+    for robot in movable:
+        check_time(nav.deadline)
+        if robot.pos not in depth:
+            continue
+        protected = set().union(*(ray for uid, ray in rays.items() if uid != robot.id))
+        blocked = turn.blocked | ledger.reserved | memory.avoided_steps(robot.id) | protected
+        if nav.memory:
+            blocked |= nav.memory.blocked(robot.id)
+        for step in neighbours(robot.pos):
+            if step in blocked or depth.get(step, -1) <= depth[robot.pos]:
+                continue
+            moved = occupied.copy()
+            moved.pop(robot.pos, None)
+            moved[step] = robot, False
+            if _firing_point(step, robot, base, memory, moved) is not None:
+                # Clear from the head of the queue. Strictly increasing depth
+                # prevents sideways oscillation while teammates advance.
+                choices.append((-depth[step], -depth[robot.pos], robot.id, step, robot))
+    for _, _, _, step, robot in sorted(choices, key=lambda row: row[:-1]):
+        if ledger.add(robot.id, command('move', step)):
+            memory.remember(turn, robot, 'move', step)
+            ledger.explain(robot.id, 'robot_make_room_inside', target_id=base.id,
+                           from_pos=robot.pos, next_pos=step, inner_depth=depth[robot.pos],
+                           next_depth=depth[step], waiting_robots=[r.id for r in queue])
+            for follower in queue:
+                if follower.id not in ledger.used:
+                    ledger.used.add(follower.id)
+                    ledger.reserved.add(follower.pos)
+                    ledger.explain(follower.id, 'robot_wait_assault_lane',
+                                   target_id=base.id, yielding_robot=robot.id,
+                                   occupied_pos=robot.pos, next_pos=step)
+            return True
+    return False
+
+
 def _enter_scout_gap(turn, memory, nav, ledger, robot, base, entry, occupied):
     if robot.pos == entry:
         memory.entry_crossed.add(robot.id)
@@ -592,12 +745,14 @@ def _enter_scout_gap(turn, memory, nav, ledger, robot, base, entry, occupied):
 def act_robots(turn, memory, nav, ledger):
     base = enemy_base(turn)
     memory.observe(turn, base)
+    ledger.robot_known_enemies = tuple(u for uid, u in memory.buildings.items()
+                                       if uid not in memory.rejected_buildings)
     if not turn.summon_robots:
         memory.focus_target_id = None
         return
-    ledger.robot_known_enemies = tuple(u for uid, u in memory.buildings.items()
-                                       if uid not in memory.rejected_buildings)
     occupied = _occupants(turn, memory)
+    if base is not None and not turn.is_day:
+        _make_room_inside(turn, memory, nav, ledger, base, occupied)
     entry = _open_assault_entry(turn, ledger, base) if base else None
     if entry is not None and not turn.is_day:
         # Process the current holder first so it can make room for followers.

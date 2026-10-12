@@ -21,7 +21,7 @@ from agent.commands import EMPTY, Ledger, command
 from agent.logging_system import (configure_logging, ContextFilter, WireFormatter,
                                   emit_payload, request_context)
 from agent.model import Turn
-from agent.server import Server
+from agent.server import Server, Handler
 
 sys.path.insert(0, str(ROOT / "tools"))
 from log_records import events, ReadReport
@@ -129,16 +129,29 @@ class TxtDiagnosticsTests(unittest.TestCase):
 
     def test_http_busy_fallback_has_request_and_response_context(self):
         server = Server(("127.0.0.1", 0), Config(layout_mode="explicit"))
+        response_logged = threading.Event()
+        original_send = Handler.send_json
+
+        def send_and_notify(handler, *args, **kwargs):
+            try:
+                return original_send(handler, *args, **kwargs)
+            finally:
+                if handler.server is server:
+                    response_logged.set()
+
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         server.lock.acquire()
         try:
-            with capture() as stream:
+            with capture() as stream, patch.object(Handler, "send_json", send_and_notify):
                 client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
                 client.request("POST", "/", body=json.dumps(payload(42)), headers={"Content-Type": "application/json"})
                 response = client.getresponse()
                 self.assertEqual(json.loads(response.read()), EMPTY)
                 client.close()
+                # Receipt of the HTTP body precedes the handler's log write.
+                # Keep capture installed until this request finishes logging.
+                self.assertTrue(response_logged.wait(timeout=2), "response handler did not finish")
             busy = next(r for r in records(stream) if r["event"] == "lock_busy")
             sent = next(r for r in records(stream) if r["event"] == "http_response")
             self.assertEqual(busy["round"], 42)
@@ -267,4 +280,5 @@ class TxtDiagnosticsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
