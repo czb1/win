@@ -6,7 +6,8 @@ from .model import distance, neighbours, SUMMON_ORDERS
 from .navigation import check_time
 from .projectiles import line_cells
 from .robot_assault import (base_distance, enemy_base, enemy_entries,
-                            first_day_clear_sides, rear_approach)
+                            first_day_clear_sides, in_summon_cluster,
+                            open_assault_entry, rear_approach)
 
 
 FIRST_DAY_SCOUT_TICK = 40
@@ -59,6 +60,7 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
                 continue
             if not any(turn.summon_position_legal(p) and base_distance(base, p) >= 3
                        and p not in (turn.blocked - {scout.pos}) | ledger.reserved
+                        and in_summon_cluster(ledger, p)
                        and (p[1] >= entry[1] if entry[1] > max(ys) else p[1] <= entry[1])
                        for p in neighbours(entry)):
                 continue
@@ -70,10 +72,18 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
                                jobs.get(scout.id, {}).get('kind') == 'build',
                                entry[0] not in xs, route[0], scout.id, entry, scout, route))
     if not candidates:
-        # Do not preserve a wall target after a wall/occupant closes it.
-        if memory.wall_entry in turn.blocked and not any(
-                w.id == memory.worker_id and w.pos == memory.wall_entry for w in turn.workers):
+        # A passing character/robot does not invalidate the unbuilt wall cell.
+        entry = open_assault_entry(turn, base, memory.wall_entry)
+        if entry is None:
             memory.wall_entry = None
+        elif entry in turn.blocked | ledger.reserved:
+            scout = next((w for w in turn.workers if w.id == memory.worker_id), None)
+            if scout and scout.id not in ledger.used and scout.id not in excluded:
+                ledger.used.add(scout.id)
+                ledger.reserved.add(scout.pos)
+                ledger.explain(scout.id, 'first_day_wall_block_wait', entry=entry,
+                               waiting_reason='entry_occupied')
+                return scout
         return None
     _, _, _, _, _, _, _, _, entry, scout, route = min(candidates, key=lambda row: row[:9])
     memory.worker_id, memory.post, memory.wall_entry = scout.id, entry, entry
