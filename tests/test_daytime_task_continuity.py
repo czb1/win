@@ -74,7 +74,7 @@ class DaytimeTaskContinuityTests(unittest.TestCase):
         self.assertNotIn(1, mem.daytime_jobs)
 
     def test_buy_keeps_item_shop_and_quantity_through_walk(self):
-        p = self.case()
+        p = self.case(35)
         t, c, n, l = self.setup(p)
         mem = Memory()
         plan = supplies(t, c, mem, n, l, t.workers[0], bulk=True)
@@ -100,7 +100,7 @@ class DaytimeTaskContinuityTests(unittest.TestCase):
         self.assertEqual(l.work_jobs[1]['kind'], 'use')
 
     def test_build_target_survives_builder_reallocation(self):
-        p = self.case(backpack=['stone'] * 10)
+        p = self.case(35, backpack=['stone'] * 10)
         t, c, n, l = self.setup(p)
         mem = Memory()
         self.assertTrue(build(t, c, mem, n, l, t.workers[0], [(7, 8)], lambda _: 'wall'))
@@ -109,7 +109,7 @@ class DaytimeTaskContinuityTests(unittest.TestCase):
         self.assertEqual(l.build_claims[(7, 8)], (1, 'wall'))
 
     def test_buyer_reserves_before_builder_spends_the_same_gun_budget(self):
-        p = self.case()
+        p = self.case(35)
         p['teamOur']['roles'].pop(2)  # One observed gun, one missing gun.
         p['teamOur']['roles'][1]['pos'] = {'x': 4, 'y': 10}
         p['teamOur']['roles'].append(unit(2, 'worker', 4, 5, health=220))
@@ -132,7 +132,7 @@ class DaytimeTaskContinuityTests(unittest.TestCase):
         self.assertEqual(l.build_claims[(7, 8)], (1, 'wall'))
 
     def test_finished_action_clears_its_job_and_stale_mine_ownership(self):
-        p = self.case(backpack=['WeaponUpgradeVoucher1'])
+        p = self.case(35, backpack=['WeaponUpgradeVoucher1'])
         p['teamOur']['roles'][1]['pos'] = {'x': 9, 'y': 11}
         mem = Memory(mine_targets={1: (8, 8)}, daytime_jobs={
             1: dict(kind='use', target=(10, 11), name='WeaponUpgradeVoucher1')})

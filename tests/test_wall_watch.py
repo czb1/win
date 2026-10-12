@@ -229,10 +229,9 @@ class WallWatchTests(unittest.TestCase):
         prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertEqual(ledger.commands['2']['name'], 'WallFixer')
 
-    def test_long_sale_shop_return_starts_before_fixed_cutoff(self):
-        # The full perimeter adds travel: begin six turns before tick 40.
-        p = self.case(day=7, tick=34, packs=0, damaged=False)
-        p['teamOur']['roles'][2].update(pos={'x': 0, 'y': 0}, backpack=['copper'] * 3)
+    def test_long_sale_shop_return_starts_at_fixed_cutoff(self):
+        p = self.case(day=7, tick=35, packs=0, damaged=False)
+        p['teamOur']['roles'][2].update(pos={'x': 1, 'y': 0}, backpack=['copper'] * 3)
         p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 13, 'y': 3}})
         p['vendorShopList'] = [{'name': 'copper', 'price': 10}]
         t, cfg, nav, ledger = setup_case(p, return_margin=5)
@@ -272,7 +271,7 @@ class WallWatchTests(unittest.TestCase):
 
     def test_late_watch_keeps_one_wall_upgrade_affordable(self):
         from agent.economy import wall_purchase_allowed
-        p = self.case(day=8, tick=5, packs=0, damaged=False)
+        p = self.case(day=8, tick=35, packs=0, damaged=False)
         p['teamOur']['goldNum'] = 50
         p['weaponShopList'].append({'name': 'WallUpgradeVoucher1', 'price': 20})
         for role in p['teamOur']['roles']:

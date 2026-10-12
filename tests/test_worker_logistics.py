@@ -20,7 +20,7 @@ from agent.worker_jobs import _continue
 
 class LogisticsTests(unittest.TestCase):
     def test_continued_build_uses_another_adjacent_tile_when_pinned_tile_fills(self):
-        p = payload(10, [unit(1, 'worker', 2, 4), unit(2, 'worker', 3, 4),
+        p = payload(35, [unit(1, 'worker', 2, 4), unit(2, 'worker', 3, 4),
                          unit(13, 'station', 1, 1)])
         t, cfg, nav, ledger = setup_case(p, layout_mode='explicit', weapon_cells=[[4, 4]])
         job = {'kind': 'build', 'target': (4, 4), 'name': 'rocket', 'work_cell': (3, 4)}
@@ -30,7 +30,7 @@ class LogisticsTests(unittest.TestCase):
         self.assertNotEqual(ledger.work_jobs[1]['work_cell'], (3, 4))
 
     def test_continued_purchase_switches_to_reachable_shop(self):
-        p = payload(140, [unit(1, 'worker', 2, 2),
+        p = payload(165, [unit(1, 'worker', 2, 2),
                           unit(13, 'station', 0, 0, level=3),
                           unit(14, 'rocket', 2, 4, level=1)])
         p['mapInfo']['zones'] = [

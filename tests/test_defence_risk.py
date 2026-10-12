@@ -35,7 +35,7 @@ class WallRiskTests(unittest.TestCase):
         mem.observe(Turn(p, cfg), cfg)
         self.assertEqual(mem.wall_hits[(9, 8)], 1)
 
-    def case(self, round_no=260, gun_level=2):
+    def case(self, round_no=295, gun_level=2):
         p = payload(round_no, [unit(1, "worker", 6, 5), unit(13, "station", 3, 9, level=3),
                                unit(20, "rocket", 5, 8, level=gun_level),
                                unit(21, "rocket", 6, 8, level=gun_level),

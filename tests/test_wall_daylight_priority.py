@@ -34,7 +34,7 @@ class WallDaylightPriorityTests(unittest.TestCase):
 
     def test_paid_v2_is_used_with_new_level_one_wall_and_missing_wall(self):
         case = test_wall_upgrade_delivery.WallUpgradeDeliveryTests()
-        for tick in (10, 65, 450):
+        for tick in (35, 65, 450):
             for missing in (False, True):
                 with self.subTest(tick=tick, missing=missing):
                     p = case.case(tick)
@@ -68,10 +68,10 @@ class WallDaylightPriorityTests(unittest.TestCase):
         self.assertTrue(use_inventory(t, nav, ledger, t.workers[0], mem=Memory()))
         self.assertEqual(ledger.commands['1'], command('use', (5, 4), name='WallUpgradeVoucher2'))
 
-    def test_carried_voucher_interrupts_pending_purchase_or_income_before_cutoff(self):
+    def test_carried_voucher_interrupts_pending_purchase_or_income_at_cutoff(self):
         case = test_wall_upgrade_delivery.WallUpgradeDeliveryTests()
         for kind in ('buy', 'mine', 'spare'):
-            p = case.case(10)
+            p = case.case(35)
             p['teamOur']['roles'][0]['backpack'] = ['WallUpgradeVoucher2']
             p['teamOur']['roles'][3]['level'] = 1
             p['mapInfo']['zones'].append({'neutralType': 'copper', 'pos': {'x': 6, 'y': 3}})
@@ -142,14 +142,14 @@ class WallDaylightPriorityTests(unittest.TestCase):
         resume_daytime_jobs(t, cfg, mem, nav, ledger, ledger.tower_cells, ledger.wall_cells, set())
         self.assertEqual(ledger.work_jobs[1]['target'], (8, 8))
 
-    def test_route_estimate_can_start_preparation_before_thirty_five(self):
+    def test_long_route_does_not_start_preparation_before_thirty_five(self):
         case = test_wall_upgrade_delivery.WallUpgradeDeliveryTests()
         p = case.case(1)
         p['mapInfo']['zones'][0]['pos'] = {'x': 40, 'y': 31}
         p['mapInfo'].update(width=41, height=32)
         t, cfg, nav, _ = case.setup(p)
         cutoff = preparation_start(t, cfg, Memory(), nav, t.workers, [(4, 6)])
-        self.assertLess(cutoff, 35)
+        self.assertEqual(cutoff, 35)
 
     def watch_case(self, tick=42, vouchers=(), worker_pos=(26, 16)):
         p = payload(780 + tick, [unit(13, 'station', 30, 10, health=1500),

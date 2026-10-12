@@ -16,7 +16,7 @@ from agent.wall_watch import prepare_watch
 from agent.worker_jobs import resume_daytime_jobs
 
 
-def case(tick=10, gold=581, packs=1):
+def case(tick=35, gold=581, packs=1):
     walls = [(x, y) for x in range(3, 9) for y in range(3, 9)
              if (x in (3, 8) or y in (3, 8)) and (x, y) != (8, 6)]
     roles = [unit(13, 'station', 5, 6, health=1500),
@@ -98,7 +98,7 @@ class DaylightSpendingTests(unittest.TestCase):
         ledger.operator_posts[2]=(7,5)
         self.assertEqual(delivery_destination(turn,nav,ledger,turn.workers[1]), ([(7,5)],True))
 
-    def test_stock_trip_starts_early_and_includes_daylight_repairs(self):
+    def test_stock_trip_starts_at_cutoff_and_includes_daylight_repairs(self):
         data,cfg=case(packs=1)
         data['teamOur']['roles'][1]['pos']={'x':6,'y':10}
         for p,hp in (((8,4),1440),((8,5),1545)):

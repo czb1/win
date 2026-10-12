@@ -75,7 +75,7 @@ class ThreeRocketTests(unittest.TestCase):
         for cfg in (Config(), Config.load(ROOT / 'config/default.json')):
             self.assertEqual(cfg.loadout, ['rocket'] * 3)
             for missing in range(3):
-                data = payload(10, [unit(13, 'station', 5, 11), unit(1, 'worker', 4, 11),
+                data = payload(35, [unit(13, 'station', 5, 11), unit(1, 'worker', 4, 11),
                     *[unit(20+i, 'rocket', *p) for i, p in enumerate(TOWERS) if i != missing]])
                 turn, _, nav, ledger = setup_case(data)
                 self.assertTrue(build(turn, cfg, Memory(), nav, ledger, turn.workers[0],

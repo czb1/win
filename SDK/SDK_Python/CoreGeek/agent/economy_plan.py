@@ -100,40 +100,8 @@ def development_pending(turn, cfg, mem, tower_sites, wall_sites):
 
 
 def preparation_start(turn, cfg, mem, nav, heroes, sites):
-    weapons = planned_weapons(turn, cfg, mem, sites)
-    home = {p for w in weapons for p in w.cells}
-    if not home and turn.station:
-        home = turn.station.cells
-    vendors = [p for p, k in turn.zones.items() if k == "vendor"]
-    shops = [p for p, k in turn.zones.items() if k == "weaponShop"]
-    missing = sum(w.id < 0 for w in weapons)
-    upgrades = sum(w.level < 3 for w in weapons) if turn.day > 1 else 0
-    walls = [w for w in turn.ours if w.kind == "wall" and w.level < wall_level_limit(turn, w.pos)] if not upgrades else []
-    front = set(front_sites(turn, [w.pos for w in turn.ours if w.kind == "wall"]))
-    walls.sort(key=lambda w: (w.level, w.pos not in front, w.health, w.id))
-    # Base vouchers also need a shop visit and delivery, even after all guns
-    # are maxed. Reserve the actual station leg rather than only weapon cells.
-    station = (turn.station if turn.station and turn.station.level < 3
-               and not upgrades and not walls and not mem.wall_rebuild_levels else None)
-    upgrades += len(walls) + int(station is not None)
-    budgets = []
-    for hero in heroes:
-        if not home:
-            continue
-        # One batch sale, up to two voucher purchases, delivery/use, and a
-        # congestion margin. Building and shopping can proceed in parallel.
-        groups = (([vendors] if vendors else []) + ([shops] if shops and upgrades else [])
-                  + [w.cells for w in walls] + ([station.cells] if station else []) + [home])
-        route = via(nav, hero, groups)
-        if route is not None:
-            build_route = nav.approach(hero, home)
-            shopping = route + (1 if vendors else 0) + (2 + 2 * upgrades if shops else 0)
-            construction = (build_route[0] if build_route else 0) + 2 * missing
-            work = max(shopping, construction) if len(heroes) > 1 else shopping + 2 * missing
-            budgets.append(work + cfg.return_margin)
-    # Re-evaluate as mines move, but do not oscillate back into an earlier phase.
-    cutoff = min(cfg.economy_rounds, max(0, 70 - max(budgets, default=cfg.return_margin)))
-    mem.preparation_tick = min(mem.preparation_tick, cutoff)
+    """Keep the farming phase fixed; each later job checks its own full trip."""
+    mem.preparation_tick = cfg.economy_rounds
     return mem.preparation_tick
 
 

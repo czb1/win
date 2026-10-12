@@ -10,7 +10,7 @@ from agent.worker_jobs import resume_daytime_jobs
 
 
 class FirstDayFrontTests(unittest.TestCase):
-    def case(self, round_no=1):
+    def case(self, round_no=35):
         p = payload(round_no, roles=[unit(13, 'station', 3, 11),
                                     unit(10, 'worker', 5, 10, backpack=['stone'] * 6),
                                     unit(12, 'worker', 8, 9), unit(14, 'imp', 7, 10)])

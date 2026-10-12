@@ -179,13 +179,19 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     # A distant single-pack order is not a reason to give up a whole workday.
     # Finish an accepted order, buy a useful nearby batch, or leave two turns
     # before the last feasible full trip. Unfunded trips charge only the return.
-    firepower_ready = bool(turn.weapons and all(w.level >= 3 for w in turn.weapons))
     near_batch = bool(buying and shop[1][0] <= 2 and (quota >= 2 or shop[1][0] == 0))
     continuing_order = bool(buying and previous_shop is not None)
     urgent_repair = any(w.health < 500 for w in walls)
     paid_work = (held >= mem.wall_watch.stock_target(turn)
                  and (hero.inventory['stone'] >= cfg.wall_stones
                       or any('UpgradeVoucher' in k for k in hero.backpack)))
+    if turn.tick < cfg.economy_rounds and not urgent_repair:
+        safety_quota = min(quota, max(0, min(safety_stock, target) - held)) if buying else 0
+        funds = safety_quota * price if price is not None and price > 0 else 0
+        ledger.watch_pack_slots[hero.id] = safety_quota
+        report('reserve', 'farming_phase_active', trip_steps=budget,
+               deferred_quantity=quota, return_steps=home[0])
+        return False, funds
     if (hero.id == ledger.income_worker_id and held >= min(safety_stock, target)
             and not urgent_repair and turn.day_left > home[0] + cfg.return_margin + 2):
         ledger.watch_pack_slots[hero.id] = 0
@@ -194,7 +200,7 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
         return False, 0
     if (turn.day_left > budget + 2 and not urgent_repair and not paid_work
             and not continuing_order
-            and not (near_batch and (firepower_ready or turn.tick >= cfg.economy_rounds))):
+            and not (near_batch and turn.tick >= cfg.economy_rounds)):
         # Reserve mandatory safety packs while producing; optional stock is
         # funded when the shopping journey is actually dispatched.
         safety_quota = min(quota, max(0, min(safety_stock, target) - held)) if buying else 0

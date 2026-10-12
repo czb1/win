@@ -50,14 +50,15 @@ class WorkerRecoveryTests(unittest.TestCase):
         t, cfg, nav, ledger = setup_case(p)
         self.assertIsNone(supplies(t, cfg, Memory(), nav, ledger, t.workers[0]))
 
-    def test_base_only_upgrade_reserves_shop_travel(self):
+    def test_base_only_upgrade_keeps_fixed_preparation_cutoff(self):
         p = self.case(1)
         p['mapInfo']['zones'][1]['pos'] = {'x': 14, 'y': 14}
         t, cfg, nav, ledger = setup_case(p, economy_rounds=69)
         with_base = preparation_start(t, cfg, Memory(), nav, t.workers, [])
         p['teamOur']['roles'][1]['level'] = 3
         t, cfg, nav, ledger = setup_case(p, economy_rounds=69)
-        self.assertLess(with_base, preparation_start(t, cfg, Memory(), nav, t.workers, []))
+        self.assertEqual(with_base, cfg.economy_rounds)
+        self.assertEqual(preparation_start(t, cfg, Memory(), nav, t.workers, []), cfg.economy_rounds)
 
     def test_sold_worker_can_reach_nearby_ore_without_second_sale(self):
         t, cfg, nav, ledger = setup_case(self.case())

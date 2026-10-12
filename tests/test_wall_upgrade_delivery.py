@@ -301,7 +301,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                          command("use", (5, 4), name="WallUpgradeVoucher2"))
 
     def test_shop_carrier_delivers_before_sale_or_another_purchase(self):
-        for tick in (10, 40, 59):
+        for tick in (35, 40, 59):
             p = self.case(tick)
             p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher2", "copper"]
             p["mapInfo"]["zones"] += [{"neutralType": k, "pos": {"x": x, "y": y}}
@@ -313,8 +313,8 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
             self.assertEqual(l.commands["1"]["action"], "move")
             self.assertEqual(mem.upgrade_targets[1], (7, 5))
 
-    def test_replacement_shopping_starts_before_farming_cutoff(self):
-        p = self.case(5)
+    def test_replacement_shopping_starts_at_farming_cutoff(self):
+        p = self.case(35)
         p["teamOur"]["roles"][3]["level"] = 1
         p["mapInfo"]["zones"] += [{"neutralType": k, "pos": {"x": x, "y": y}}
                                    for k, x, y in (("vendor", 4, 5), ("copper", 4, 4))]
@@ -347,7 +347,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
             self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=mem))
             self.assertEqual(mem.upgrade_targets[1], (7, 5))
 
-    def test_wall_only_preparation_includes_shop_and_wall_delivery(self):
+    def test_wall_only_work_keeps_fixed_preparation_cutoff(self):
         p = self.case(1)
         p["teamOur"]["roles"][1]["level"] = 3
         p["mapInfo"]["zones"][0]["pos"] = {"x": 14, "y": 14}
@@ -356,7 +356,8 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         for r in p["teamOur"]["roles"][3:]:
             r["level"] = 3
         t, c, n, _ = self.setup(p, economy_rounds=69)
-        self.assertLess(pending, preparation_start(t, c, Memory(), n, t.workers, []))
+        self.assertEqual(pending, c.economy_rounds)
+        self.assertEqual(preparation_start(t, c, Memory(), n, t.workers, []), c.economy_rounds)
 
     def test_bulk_purchase_budgets_return_from_last_wall_to_assigned_post(self):
         p = self.case(54)

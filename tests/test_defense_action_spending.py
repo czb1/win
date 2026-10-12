@@ -17,7 +17,7 @@ BOSS = 'BossRobotSummonOrder'
 VOUCHER = 'WeaponUpgradeVoucher1'
 
 
-def case(backpack=(), gold=360, round_no=140, second=None):
+def case(backpack=(), gold=360, round_no=165, second=None):
     roles = [unit(13, 'station', 4, 7, level=3, health=4500),
              unit(1, 'worker', 6, 9, health=500, backpack=list(backpack)),
              unit(20, 'rocket', 5, 9, level=1, health=1000)]

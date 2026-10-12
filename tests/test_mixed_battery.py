@@ -43,7 +43,7 @@ class MixedBatteryTests(unittest.TestCase):
     def test_explicit_mixed_configuration_builds_two_rockets_and_one_gatling(self):
         for cfg in (mixed_config(),):
             self.assertEqual(cfg.loadout, ['rocket', 'rocket', 'gatling'])
-            data = payload(10, [unit(13, 'station', 5, 11), unit(1, 'worker', 4, 11)])
+            data = payload(35, [unit(13, 'station', 5, 11), unit(1, 'worker', 4, 11)])
             sites = layout(Turn(data, cfg), cfg)[0]
             # Each independent request leaves exactly one unbuilt weapon site.
             for index, expected in enumerate(('rocket', 'rocket', 'gatling')):

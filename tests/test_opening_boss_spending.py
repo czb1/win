@@ -40,7 +40,7 @@ class OpeningBossSpendingTests(unittest.TestCase):
         data = self.data()
         data['teamOur']['roles'][1].update(pos={'x': 4, 'y': 9},
                                           backpack=['WeaponUpgradeVoucher1'])
-        for round_no, expected in ((10, False), (140, True)):
+        for round_no, expected in ((10, False), (165, True)):
             with self.subTest(round_no=round_no):
                 data['roundNo'] = round_no
                 turn, _, nav, ledger = fortified_case(data)
@@ -75,7 +75,7 @@ class OpeningBossSpendingTests(unittest.TestCase):
         self.assertEqual(ledger.gold, 119)
 
     def test_day_two_weapon_purchase_is_enabled(self):
-        turn, cfg, nav, ledger = fortified_case(self.data(round_no=140))
+        turn, cfg, nav, ledger = fortified_case(self.data(round_no=165))
         plan = supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0],
                         item_only='WeaponUpgradeVoucher1', bulk=True)
         self.assertIsNotNone(plan)
@@ -161,7 +161,7 @@ class OpeningBossSpendingTests(unittest.TestCase):
                                      command('buy', name='StationUpgradeVoucher1', num=1)])
 
     def test_day_two_agent_buys_weapon_upgrades_without_new_robots(self):
-        data = self.data(round_no=140)
+        data = self.data(round_no=165)
         data['teamOur']['roles'].append(unit(3, 'worker', 5, 10, health=500))
         _, cfg, _, _ = fortified_case(data)
         cfg.llm_enabled = False

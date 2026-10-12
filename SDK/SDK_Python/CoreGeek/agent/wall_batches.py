@@ -37,6 +37,9 @@ def start_batch(turn, mem, ledger, hero, anchor):
 
 
 def continue_batch(turn, cfg, mem, nav, ledger, hero, towers, walls):
+    if turn.tick < cfg.economy_rounds:
+        mem.wall_batches.pop(hero.id, None)
+        return False
     if hero.id == ledger.income_worker_id:
         mem.wall_batches.pop(hero.id, None)
         return False

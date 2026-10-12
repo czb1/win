@@ -187,6 +187,7 @@ class WallRepairTests(unittest.TestCase):
 
     def test_flank_replacement_recovers_three_before_weapon_upgrades(self):
         p, c, m = self.repair_case()
+        p['roundNo'] = (p['roundNo'] // 130) * 130 + 35
         self.assertEqual(m.wall_rebuild_levels[(5, 8)], 3)
         replacement = unit(99, "wall", 5, 8, health=1000)
         p["teamOur"]["roles"].append(replacement)

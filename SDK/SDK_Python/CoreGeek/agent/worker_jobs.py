@@ -32,15 +32,21 @@ def _fits_return(turn, cfg, mem, nav, ledger, hero, target):
 
 def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()):
     from .economy import buy_supply, supplies, use_inventory, build, batch_sale_ready
+    from .navigation import wall_gaps
 
     kind, target = job['kind'], job['target']
+    if (turn.tick < cfg.economy_rounds and kind in ('buy', 'build', 'use')
+            and job.get('name') != 'Medicine'
+            and not (kind == 'build' and (target in mem.wall_rebuild_levels
+                     or target in wall_gaps(turn, walls, mem.wall_hits)))):
+        return False, 'farming_phase_active'
     income = hero.id == ledger.income_worker_id
     if income and (kind == 'mine' and job.get('want_stone')
                    or kind == 'build' and job.get('name') == 'wall'
                    or kind == 'buy' and job.get('name', '').startswith('Wall')):
         return False, 'income_worker_reserved'
     if kind in ('mine', 'spare') and not job.get('want_stone'):
-        if (not income and turn.tick >= min(cfg.economy_rounds, mem.preparation_tick)
+        if (not income and turn.tick >= cfg.economy_rounds
                 and development_pending(turn, cfg, mem, towers, walls)):
             return False, 'development_phase_started'
         if cashout_ores(turn, cfg, mem, hero, sale_inventory(turn, mem, hero)):

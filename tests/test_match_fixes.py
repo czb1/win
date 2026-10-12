@@ -94,7 +94,7 @@ class SuppliesTests(unittest.TestCase):
         self.assertTrue(response["roleCommandMap"])
 
     def case(self, **kw):
-        p = payload(131, roles=[unit(1, "worker", 5, 5, backpack=["Medicine"], **kw),
+        p = payload(165, roles=[unit(1, "worker", 5, 5, backpack=["Medicine"], **kw),
                            unit(20, "rocket", 4, 5)])
         p["teamOur"]["goldNum"] = 200
         p["mapInfo"]["zones"] = [{"neutralType": "weaponShop", "pos": {"x": 6, "y": 5}},
@@ -132,8 +132,8 @@ class SuppliesTests(unittest.TestCase):
 
     def test_buy_failure_backs_off_and_still_works(self):
         p = self.case()
-        p.update(roundNo=132, lastRoundRoleActionResults={"1": False})
-        mem = Memory(last_round=131, last_commands={"1": command("buy", name="WeaponUpgradeVoucher1", num=1)})
+        p.update(roundNo=166, lastRoundRoleActionResults={"1": False})
+        mem = Memory(last_round=165, last_commands={"1": command("buy", name="WeaponUpgradeVoucher1", num=1)})
         mem.observe(Turn(p, Config()), Config())
         self.assertNotEqual(self.decide_worker(p, mem)["action"], "buy")
 

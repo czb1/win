@@ -12,7 +12,7 @@ SITES = [(4, y) for y in range(4, 7)] + [(8, y) for y in range(4, 7)]
 
 
 class WallFaceBatchTests(unittest.TestCase):
-    def frame(self, bag=(), walls=(), at=(3, 4), tick=400, gold=0, zones=(), station_level=3, station_health=4500):
+    def frame(self, bag=(), walls=(), at=(3, 4), tick=425, gold=0, zones=(), station_level=3, station_health=4500):
         p = payload(tick, [unit(1, 'worker', *at, health=500, backpack=list(bag)),
                           unit(13, 'station', 6, 6, health=station_health, level=station_level),
                           unit(20, 'rocket', 6, 4, health=2000, level=3)] + list(walls))
@@ -43,10 +43,10 @@ class WallFaceBatchTests(unittest.TestCase):
         save_daytime_jobs(t, mem, ledger)
         wall1 = unit(40, 'wall', 4, 4, health=1000)
         wall3 = unit(42, 'wall', 4, 6, health=200, level=1)
-        ledger = self.step(mem, bag=['stone', 'WallUpgradeVoucher1'], walls=[wall1, wall3], tick=401)
+        ledger = self.step(mem, bag=['stone', 'WallUpgradeVoucher1'], walls=[wall1, wall3], tick=426)
         self.assertEqual(ledger.commands['1'], command('build', (4, 5), name='wall'))
         wall2 = unit(41, 'wall', 4, 5, health=1000)
-        ledger = self.step(mem, bag=['WallUpgradeVoucher1'], walls=[wall1, wall2, wall3], tick=402)
+        ledger = self.step(mem, bag=['WallUpgradeVoucher1'], walls=[wall1, wall2, wall3], tick=427)
         self.assertEqual(ledger.commands['1']['action'], 'use')
         self.assertIn(ledger.commands['1']['targetPos'][0], [{'x': 4, 'y': 4}, {'x': 4, 'y': 5}])
         self.assertEqual(mem.wall_batches[1]['phase'], 'maintain')
@@ -63,12 +63,12 @@ class WallFaceBatchTests(unittest.TestCase):
         t, cfg, nav, ledger = self.frame(walls=complete)
         mem = Memory(day=4, wall_repair_worker=1)
         start_batch(t, mem, ledger, t.workers[0], (4, 4))
-        for tick, bag, kind, n in [(401, ['copper']*25 + ['iron']*8, 'copper', 25),
-                                    (402, ['iron']*8, 'iron', 8)]:
+        for tick, bag, kind, n in [(426, ['copper']*25 + ['iron']*8, 'copper', 25),
+                                    (427, ['iron']*8, 'iron', 8)]:
             ledger = self.step(mem, bag=bag, walls=complete, zones=[('vendor', 2, 4)], tick=tick)
             self.assertEqual(ledger.commands['1'], command('sell', name=kind, num=n))
             self.assertEqual(mem.wall_batches[1]['phase'], 'economy')
-        ledger = self.step(mem, walls=complete, zones=[('vendor', 2, 4)], tick=403)
+        ledger = self.step(mem, walls=complete, zones=[('vendor', 2, 4)], tick=428)
         self.assertNotIn(1, mem.wall_batches)
 
     def test_no_money_for_upgrade_exits_to_sale_with_unused_voucher(self):
@@ -77,7 +77,7 @@ class WallFaceBatchTests(unittest.TestCase):
         mem = Memory(day=4)
         start_batch(t, mem, ledger, t.workers[0], (4, 4))
         ledger = self.step(mem, bag=['copper']*25 + ['WallUpgradeVoucher1'], walls=complete,
-                           zones=[('vendor', 2, 4), ('weaponShop', 2, 5)], tick=401)
+                           zones=[('vendor', 2, 4), ('weaponShop', 2, 5)], tick=426)
         self.assertEqual(ledger.commands['1'], command('sell', name='copper', num=25))
 
     def test_sale_is_not_preempted_by_repair_or_paid_upgrade(self):
@@ -129,20 +129,20 @@ class WallFaceBatchTests(unittest.TestCase):
         t, cfg, nav, ledger = self.frame(walls=walls, gold=100)
         mem = Memory(day=4)
         start_batch(t, mem, ledger, t.workers[0], (4, 4))
-        ledger = self.step(mem, walls=walls, gold=100, zones=[('weaponShop', 2, 4)], tick=401)
+        ledger = self.step(mem, walls=walls, gold=100, zones=[('weaponShop', 2, 4)], tick=426)
         self.assertEqual(ledger.commands['1']['action'], 'buy')
         self.assertEqual(ledger.commands['1']['name'], 'WallUpgradeVoucher1')
         self.assertLessEqual(ledger.commands['1']['num'], 3)
         self.assertTrue(mem.wall_batches[1]['purchased'])
-        ledger = self.step(mem, walls=walls, gold=40, bag=['WallUpgradeVoucher1']*3, tick=402)
+        ledger = self.step(mem, walls=walls, gold=40, bag=['WallUpgradeVoucher1']*3, tick=427)
         self.assertEqual(ledger.commands['1']['action'], 'use')
         upgraded = [unit(40+y, 'wall', 4, y, health=1500, level=2) for y in range(4, 7)]
         ledger = self.step(mem, walls=upgraded, gold=100, bag=['copper']*25,
-                           zones=[('weaponShop', 2, 5), ('vendor', 2, 4)], tick=405)
+                           zones=[('weaponShop', 2, 5), ('vendor', 2, 4)], tick=430)
         self.assertEqual(ledger.commands['1'], command('sell', name='copper', num=25))
 
     def test_other_worker_can_continue_income_during_wall_batch(self):
-        p = payload(400, [unit(1, 'worker', 3, 4, health=500, backpack=['stone']),
+        p = payload(425, [unit(1, 'worker', 3, 4, health=500, backpack=['stone']),
                           unit(2, 'worker', 1, 1, health=500, backpack=['copper']*10),
                           unit(13, 'station', 6, 6, health=4500, level=3)])
         p['mapInfo']['zones'] = [{'neutralType': 'vendor', 'pos': {'x': 2, 'y': 1}}]

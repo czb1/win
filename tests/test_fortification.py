@@ -154,7 +154,7 @@ class ConstructionRegressionTests(unittest.TestCase):
     def test_last_rear_wall_keeps_access_with_a_character_passing_the_gate(self):
         for kind in ("worker", "pioneer", "imp"):
             with self.subTest(kind=kind):
-                p = payload(roles=[unit(13, "station", 3, 11),
+                p = payload(35, roles=[unit(13, "station", 3, 11),
                                    unit(10, "worker", 2, 11, backpack=["stone"]),
                                    unit(14, kind, 1, 10)])
                 t, cfg, _, _ = setup_case(p)
@@ -172,7 +172,7 @@ class ConstructionRegressionTests(unittest.TestCase):
 
     def test_distant_enemy_side_precedes_nearby_rear_wall(self):
         for station, worker_pos, front_x in (((3, 11), (0, 10), 6), ((10, 4), (14, 4), 8)):
-            p = payload(roles=[unit(13, "station", *station),
+            p = payload(35, roles=[unit(13, "station", *station),
                                unit(1, "worker", *worker_pos, backpack=["stone"])])
             t, cfg, nav, ledger = setup_case(p)
             _, walls = layout(t, cfg)
@@ -199,7 +199,7 @@ class ConstructionRegressionTests(unittest.TestCase):
         self.assertNotIn(tuple(cmd["targetPos"][0].values()), sites)
 
     def test_both_workers_build_after_old_day_one_cap(self):
-        p = payload(roles=[unit(1, "worker", 3, 3, backpack=["stone"]),
+        p = payload(35, roles=[unit(1, "worker", 3, 3, backpack=["stone"]),
                            unit(2, "worker", 7, 3, backpack=["stone"])]
                           + [unit(20+i, "wall", i, 10) for i in range(6)])
         cfg = Config(layout_mode="explicit", weapon_cells=[], wall_cells=[[3, 4], [7, 4]],
@@ -209,7 +209,7 @@ class ConstructionRegressionTests(unittest.TestCase):
         self.assertEqual(len({tuple(c["targetPos"][0].values()) for c in commands.values()}), 2)
 
     def test_moving_builders_claim_different_work_destinations(self):
-        p = payload(roles=[unit(1, "worker", 1, 1), unit(2, "worker", 2, 1)])
+        p = payload(35, roles=[unit(1, "worker", 1, 1), unit(2, "worker", 2, 1)])
         sites = [(7, 7), (9, 7)]
         t, c, n, l = setup_case(p, layout_mode="explicit", wall_cells=list(map(list, sites)))
         for hero in t.workers:
@@ -227,7 +227,7 @@ class ConstructionRegressionTests(unittest.TestCase):
         self.assertEqual(l.commands["1"]["action"], "move")
 
     def test_news_prediction_cannot_disable_a_visible_stone_deposit(self):
-        p = payload(roles=[unit(1, "worker", 2, 2), unit(13, "station", 0, 4)])
+        p = payload(35, roles=[unit(1, "worker", 2, 2), unit(13, "station", 0, 4)])
         p["mapInfo"]["zones"] = [{"neutralType": "stone", "pos": {"x": 3, "y": 2}}]
         t, c, n, l = setup_case(p, layout_mode="explicit", wall_cells=[[4, 2]])
         mem = Memory(outages=[{"name": "stone", "startDay": 1, "endDay": 10}])
