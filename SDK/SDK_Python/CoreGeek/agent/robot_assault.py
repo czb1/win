@@ -9,6 +9,9 @@ from .navigation import check_time
 from .projectiles import line_cells
 
 
+FIRST_DAY_SUMMON_RADIUS = 2
+
+
 _OCCUPIED_MOVE = re.compile(
     r"robot (\d+) wants move to \((-?\d+),\s*(-?\d+)\), "
     r"but target is occupied \(canMove=false\)")
@@ -345,14 +348,38 @@ def weakest_approach(turn, ledger, deadline=None, *, prefer_rear=False, preferre
     return chosen
 
 
-def _open_assault_entry(turn, ledger, base):
-    entry = ledger.robot_assault_entry
+def open_assault_entry(turn, base, entry):
+    """An unbuilt land wall cell stays open despite temporary occupants."""
     if entry not in enemy_entries(turn, base):
         return None
     if any(entry in u.cells for u in (*turn.ours, *turn.enemies)
            if u.kind in (*WEAPONS, 'wall', 'station')) or turn.zones.get(entry, 'land') != 'land':
         return None
     return entry
+
+
+def in_summon_cluster(ledger, point):
+    anchor = ledger.robot_summon_anchor
+    return anchor is None or distance(anchor, point) <= FIRST_DAY_SUMMON_RADIUS
+
+
+def _summon_in_cluster(turn, ledger, base, entry, deadline):
+    """Keep later day-one orders near the first still-reserved placement."""
+    if deadline is not None:
+        check_time(deadline)
+    anchor = ledger.robot_summon_anchor
+    if entry is not None and distance(entry, anchor) > FIRST_DAY_SUMMON_RADIUS + 1:
+        entry = None
+    ys = [p[1] for p in base.cells]
+    side_row = entry[1] if entry and entry[1] in (min(ys) - 2, max(ys) + 2) else None
+    blocked = turn.blocked | ledger.reserved | ledger.summon_pending_positions
+    options = [(x, y)
+               for x in range(anchor[0] - FIRST_DAY_SUMMON_RADIUS, anchor[0] + FIRST_DAY_SUMMON_RADIUS + 1)
+               for y in range(anchor[1] - FIRST_DAY_SUMMON_RADIUS, anchor[1] + FIRST_DAY_SUMMON_RADIUS + 1)
+               if (x, y) not in blocked and turn.summon_position_legal((x, y))
+               and _on_entry_side(base, (x, y), side_row)]
+    return min(options, key=lambda p: (distance(p, entry or anchor),
+               abs(p[0] - entry[0]) if entry else 0, distance(p, anchor), p)) if options else None
 
 
 def _summon_at_gap(turn, ledger, base, entry, deadline):
@@ -384,7 +411,12 @@ def _summon_at_gap(turn, ledger, base, entry, deadline):
 
 def choose_summon_position(turn, ledger, deadline=None):
     base = enemy_base(turn)
-    if base and (entry := _open_assault_entry(turn, ledger, base)) is not None:
+    if base is None:
+        return None
+    entry = open_assault_entry(turn, base, ledger.robot_assault_entry)
+    if turn.day == 1 and ledger.robot_summon_anchor is not None:
+        return _summon_in_cluster(turn, ledger, base, entry, deadline)
+    if entry is not None:
         position = _summon_at_gap(turn, ledger, base, entry, deadline)
         if position is not None:
             return position
@@ -753,7 +785,7 @@ def act_robots(turn, memory, nav, ledger):
     occupied = _occupants(turn, memory)
     if base is not None and not turn.is_day:
         _make_room_inside(turn, memory, nav, ledger, base, occupied)
-    entry = _open_assault_entry(turn, ledger, base) if base else None
+    entry = open_assault_entry(turn, base, ledger.robot_assault_entry) if base else None
     if entry is not None and not turn.is_day:
         # Process the current holder first so it can make room for followers.
         for robot in sorted(turn.summon_robots, key=lambda r: (r.pos != entry, r.id)):
