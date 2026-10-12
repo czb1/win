@@ -34,8 +34,13 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()
     from .economy import buy_supply, supplies, use_inventory, build, batch_sale_ready
 
     kind, target = job['kind'], job['target']
+    income = hero.id == ledger.income_worker_id
+    if income and (kind == 'mine' and job.get('want_stone')
+                   or kind == 'build' and job.get('name') == 'wall'
+                   or kind == 'buy' and job.get('name', '').startswith('Wall')):
+        return False, 'income_worker_reserved'
     if kind in ('mine', 'spare') and not job.get('want_stone'):
-        if (turn.tick >= min(cfg.economy_rounds, mem.preparation_tick)
+        if (not income and turn.tick >= min(cfg.economy_rounds, mem.preparation_tick)
                 and development_pending(turn, cfg, mem, towers, walls)):
             return False, 'development_phase_started'
         if cashout_ores(turn, cfg, mem, hero, sale_inventory(turn, mem, hero)):
@@ -112,7 +117,7 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()
             return False, 'mine_exhausted'
         deadline = job['deadline']
         if not job['want_stone'] and not job['stockpile']:
-            deadline = min(deadline if deadline is not None else 70, mem.preparation_tick)
+            deadline = 70 if income else min(deadline if deadline is not None else 70, mem.preparation_tick)
             if turn.tick >= deadline or batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
                 return False, 'farming_batch_or_phase_complete'
         if job['stockpile'] and turn.tick >= cfg.economy_rounds and batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
@@ -236,6 +241,13 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
                          turn.round, hero.id, job['kind'], job['target'])
                 continue
         mem.daytime_jobs.pop(hero.id, None)
+        ledger.daytime_waits[hero.id] = reason
+        if not any('UpgradeVoucher' in k for k in hero.backpack):
+            mem.preparation_workers.discard(hero.id)
+            if mem.supply_worker == hero.id:
+                mem.supply_worker = None
+        if mem.build_targets.get(hero.id) == job['target']:
+            mem.build_targets.pop(hero.id, None)
         LOG.info('round=%s worker=%s daytime_job=release kind=%s target=%s reason=%s',
                  turn.round, hero.id, job['kind'], job['target'], reason)
 

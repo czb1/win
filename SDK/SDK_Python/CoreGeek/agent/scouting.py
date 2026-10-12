@@ -190,21 +190,24 @@ def prepare_night_scout(turn, memory, nav, ledger, excluded=(), jobs=None):
     candidates = []
     for scout in turn.workers:
         job = jobs.get(scout.id, {})
-        if (scout.id in ledger.used or scout.id in excluded or scout.health <= 165
+        if (scout.id in ledger.used or scout.id in excluded
+                or scout.id == ledger.income_worker_id or scout.health <= 165
                 or any('UpgradeVoucher' in item or item == 'WallFixer' or item in SUMMON_ORDERS
                        for item in scout.backpack)
                 or job.get('kind') in ('sell', 'buy', 'use', 'robot_buy', 'build')):
             continue
-        routes = _routes(turn, memory, nav, ledger, scout, base, ledger.reserved)
+        routes = [row for row in _routes(turn, memory, nav, ledger, scout, base, ledger.reserved)
+                  if row[1][0] + 1 <= turn.day_left]
         if routes:
             goal, route, coverage, base_cells = routes[0]
             candidates.append((scout.id != memory.worker_id, route[0], scout.id,
                                scout, goal, route, coverage, base_cells))
     if not candidates:
+        memory.worker_id, memory.post = None, None
         return None
     _, _, _, scout, goal, route, coverage, base_cells = min(candidates)
-    # No more than the final twenty daylight moves are spent scouting. A
-    # distant worker may arrive after nightfall; ordinary income comes first.
+    # Leave one daylight action at the post; do not spend the entire dusk on
+    # an approach that can only finish after nightfall.
     if route[0] + 2 < turn.day_left and turn.tick < 68:
         return None
     memory.worker_id, memory.post = scout.id, goal

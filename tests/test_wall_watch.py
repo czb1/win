@@ -263,11 +263,12 @@ class WallWatchTests(unittest.TestCase):
             self.assertNotEqual(result.get('2', {}).get('action'), 'collect')
             self.assertNotEqual(result.get('2', {}).get('name'), 'WallFixer')
 
-    def test_early_day_reserves_gold_without_locking_worker(self):
+    def test_early_critical_walls_start_nearby_stock_purchase(self):
         p = self.case(tick=5, packs=0)
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(gunner_post=(4, 11))
-        self.assertEqual(prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]), (False, 40))
+        self.assertEqual(prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1]), (True, 0))
+        self.assertEqual(ledger.commands['2'], {'action': 'buy', 'name': 'WallFixer', 'num': 4})
 
     def test_late_watch_keeps_one_wall_upgrade_affordable(self):
         from agent.economy import wall_purchase_allowed
@@ -296,7 +297,7 @@ class WallWatchTests(unittest.TestCase):
                 role['level'] = 3 if role['pos']['x'] == 8 else 2
         t, cfg, nav, ledger = setup_case(p)
         self.assertEqual(prepare_watch(t, cfg, Memory(wall_watch_id=2), nav, ledger,
-                                       t.workers[1], layout(t, cfg)[1]), (False, 50))
+                                       t.workers[1], layout(t, cfg)[1]), (False, 30))
 
     def test_no_money_no_pack_still_recalls_watch_worker(self):
         p = self.case(tick=50, packs=0)

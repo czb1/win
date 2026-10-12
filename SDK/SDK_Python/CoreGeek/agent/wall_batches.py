@@ -37,6 +37,9 @@ def start_batch(turn, mem, ledger, hero, anchor):
 
 
 def continue_batch(turn, cfg, mem, nav, ledger, hero, towers, walls):
+    if hero.id == ledger.income_worker_id:
+        mem.wall_batches.pop(hero.id, None)
+        return False
     from .economy import (build, build_options, use_inventory, supplies, buy_supply,
                           wall_keeps_access)
     from .economy_plan import planned_weapons

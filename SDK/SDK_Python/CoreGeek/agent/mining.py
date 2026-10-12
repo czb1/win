@@ -443,8 +443,12 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         # Amortize one sale over a whole backpack run, not over every ten-unit
         # deposit. Walking to the next mine is charged in full to its yield.
         batch = min(hero.capacity, cfg.sell_batch_max)
-        score = value * amount / (amount + route[0] +
-                                 (amount * (sale_walk + 1) / max(1, batch) if sale_walk is not None else 0))
+        if material is not None:
+            # construction_steps already contains both delivery and build actions.
+            score = amount / (route[0] + amount + material.construction_steps + material.return_steps)
+        else:
+            score = value * amount / (amount + route[0] +
+                                     (amount * (sale_walk + 1) / max(1, batch) if sale_walk is not None else 0))
         options.append(MineOption(p, route, score, amount, claimants, cell=cell, material=material))
     if not options:
         ledger.explain(hero.id, "no_mining_candidate", skipped=dict(skipped),

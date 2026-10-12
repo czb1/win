@@ -113,7 +113,7 @@ class DaytimeWorkerIdleTests(unittest.TestCase):
         self.assertEqual(ledger.commands['2'], command('collect', (6, 9)))
 
     def test_pack_slots_follow_executable_reservation_not_raw_gold(self):
-        for shop_available, expected in ((True, 1), (False, 5)):
+        for shop_available, expected in ((True, 2), (False, 5)):
             p = self.watch_case(tick=5)
             p['teamOur']['goldNum'] = 75
             p['teamOur']['roles'][2]['backPackCapability'] = 5
@@ -126,8 +126,8 @@ class DaytimeWorkerIdleTests(unittest.TestCase):
             ledger.gold -= reserved
             self.assertEqual(reserve_watch_space(t, mem, t.workers[1], ledger).space, expected)
 
-    def test_stocked_watch_standby_is_preserved_and_logged(self):
-        t, cfg, nav, ledger = setup_case(self.watch_case(packs=3))
+    def test_stocked_watch_standby_is_preserved_and_logged_at_return_deadline(self):
+        t, cfg, nav, ledger = setup_case(self.watch_case(tick=69, packs=3))
         mem = Memory(wall_watch_id=2)
         locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertTrue(locked)

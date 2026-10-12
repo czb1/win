@@ -54,6 +54,36 @@ def trade_available(turn, mem, nav, hero):
     return bool(vendors and mines and nav.approach(hero, vendors) and nav.approach(hero, mines))
 
 
+def reserve_income_worker(turn, mem, nav, ledger, excluded=()):
+    """After firepower is ready, keep one daytime worker out of optional jobs.
+
+    Paid deliveries and actual recalls are ineligible. Keep the same earner
+    while it remains available; a night-watch identity alone is not a recall.
+    """
+    from .model import SUMMON_ORDERS
+    ledger.income_worker_id = None
+    if (not turn.is_day or turn.day < 4 or not turn.weapons
+            or not all(w.level >= 3 for w in turn.weapons)):
+        mem.income_worker_id = None
+        return
+    vendors = [p for p, k in turn.zones.items() if k == 'vendor']
+    eligible = [h for h in turn.workers if h.id not in excluded and h.id not in ledger.used
+                and h.health > 110 and h.abnormal_state != 'dizzy'
+                and not any('UpgradeVoucher' in k or k in SUMMON_ORDERS for k in h.backpack)
+                and (h.space and trade_available(turn, mem, nav, h)
+                     or any(h.inventory[k] and turn.prices.get(k, 0) > 0 for k in ORES)
+                     and vendors and nav.approach(h, vendors))]
+    hero = min(eligible, key=lambda h: (h.id == mem.wall_repair_worker,
+               h.id != mem.income_worker_id, h.id == mem.wall_watch_id,
+               h.id == mem.supply_worker, h.id), default=None)
+    mem.income_worker_id = ledger.income_worker_id = hero.id if hero else None
+    if hero:
+        # An unpaid optional face batch must not take the earner back before
+        # ordinary job continuation sees its protected allocation.
+        mem.wall_batches.pop(hero.id, None)
+    return hero
+
+
 def development_pending(turn, cfg, mem, tower_sites, wall_sites):
     """Shared phase condition for new allocation and accepted income jobs."""
     built_walls = {w.pos for w in turn.ours if w.kind == 'wall'}

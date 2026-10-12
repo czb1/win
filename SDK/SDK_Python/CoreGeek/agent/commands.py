@@ -43,6 +43,7 @@ class Ledger:
         # Daytime ownership is separate from issuing a command. Failed recall
         # and intentional watch standby must have different fallback policies.
         self.daytime_waits = {}
+        self.income_worker_id = None
         self.watch_pack_slots = {}
         self.work_jobs = {}
         self.supply_targets = {}
