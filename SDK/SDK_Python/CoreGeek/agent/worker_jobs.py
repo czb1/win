@@ -62,13 +62,14 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()
         if turn.day > cfg.robot_purchase_last_day:
             return False, 'purchase_days_finished'
         from .brain import summon_best_robot
-        from .spending import plan_day_spending, prepare_defense_purchase
+        from .spending import plan_day_spending, prepare_defense_purchase, first_day_boss_staging
         priority_actors, reserve = plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded)
         reserve = prepare_defense_purchase(turn, mem, ledger, reserve)
         ok = summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls,
                                excluded=priority_actors | {h.id for h in turn.heroes if h.id != hero.id},
                                reserve=reserve, item_only=job['name'], shop_only=target,
-                               quantity_limit=job['quantity'])
+                               quantity_limit=job['quantity'],
+                               stage_only=first_day_boss_staging(turn, cfg))
     elif kind == 'use':
         ok = use_inventory(turn, nav, ledger, hero, mem=mem,
                            target_only=target, name_only=job['name'])
@@ -173,6 +174,16 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
                      [h for h in free if h.id not in ledger.used], walls)
     from .spending import prepare_paid_upgrades
     prepare_paid_upgrades(turn, mem, nav, ledger, free, returning)
+    # Paid robot orders need their daylight action before ordinary income jobs
+    # resume. Keep the existing defense buyer/builder and delivery priorities.
+    from .model import SUMMON_ORDERS
+    if any(h.id not in ledger.used and any(h.inventory[n] for n in SUMMON_ORDERS) for h in free):
+        from .brain import summon_best_robot
+        from .spending import plan_day_spending, prepare_defense_purchase
+        actors, reserve = plan_day_spending(turn, cfg, mem, nav, ledger, towers, returning)
+        reserve = prepare_defense_purchase(turn, mem, ledger, reserve)
+        summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls,
+                          excluded=returning | actors, reserve=reserve, use_only=True)
     # Keep the existing purchase-before-construction gold reservation order.
     # A builder spending first would make the buyer reserve the same missing
     # gun again and needlessly cancel an already accepted shopping journey.

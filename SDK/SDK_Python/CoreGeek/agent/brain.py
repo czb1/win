@@ -18,7 +18,7 @@ from .projectiles import wall_gates
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .economy import reserve_treasure_gold
 from .treasure_clues import treasure_active
-from .economy import first_day_front
+from .economy import first_day_front, build
 from .economy_plan import via
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
@@ -26,7 +26,7 @@ from .wall_watch import select_watch, prepare_watch, repair_watch
 from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position, enemy_base
-from .spending import (first_day_boss_phase, plan_day_spending, robot_purchase_plan,
+from .spending import (first_day_boss_phase, first_day_boss_staging, plan_day_spending, robot_purchase_plan,
                        prepare_paid_upgrades, prepare_defense_purchase)
 from .scouting import act_night_scout, prepare_night_scout
 from .task_schedule import task_options, switch_task_option
@@ -71,7 +71,8 @@ def observe_robot_summons(turn, mem):
 
 
 def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), reserve=0,
-                      item_only=None, shop_only=None, quantity_limit=None):
+                      item_only=None, shop_only=None, quantity_limit=None,
+                      stage_only=False, use_only=False):
     """Use carried orders or prepare the strongest affordable surplus order."""
     state = observe_robot_summons(turn, mem)
     # Enemy stations are globally visible; no live base means no assault budget.
@@ -79,7 +80,12 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         state["buyer"] = None
         ledger.spending_plan['robot_blocked'] = 'enemy_base_missing'
         return False
-    if turn.day == 1 and not first_day_boss_phase(turn, cfg):
+    if not turn.is_day:
+        state["buyer"] = None
+        ledger.spending_plan['robot_blocked'] = 'night'
+        return False
+    if (turn.day == 1 and not first_day_boss_phase(turn, cfg)
+            and not (stage_only and first_day_boss_staging(turn, cfg))):
         ledger.spending_plan['robot_blocked'] = 'first_day_tower_construction'
         return False
     ledger.summon_pending_positions = state["positions"].copy()
@@ -96,7 +102,7 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                        if hero.inventory[name]), key=lambda row: row[:3])
     can_use = (turn.is_day and state["count"] < DAILY_SUMMON_LIMIT
                and not (state["pending"] and state["pending"][0] == turn.round))
-    if carriers and can_use:
+    if carriers and can_use and not stage_only:
         position = choose_summon_position(turn, ledger, nav.deadline)
         ledger.robot_summon_target = position
         if position is not None:
@@ -109,9 +115,20 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                     ledger.explain(hero.id, "summon_highest_robot", item=name, summon_position=position,
                                    daily_reserved_uses=state["count"], daily_limit=DAILY_SUMMON_LIMIT)
                     return True
+    if use_only:
+        return False
     if turn.day > cfg.robot_purchase_last_day:
         state["buyer"] = None
         ledger.spending_plan['robot_blocked'] = 'purchase_days_finished'
+        return False
+    # Uses are serialized. Existing orders already occupy future daylight and
+    # daily slots, including orders whose carrier is busy with urgent work.
+    held = sum(hero.inventory[name] for hero in turn.heroes for name in SUMMON_ORDERS)
+    if state["pending"] and state["pending"][0] == turn.round:
+        held = max(0, held - 1)
+    remaining = DAILY_SUMMON_LIMIT - state["count"] - held
+    if remaining <= 0:
+        ledger.spending_plan['robot_blocked'] = 'daily_summon_capacity'
         return False
     # Protect the next task as well as a task already in progress. Workers can
     # buy and use orders themselves; ordinary mining may yield, urgent work may not.
@@ -126,7 +143,7 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                 and hero.id != mem.wall_repair_worker
                 and hero.id != mem.wall_watch_id
                 and mem.daytime_jobs.get(hero.id, {}).get('kind') not in
-                    ('build', 'buy', 'use')]
+                    (('buy', 'use') if stage_only else ('build', 'buy', 'use'))]
         ledger.spending_plan['pioneer_reserved_for_task'] = True
     available = max(0, ledger.gold - reserve)
     names = [name for name in reversed(SUMMON_ORDERS)
@@ -139,6 +156,8 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     if any(item in ledger.purchases for item in SUMMON_ORDERS):
         ledger.spending_plan['robot_blocked'] = 'planned_order'
         return False
+    if stage_only:
+        free = [hero for hero in free if hero.kind == 'worker']
     buyers = []
     for name in names:
         price = turn.shop[name]
@@ -147,8 +166,10 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
             quantity = available // price if price else DAILY_SUMMON_LIMIT
         if quantity_limit is not None:
             quantity = min(quantity, quantity_limit)
+        quantity = min(quantity, remaining)
         for hero in free:
-            plan = robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name, shop_only, quantity)
+            plan = robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name,
+                                       shop_only, quantity, reserved_uses=held)
             if plan:
                 count, shop, route = plan
                 buyers.append((hero.id != state.get("buyer"), -count, route[0], hero.kind != "worker",
@@ -156,24 +177,31 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         if buyers:
             break
     if not buyers:
-        ledger.spending_plan['robot_blocked'] = 'no_free_buyer_or_shop_route'
+        ledger.spending_plan.setdefault('robot_blocked', 'no_free_buyer_or_shop_route')
         return False
     _, negative_count, _, _, _, hero, route, shop = min(buyers)
     quantity = -negative_count
     price = turn.shop[name]
-    if route[1] is None:
+    if stage_only and route[1] is None:
+        ledger.used.add(hero.id)
+        ledger.reserved.add(hero.pos)
+        accepted = True
+    elif route[1] is None:
         accepted = ledger.add(hero.id, command("buy", name=name, num=quantity))
     else:
         accepted = ledger.add(hero.id, command("move", route[1]))
-        if accepted:
+    if accepted:
+        if stage_only or route[1] is not None:
             ledger.gold -= price * quantity
             ledger.purchases.add(name)
             ledger.remember_work(hero, 'robot_buy', shop, name=name, quantity=quantity)
-    if accepted:
         state["buyer"] = hero.id
-        ledger.explain(hero.id, "prepare_highest_robot", item=name,
+        ledger.spending_plan.pop('robot_blocked', None)
+        ledger.explain(hero.id, "stage_robot_buyer" if stage_only else "prepare_highest_robot", item=name,
                        price=price, quantity=quantity, total_cost=price * quantity,
-                       route_steps=route[0])
+                        route_steps=route[0], day_left=turn.day_left,
+                        required_daylight_actions=route[0] + 1 + held + quantity,
+                        purchase_submitted=not stage_only and route[1] is None)
         ledger.spending_plan['robot_purchase'] = dict(actor=hero.id, item=name, quantity=quantity,
                                                      unit_price=price, total_cost=price * quantity)
     return accepted
@@ -333,12 +361,21 @@ class Agent:
         try:
             # Opening offense gets an action before ordinary job continuation,
             # recall, or voucher budgets can take every available buyer.
+            opening_stage = first_day_boss_staging(turn, self.cfg)
             opening_boss = (turn.is_day and turn.tick < DEFENCE_RETURN_TICK
-                            and first_day_boss_phase(turn, self.cfg))
+                            and (first_day_boss_phase(turn, self.cfg) or opening_stage))
             if opening_boss:
-                _, opening_reserve = plan_day_spending(turn, self.cfg, mem, nav, ledger, towers)
+                builders, opening_reserve = plan_day_spending(turn, self.cfg, mem, nav, ledger, towers)
                 summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
-                                  reserve=opening_reserve)
+                                  reserve=opening_reserve, stage_only=opening_stage,
+                                  excluded=builders if opening_stage else ())
+                if opening_stage:
+                    # Protect the construction action as well as its gold.
+                    # Otherwise dusk scouting can take the remaining builder.
+                    for worker in turn.workers:
+                        if worker.id in builders and worker.id not in ledger.used:
+                            build(turn, self.cfg, mem, nav, ledger, worker, towers,
+                                  lambda i: self.cfg.loadout[i % len(self.cfg.loadout)])
             gate_guard = prepare_gate_guard(turn, self.cfg, mem, nav, ledger, towers, walls)
             nav.gate_guard = gate_guard
             act_imps(turn, mem.sabotage, nav, ledger)

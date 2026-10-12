@@ -206,7 +206,7 @@ class DaylightSpendingTests(unittest.TestCase):
         self.assertTrue(use_inventory(turn,nav,ledger,turn.workers[1],mem=Memory()))
         self.assertEqual(ledger.commands['2'],command('use',(8,5),name='WallUpgradeVoucher2'))
 
-    def test_robot_uses_only_unreserved_money_without_operator_return_deadline(self):
+    def test_robot_preserves_defense_money_and_leaves_daylight_for_use(self):
         from test_robot_assault import BestRobotSummoningTests,fortified_case,WALLS,TOWERS
         data=BestRobotSummoningTests().shop_data(gold=200)
         turn,cfg,nav,ledger=fortified_case(data)
@@ -215,9 +215,9 @@ class DaylightSpendingTests(unittest.TestCase):
         self.assertEqual(ledger.gold,130)
         data['roundNo']=329
         turn,cfg,nav,ledger=fortified_case(data)
-        self.assertTrue(summon_best_robot(turn,cfg,Memory(),nav,ledger,TOWERS,WALLS))
-        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=1))
-        self.assertEqual(ledger.gold,80)
+        self.assertFalse(summon_best_robot(turn,cfg,Memory(),nav,ledger,TOWERS,WALLS))
+        self.assertFalse(ledger.commands)
+        self.assertEqual(ledger.gold,200)
 
     def test_medicine_budget_is_preserved_and_only_counted_once(self):
         from test_robot_assault import BestRobotSummoningTests,fortified_case,WALLS,TOWERS
