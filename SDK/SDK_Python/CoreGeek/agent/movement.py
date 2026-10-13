@@ -2,10 +2,12 @@
 from collections import deque
 from dataclasses import dataclass, field
 from .model import WEAPONS, distance, pos
+from .vehicle import VehicleMemory
 
 
 @dataclass
 class MovementMemory:
+    vehicle: VehicleMemory = field(default_factory=VehicleMemory)
     failures: dict = field(default_factory=dict)
     failure_counts: dict = field(default_factory=dict)
     trails: dict = field(default_factory=dict)
@@ -13,9 +15,17 @@ class MovementMemory:
     targets: dict = field(default_factory=dict)
     buildings: dict = field(default_factory=dict)
     looped: set = field(default_factory=set)
+    positions: dict = field(default_factory=dict)
+    driving_disabled: set = field(default_factory=set)
+    driving_day: int = 0
 
     def observe(self, turn, mem):
+        self.vehicle.observe(turn, mem)
         self.looped.clear()
+        if self.driving_day != turn.day:
+            self.driving_disabled.clear()
+            self.driving_day = turn.day
+        self.driving_disabled.intersection_update(turn.units)
         self.failures = {k: r for k, r in self.failures.items()
                          if r > turn.round and k[0] in turn.units}
         self.targets = {k: r for k, r in self.targets.items()
@@ -38,8 +48,13 @@ class MovementMemory:
                 # loops within one destination task, without losing collisions.
                 self.trails.pop(hero.id, None)
             self.trail_jobs[hero.id] = job_key
-            target = pos(cmd["targetPos"][0])
+            target = pos(cmd["targetPos"][-1])
             if hero.pos != target:
+                origin = self.positions.get(hero.id, hero.pos)
+                if hero.kind == 'pioneer' and (len(cmd['targetPos']) == 2 or distance(origin, target) == 2):
+                    # Repeatedly trying another two-cell landing can strand a
+                    # driver. Finish this day's authorized trips one cell at a time.
+                    self.driving_disabled.add(hero.id)
                 # A collision is local and temporary, never a permanent wall.
                 key = hero.id, target
                 count = self.failure_counts.get(key, (0, 0))[0] + 1
@@ -68,6 +83,7 @@ class MovementMemory:
                 mem.sabotage.targets.pop(hero.id, None)
                 mem.sabotage.progress.pop(hero.id, None)
                 trail.clear()
+        self.positions = {hero.id: hero.pos for hero in turn.characters}
         # Neutral zones are supplied globally by v1.0; never retain exhausted
         # mines as obstacles. Enemy weapons, however, disappear outside vision.
         seen = {r.pos: r for r in turn.enemies if r.kind in WEAPONS}

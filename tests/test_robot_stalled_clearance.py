@@ -6,7 +6,6 @@ from test_agent import payload, setup_case, unit
 from test_robot_assault import assault_payload, controlled_robot
 from test_robot_path_blockers import decide
 from test_robot_survival_memory import occupied_error, record_move
-from robot_feedback import reject_base_aims
 from agent.commands import command
 from agent.robot_assault import RobotAssaultMemory, enemy_base
 
@@ -53,9 +52,6 @@ class RobotStalledClearanceTests(unittest.TestCase):
     def test_recent_occupied_cell_and_failed_ray_trigger_joint_clearance(self):
         data = frontage()
         memory = collision_memory(data)
-        # The other in-range robot must exhaust its own untested base aims
-        # before joining clearance; a teammate's different failed ray is insufficient.
-        reject_base_aims(data, memory, ids={31035})
         ledger, _ = rejected_base_shot(data, memory)
         for uid in (31035, 31036):
             self.assertEqual(ledger.commands[str(uid)], command('attack', (7, 22)))
@@ -143,7 +139,7 @@ class RobotStalledClearanceTests(unittest.TestCase):
         ledger, _ = decide(data, memory)
         self.assertFalse(memory.approach_stalls)
         self.assertEqual(ledger.notes[30000]['conditions']['target_id'], 99)
-        self.assertEqual(ledger.commands['30000']['action'], 'attack')
+        self.assertEqual(ledger.commands['30000']['action'], 'move')
 
     def test_changed_day_or_enemy_base_releases_failure_evidence(self):
         for change in ('day', 'base'):
@@ -216,7 +212,6 @@ class RobotStalledClearanceTests(unittest.TestCase):
     def test_joint_clearance_persists_until_a_real_base_shot_opens(self):
         data = frontage()
         memory = collision_memory(data)
-        reject_base_aims(data, memory, ids={31035})
         ledger, _ = rejected_base_shot(data, memory)
         data['roundNo'] += 1
         data['lastRoundRoleActionResults'] = {'31035': True, '31036': True, '31037': True}

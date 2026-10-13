@@ -230,21 +230,15 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
         _, _, ledger = self.prepare(data, mem)
         self.assertEqual(ledger.commands['2'], command('buy', name=BOSS, num=3))
 
-    def test_healthy_base_is_upgraded_then_each_robot_used_then_early_recall(self):
+    def test_healthy_base_voucher_is_kept_through_summons_and_early_recall(self):
         data, mem = self.data(), Memory()
         self.prepare(data, mem)
         self.next_turn(data, [BASE], gold=568)
         self.prepare(data, mem)
-        self.next_turn(data, [BASE] + [BOSS] * 3, gold=208)
         data['teamOur']['roles'][2]['pos'] = {'x': 5, 'y': 10}
-        accepted, turn, ledger = self.prepare(data, mem)
-        self.assertTrue(accepted)
-        self.assertEqual(ledger.commands['2'], command('use', (4, 10), name=BASE))
-        self.assertGreaterEqual(turn.station.health, 500)
-        data['teamOur']['roles'][0].update(level=2, health=3000)
         targets = set()
         for count in (3, 2, 1):
-            self.next_turn(data, [BOSS] * count)
+            self.next_turn(data, [BASE] + [BOSS] * count, gold=208)
             accepted, turn, ledger = self.prepare(data, mem)
             self.assertTrue(accepted)
             action = ledger.commands['2']
@@ -253,13 +247,15 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
             self.assertTrue(turn.summon_position_legal(target))
             self.assertNotIn(target, targets)
             targets.add(target)
-        self.next_turn(data, [])
+        self.next_turn(data, [BASE])
         _, turn, ledger = self.prepare(data, mem)
         self.assertLess(turn.tick, 67)
         self.assertEqual(mem.first_day_pioneer['phase'], 'return')
         self.assertEqual(mem.return_targets[2], turn.weapons[0].id)
         self.assertEqual(mem.return_posts[2], (1, 9))
         self.assertEqual(first_day_purchase_reserve(turn, mem, ledger), 0)
+        self.assertEqual(turn.station.health, 1500)
+        self.assertEqual(turn.pioneer.inventory[BASE], 1)
 
     def test_agent_keeps_the_full_sequence_and_returns_before_tick_67(self):
         data = self.data()
@@ -271,20 +267,20 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
         self.next_turn(data, [BASE], gold=568)
         self.assertEqual(agent.decide(copy.deepcopy(data))['roleCommandMap']['2'],
                          command('buy', name=BOSS, num=3))
-        self.next_turn(data, [BASE] + [BOSS] * 3, gold=208)
         data['teamOur']['roles'][2]['pos'] = {'x': 5, 'y': 10}
-        self.assertEqual(agent.decide(copy.deepcopy(data))['roleCommandMap']['2'],
-                         command('use', (4, 10), name=BASE))
-        data['teamOur']['roles'][0].update(level=2, health=3000)
         for count in (3, 2, 1):
-            self.next_turn(data, [BOSS] * count)
+            self.next_turn(data, [BASE] + [BOSS] * count, gold=208)
             result = agent.decide(copy.deepcopy(data))['roleCommandMap']
             self.assertEqual((result['2']['action'], result['2']['name']), ('use', BOSS))
             self.assertFalse(any(c['action'] == 'buy' for uid, c in result.items() if uid != '2'))
-        self.next_turn(data, [])
+            mem = next(iter(agent.sessions.values()))
+            self.assertIsNone(mem.first_day_pioneer['pending_buy'])
+            self.assertEqual(mem.first_day_pioneer['robot_purchased'], 3)
+        self.next_turn(data, [BASE])
         result = agent.decide(copy.deepcopy(data))['roleCommandMap']
         mem = next(iter(agent.sessions.values()))
         self.assertEqual(mem.first_day_pioneer['phase'], 'return')
+        self.assertEqual(mem.robot_summon_state['purchased'], 3)
         self.assertIn(2, mem.return_targets)
         self.assertEqual(result['2']['action'], 'move')
         turn, _, nav, _ = fortified_case(data)
@@ -322,7 +318,7 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
         self.assertEqual(mem.robot_summon_state['count'], 1)
         self.assertEqual(len(mem.robot_summon_state['positions']), 1)
 
-    def test_both_base_corners_and_official_pioneer_ids_buy_and_upgrade(self):
+    def test_both_base_corners_and_official_pioneer_ids_buy_and_keep_base_voucher(self):
         for team, station, hero_cell, shop, towers, enemy in (
             ('challenger', (4, 27), (6, 26), (7, 25), [(3, 26), (3, 25), (4, 25)], (34, 5)),
             ('defender', (34, 5), (33, 4), (32, 3), [(36, 4), (36, 3), (35, 3)], (4, 27))):
@@ -353,10 +349,10 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
                 roles[1]['backpack'] = [BASE] + [BOSS] * 3
                 data['teamOur']['goldNum'] = 208
                 action = agent.decide(copy.deepcopy(data))['roleCommandMap'][str(uid)]
-                self.assertEqual((action['action'], action['name']), ('use', BASE))
+                self.assertEqual((action['action'], action['name']), ('use', BOSS))
                 turn, _, _, _ = setup_case(data)
-                self.assertTrue(turn.adjacent(turn.pioneer.pos, pos(action['targetPos'][0])))
-                self.assertIn(pos(action['targetPos'][0]), turn.station.cells)
+                self.assertTrue(turn.summon_position_legal(pos(action['targetPos'][0])))
+                self.assertEqual(turn.pioneer.inventory[BASE], 1)
 
     def test_full_backpack_and_wrong_base_tier_do_not_emit_illegal_buys_or_uses(self):
         data = self.data()
@@ -370,15 +366,18 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
         self.assertFalse(any(c['action'] == 'use' and c.get('name') == BASE
                              for c in ledger.commands.values()))
 
-    def test_short_daylight_cannot_start_a_shop_trip(self):
+    def test_short_daylight_keeps_required_purchases_ahead_of_recall(self):
         for round_no in (66, 67, 69):
             with self.subTest(round_no=round_no):
                 data = self.data(round_no=round_no)
-                _, _, ledger = self.prepare(data, Memory())
-                self.assertFalse(any(c['action'] == 'buy' for c in ledger.commands.values()))
+                mem = Memory()
+                _, _, ledger = self.prepare(data, mem)
+                self.assertEqual(ledger.commands['2'], command('buy', name=BASE, num=1))
+                self.assertEqual(mem.first_day_pioneer['phase'], 'shop')
+                self.assertNotIn(2, mem.return_targets)
 
     def test_remaining_daylight_reduces_batch_to_include_each_use(self):
-        data, mem = self.data(round_no=64), Memory()
+        data, mem = self.data(round_no=67), Memory()
         self.prepare(data, mem)
         self.next_turn(data, [BASE], gold=568)
         _, _, ledger = self.prepare(data, mem)
@@ -418,7 +417,7 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
         _, _, ledger = self.prepare(data, mem)
         self.assertEqual(ledger.commands['2'], command('buy', name=BASE, num=1))
 
-    def test_blocked_paid_base_delivery_does_not_skip_to_summoning_or_parking(self):
+    def test_blocked_healthy_base_does_not_delay_summoning(self):
         data, mem = self.data(), Memory()
         self.prepare(data, mem)
         self.next_turn(data, [BASE], gold=568)
@@ -430,9 +429,9 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
         with patch.object(nav, 'approach', side_effect=lambda hero, targets, *args, **kw:
                           None if set(targets) == turn.station.cells else approach(hero, targets, *args, **kw)):
             self.assertTrue(prepare_first_day_pioneer(turn, cfg, mem, nav, ledger))
-        self.assertFalse(ledger.commands)
+        self.assertEqual((ledger.commands['2']['action'], ledger.commands['2']['name']), ('use', BOSS))
         self.assertIn(2, ledger.used)
-        self.assertEqual(mem.first_day_pioneer['phase'], 'station')
+        self.assertEqual(mem.first_day_pioneer['phase'], 'robots')
 
     def test_night_and_day_two_keep_existing_scheduling(self):
         for round_no in (70, 140):

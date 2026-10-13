@@ -7,7 +7,7 @@ from math import isclose
 from .commands import command
 from .market import hold_inventory, preferred_stock, cashout_ores
 from .model import ORES, Unit, DEFENCE_RETURN_TICK, distance, neighbours
-from .economy_plan import via
+from .economy_plan import via, late_logistics_ready, late_economy_allowed
 
 LOG = logging.getLogger(__name__)
 
@@ -63,11 +63,20 @@ def target_sector(turn, target):
     return 'southwest' if projection < 0 else 'northeast' if projection > 0 else 'boundary'
 
 
-def prefer_separate_sector(turn, hero, options):
+def prefer_separate_sector(turn, hero, options, sale_dist=None):
     # Nearby simultaneous collection remains useful. Only redirect a journey
     # when a comparable independent deposit exists; never walk to a bare corner.
     separate = [o for o in options if not o.claimants or o.route[0] == 0]
     options = separate or options
+    if sale_dist:
+        # The opening wall blocker should finish mining near its sale stop,
+        # rather than follow the ordinary worker's southwest/northeast wing.
+        from .opening_offense import FIRST_DAY_OFFENSE_TICK
+        reachable = [o for o in options if o.cell in sale_dist
+                     and o.route[0] < FIRST_DAY_OFFENSE_TICK - turn.tick]
+        if reachable:
+            shortest = min(sale_dist[o.cell] for o in reachable)
+            return [o for o in reachable if sale_dist[o.cell] == shortest]
     sector = mining_sector(turn, hero)
     local = [o for o in options if target_sector(turn, o.target) in (sector, 'boundary')] if sector else []
     return local or options
@@ -185,6 +194,17 @@ def first_day_ore_only(turn, cfg, mem, hero):
     return worker is not None and worker.id == hero.id
 
 
+def first_day_sale_distances(turn, cfg, mem, nav, ledger, hero, vendors=None):
+    """Prefer the vendor corridor only before the opening worker departs."""
+    from .opening_offense import FIRST_DAY_OFFENSE_TICK
+    if turn.tick >= FIRST_DAY_OFFENSE_TICK or not first_day_ore_only(turn, cfg, mem, hero):
+        return {}
+    if vendors is None:
+        vendors = [p for p, kind in turn.zones.items() if kind == 'vendor']
+    vendors = [p for p in vendors if not mem.movement.avoids(hero.id, p)]
+    return nav.actor_distances_to(hero, vendors, ledger.reserved) if vendors else {}
+
+
 def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
                reserved=(), max_steps=2, allow_blocked_home=False, target_only=None):
     """Use otherwise idle daylight near ore; carry it to a later day's sale."""
@@ -254,6 +274,7 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
                   turn.round, hero.id, turn.day_left)
         return False
     preferred = preferred_stock(turn, cfg, mem, ledger, hero)
+    sale_dist = first_day_sale_distances(turn, cfg, mem, nav, ledger, hero)
     order = lambda o: (o.route[0], -o.score, o.return_steps, o.target, o.cell)
     previous = min((o for o in options if o.target == mem.mine_targets.get(hero.id)),
                    key=order, default=None)
@@ -263,9 +284,9 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
     comparable = [o for o in nearby if comparable_score(o.score, best_score)]
     if preferred:
         news = [o for o in comparable if turn.zones[o.target] in preferred]
-        chosen = min(prefer_separate_sector(turn, hero, news or comparable), key=order)
+        chosen = min(prefer_separate_sector(turn, hero, news or comparable, sale_dist), key=order)
     else:
-        chosen = previous or min(prefer_separate_sector(turn, hero, comparable), key=order)
+        chosen = previous or min(prefer_separate_sector(turn, hero, comparable, sale_dist), key=order)
     target, route = chosen.target, chosen.route
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
@@ -361,6 +382,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
     if not hero.space:
         LOG.debug("round=%s worker=%s mining=backpack_full", turn.round, hero.id)
         return False
+    late = late_logistics_ready(turn, cfg)
     sale_mode = run['mode'] == 'sell_today' if run else not stockpile or cashout_today
     selling = bool(not want_stone and turn.is_day and sale_mode)
     vendors = [p for p, kind in turn.zones.items() if kind == "vendor"] if selling else []
@@ -371,7 +393,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
     home, exact = return_destination(turn, nav, ledger, hero, mem)
     # Pick one reachable sale-and-return corridor. Using the worst home walk
     # over every vendor would let a distant enemy-side vendor stop local mining.
-    home_dist = (nav.distances_to(home, {hero.pos}, ledger.reserved, exact=exact)
+    home_dist = (nav.actor_distances_to(hero, home, ledger.reserved, exact=exact)
                  if home and not want_stone else {})
     wave_budget = min((turn.base_distance(r.pos) - r.attack_range - cfg.return_margin
                        for r in turn.robots if turn.threatens_us(r)), default=None)
@@ -388,7 +410,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
             return False
         _, vendor, vendor_home = min(corridors)
         vendors = [vendor]
-    sale_dist = nav.distances_to(vendors, {hero.pos}, ledger.reserved) if vendors and not want_stone else {}
+    sale_dist = nav.actor_distances_to(hero, vendors, ledger.reserved) if vendors and not want_stone else {}
     finish_tick = (run['end_tick'] if run else
                    deadline if deadline is not None and turn.tick < deadline else 70)
     end = min(70 - cfg.return_margin - vendor_home, finish_tick - cfg.return_margin)
@@ -447,7 +469,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
                 skipped['wall_material_deadline'] += 1
                 continue
             amount = material.amount
-        if stockpile and home and not dedicated and (turn.is_day or wave_budget is not None):
+        if not want_stone and (stockpile or late and not vendors) and home and not dedicated and (turn.is_day or wave_budget is not None):
             home_walk = home_dist.get(cell)
             if home_walk is None:
                 skipped['no_return_route'] += 1
@@ -456,6 +478,11 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
             amount = min(amount, budget - route[0] - home_walk)
             if amount <= 0:
                 skipped['return_deadline'] += 1
+                continue
+        if late and not want_stone and not vendors and turn.is_day:
+            amount = min(amount, turn.day_left - cfg.return_margin - route[0])
+            if amount <= 0:
+                skipped["return_deadline"] += 1
                 continue
         if not want_stone and vendors:
             if sale_walk is None:
@@ -496,13 +523,15 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
     # Finish a productive deposit, including its last few units. Replan only
     # when it vanishes, becomes inaccessible/unprofitable, or cannot meet dusk.
     comparable = [o for o in options if comparable_score(o.score, best.score)]
+    opening_sale_dist = first_day_sale_distances(
+        turn, cfg, mem, nav, ledger, hero, vendors if selling else None)
     chosen = (previous if previous and previous.score >= .65 * best.score else
-              min(prefer_separate_sector(turn, hero, comparable), key=order))
+              min(prefer_separate_sector(turn, hero, comparable, opening_sale_dist), key=order))
     preferred = preferred_stock(turn, cfg, mem, ledger, hero) if not want_stone else set()
     # Never chase a shortage deposit whose present yield is substantially worse.
     news_options = [o for o in comparable if turn.zones[o.target] in preferred]
     if news_options:
-        chosen = min(prefer_separate_sector(turn, hero, news_options), key=order)
+        chosen = min(prefer_separate_sector(turn, hero, news_options, opening_sale_dist), key=order)
     target, route = chosen.target, chosen.route
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
@@ -568,7 +597,8 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
         if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True):
             return True
         return allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero)
-    if hero.id in mem.sold_workers and hero.id not in mem.sale_workers and not force_sale and not cashout:
+    late = late_economy_allowed(turn, cfg, mem, ledger, hero)
+    if not late and hero.id in mem.sold_workers and hero.id not in mem.sale_workers and not force_sale and not cashout:
         if turn.tick < cfg.economy_rounds and mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=True):
             return True
         if allow_spare and not (turn.tick >= cfg.economy_rounds and total) and spare_mine(turn, cfg, mem, nav, ledger, hero):
@@ -585,7 +615,8 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
     vendors = [p for p, k in turn.zones.items() if k == "vendor"]
     options = [(r[0] != 0, p != mem.sale_targets.get(hero.id), r[0], p, r) for p in vendors
                if (vendor_only is None or p == vendor_only)
-               and (force_sale or cashout or hero.id not in mem.sold_workers or p == mem.sale_targets.get(hero.id))
+               and (late or force_sale or cashout or hero.id not in mem.sold_workers
+                    or p == mem.sale_targets.get(hero.id))
                and not mem.movement.avoids(hero.id, p)
                and (r := nav.approach(hero, [p], ledger.reserved)) is not None]
     choice = min(options, default=None)
@@ -637,8 +668,11 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
     # Carry an unsellable late load home before starting any new trip. Once
     # there, the final daytime pass may use adjacent work without moving out.
     if allow_spare and turn.tick >= cfg.economy_rounds and total and not sale_fits and home:
-        back = (nav.search(hero, home, ledger.reserved) if exact
-                else nav.approach(hero, home, ledger.reserved))
+        from .traffic import transit_cells
+        goals = set(home) if exact else {p for t in home for p in neighbours(t)} - set(home)
+        if late and not exact:
+            goals -= transit_cells(turn, nav, ledger) | set(ledger.operator_posts.values())
+        back = nav.search(hero, goals, ledger.reserved)
         if back and back[1] is not None:
             return ledger.add(hero.id, command("move", back[1]))
     # A pause before a scheduled build/shop phase is not spare time: even one
@@ -649,7 +683,7 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
         return True
     # When today's sale is impossible, keep the load and head home. This also
     # covers workers left without a reachable weapon assignment.
-    if allow_spare and total and not sale_fits and home:
+    if not late and allow_spare and total and not sale_fits and home:
         back = (nav.search(hero, home, ledger.reserved) if exact
                 else nav.approach(hero, home, ledger.reserved))
         if back and back[1] is not None:

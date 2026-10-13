@@ -146,17 +146,29 @@ class DefenceReturnTickTests(unittest.TestCase):
         self.assertEqual(result['11']['action'], 'move')
         self.assertEqual(mem.return_targets[11], 20)
 
-    def test_carried_boss_order_cannot_take_the_recall_action_at_67(self):
-        data = payload(67, roles=[unit(13, 'station', 9, 22),
-            unit(11, 'pioneer', 6, 18, backpack=['BossRobotSummonOrder']),
-            unit(20, 'rocket', 8, 23), unit(21, 'rocket', 8, 21),
-            unit(22, 'rocket', 9, 23)])
-        data['mapInfo'].update(width=34, height=34)
-        agent = Agent(Config(llm_enabled=False))
-        result = agent.decide(data)['roleCommandMap']
-        mem = next(iter(agent.sessions.values()))
-        self.assertEqual(result['11']['action'], 'move')
-        self.assertEqual(mem.return_targets[11], 20)
+    def test_first_day_carried_order_precedes_recall_but_later_day_keeps_cutoff(self):
+        for day in (1, 2):
+            with self.subTest(day=day):
+                data = payload((day - 1) * 130 + 67, roles=[
+                    unit(13, 'station', 9, 22, level=3),
+                    unit(11, 'pioneer', 6, 18, backpack=['BossRobotSummonOrder']),
+                    unit(20, 'rocket', 8, 23), unit(21, 'rocket', 8, 21),
+                    unit(22, 'rocket', 9, 23)])
+                data['mapInfo'].update(width=34, height=34)
+                data['teamEnemy']['roles'] = [unit(99, 'station', 25, 9)]
+                agent = Agent(Config(llm_enabled=False))
+                result = agent.decide(data)['roleCommandMap']
+                mem = next(iter(agent.sessions.values()))
+                if day == 1:
+                    self.assertEqual((result['11']['action'], result['11']['name']),
+                                     ('use', 'BossRobotSummonOrder'))
+                    self.assertNotIn(11, mem.return_targets)
+                    data['roundNo'] += 1
+                    data['teamOur']['roles'][1]['backpack'] = []
+                    data['lastRoundRoleActionResults'] = {'11': True}
+                    result = agent.decide(data)['roleCommandMap']
+                self.assertEqual(result['11']['action'], 'move')
+                self.assertEqual(mem.return_targets[11], 20)
 
 
 if __name__ == '__main__':

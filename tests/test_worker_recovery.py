@@ -35,6 +35,18 @@ class WorkerRecoveryTests(unittest.TestCase):
         workers(t, cfg, mem, nav, ledger, [], [])
         self.assertEqual(ledger.commands['1'], command('use', (4, 5), name='StationUpgradeVoucher1'))
 
+    def test_recovery_cannot_spend_a_healthy_station_reserve(self):
+        for level in (1, 2):
+            for health in (499, 500, 1500, 3000):
+                with self.subTest(level=level, health=health):
+                    name = f'StationUpgradeVoucher{level}'
+                    data = self.case(tick=140, backpack=[name])
+                    data['teamOur']['roles'][1].update(level=level, health=health)
+                    turn, cfg, nav, ledger = setup_case(data)
+                    action = Recovery().action((1, 'use', turn.station.pos), turn, cfg,
+                                               Memory(), nav, ledger)
+                    self.assertEqual(action, command('use', (4, 5), name=name) if health < 500 else None)
+
     def test_preparation_buys_affordable_base_when_weapon_too_expensive(self):
         p = self.case()
         p['roundNo'] += 130

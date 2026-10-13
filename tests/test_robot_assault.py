@@ -531,9 +531,8 @@ class RobotCommandTests(unittest.TestCase):
                 self.assertNotIn("30000", ledger.commands)
 
     def test_breach_selected_wall_then_keep_base_as_next_target(self):
-        from robot_feedback import reject_base_aims
         data = enemy_ring(assault_payload(robot=controlled_robot(x=7)), weak=(8, 4))
-        memory = reject_base_aims(data)
+        memory = RobotAssaultMemory()
         turn, _, nav, ledger = setup_case(data, layout_mode="explicit")
         act_robots(turn, memory, nav, ledger)
         self.assertEqual(ledger.commands["30000"], command("attack", (8, 4)))
@@ -558,7 +557,6 @@ class RobotCommandTests(unittest.TestCase):
         self.assertGreater(destination[0], 4)
 
     def test_static_npc_in_a_missing_wall_cell_is_not_an_open_entrance(self):
-        from robot_feedback import reject_base_aims
         for neutral_type in ("weaponShop", "defenderTaskPoint1"):
             with self.subTest(neutral_type=neutral_type):
                 data = assault_payload(robot=controlled_robot(x=7))
@@ -570,9 +568,9 @@ class RobotCommandTests(unittest.TestCase):
                     for i, p in enumerate(enemy_entries(initial, base)) if p != (8, 4)]
                 data["mapInfo"]["zones"] = [
                     {"neutralType": neutral_type, "pos": {"x": 8, "y": 4}}]
-                memory = reject_base_aims(data)
                 turn, _, nav, ledger = setup_case(data, layout_mode="explicit")
                 self.assertEqual(weakest_approach(turn, ledger).wall.pos, (8, 5))
+                memory = RobotAssaultMemory()
                 act_robots(turn, memory, nav, ledger)
                 # The diagonal shot to this wall touches the NPC cell.
                 # Reposition before firing rather than shoot through it.
@@ -580,7 +578,6 @@ class RobotCommandTests(unittest.TestCase):
                 self.assertEqual(action["action"], "move")
                 data["roundNo"] += 1
                 data["teamOur"]["summonRobotList"][0]["pos"] = action["targetPos"][0]
-                reject_base_aims(data, memory)
                 turn, _, nav, ledger = setup_case(data, layout_mode="explicit")
                 act_robots(turn, memory, nav, ledger)
                 self.assertEqual(ledger.commands["30000"], command("attack", (8, 5)))
@@ -593,15 +590,13 @@ class RobotCommandTests(unittest.TestCase):
         self.assertFalse(ledger.commands)
 
     def test_equal_weakness_targets_wall_nearest_robot(self):
-        from robot_feedback import reject_base_aims
         data = enemy_ring(assault_payload(robot=controlled_robot(x=14)), weak=(8, 4),
                           weak_level=1, weak_hp=1000)
         right_wall = next(r for r in data["teamEnemy"]["roles"]
                           if r["roleType"] == "wall" and pos(r["pos"]) == (13, 4))
         right_wall.update(level=1, health=1000)
-        memory = reject_base_aims(data)
         turn, _, nav, ledger = setup_case(data, layout_mode="explicit")
-        act_robots(turn, memory, nav, ledger)
+        act_robots(turn, RobotAssaultMemory(), nav, ledger)
         self.assertEqual(ledger.commands["30000"], command("attack", (13, 4)))
 
 

@@ -190,13 +190,12 @@ class RearAssaultTests(unittest.TestCase):
         self.assertTrue(turn.summon_position_legal(site))
 
     def test_rear_robot_stays_behind_then_attacks_observed_base(self):
-        from robot_feedback import reject_base_aims
         data = enemy_ring(assault_payload(robot=controlled_robot(x=14, y=4)),
                           weak=(13, 4), weak_level=2, weak_hp=1500)
         front_wall = next(r for r in data['teamEnemy']['roles']
                           if r['roleType'] == 'wall' and pos(r['pos']) == (8, 4))
         front_wall.update(level=1, health=1)
-        memory = reject_base_aims(data)
+        memory = RobotAssaultMemory()
         turn, _, nav, ledger = setup_case(data, layout_mode='explicit')
         act_robots(turn, memory, nav, ledger)
         self.assertEqual(ledger.commands['30000'], command('attack', (13, 4)))

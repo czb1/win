@@ -42,23 +42,26 @@ class GateGuard:
     def _traffic(self):
         traffic = {}
         for helper in self.turn.heroes:
+            if self.ledger.notes.get(helper.id, {}).get('reason') == 'off_route_standby':
+                continue
             action = self.ledger.commands.get(str(helper.id), {})
-            target = (pos(action['targetPos'][0]) if action.get('action') == 'move' else None)
+            target = (pos(action['targetPos'][-1]) if action.get('action') == 'move' else None)
             # An accepted collection/use/attack is not a request to pass.
             if helper.id in self.ledger.used and target is None:
                 continue
-            if helper.pos == self.gate or target == self.gate:
+            if helper.pos == self.gate or (action.get('action') == 'move' and self.gate in {pos(p) for p in action['targetPos']}):
                 traffic[helper.id] = self.requests.get(helper.id, set())
             elif helper.id in self.requests and (target is None
                     or distance(target, self.gate) < distance(helper.pos, self.gate)):
                 traffic[helper.id] = self.requests[helper.id]
         return traffic
 
-    def _stage(self, traffic):
+    def _stage(self, traffic, *, allow_unbuilt=False):
         options = []
         original = self.turn.blocked
         forbidden = (self.ledger.tower_cells | self.ledger.wall_cells
                      | set(self.ledger.operator_posts.values()))
+        route_forbidden = set(self.ledger.operator_posts.values()) if allow_unbuilt else forbidden
         points = list(self.posts)
         if self.state.get('post') in self.posts:
             points.append(self.state['post'])
@@ -91,7 +94,7 @@ class GateGuard:
                         or point in original and point != self.hero.pos
                         or self.state.get('traffic_only') and exposed(point, self.catches)):
                     continue
-                route = self.nav._search(self.hero, {point}, self.ledger.reserved | forbidden)
+                route = self.nav._search(self.hero, {point}, self.ledger.reserved | route_forbidden)
                 if route is None:
                     continue
                 add_option(point, route)
@@ -100,12 +103,13 @@ class GateGuard:
                 # next tile. Prefer a legal first step that opens traffic now.
                 for landing in neighbours(self.hero.pos):
                     if (not self.turn.inside(landing) or landing in original
-                            or landing in forbidden or landing in self.ledger.reserved
+                            or landing in route_forbidden or landing in self.ledger.reserved
                             or blocked_requests(landing)):
                         continue
                     self.turn.blocked = original - {self.hero.pos}
-                    onward = self.nav._search(replace(self.hero, pos=landing), set(points),
-                                             self.ledger.reserved | forbidden, with_endpoint=True)
+                    goals = set(points) - forbidden if allow_unbuilt else set(points)
+                    onward = self.nav._search(replace(self.hero, pos=landing), goals,
+                                             self.ledger.reserved | route_forbidden, with_endpoint=True)
                     self.turn.blocked = original
                     if onward:
                         add_option(onward[2], (onward[0] + 1, landing))
@@ -166,12 +170,61 @@ class GateGuard:
                    yield_until=self.state.get('yield_until'))
 
 
+class FirstNightBaseGuard(GateGuard):
+    """Use the existing legal post/traffic selection beside the base's front."""
+
+    def __init__(self, turn, nav, ledger, hero, posts, catches):
+        # Staging avoids catch reach but deliberately accepts robot damage.
+        # There is no gate or persistent yield lease for this first-night post.
+        super().__init__(turn, nav, ledger, hero, None, None, posts,
+                         {'traffic_only': True}, catches)
+
+    def finish(self):
+        self.ledger.used.discard(self.hero.id)
+        route = None
+        # A speculative failed route must not displace the guard once its
+        # requester has committed to collection, an item, or weapon fire.
+        traffic = {uid: goals for uid, goals in self.requests.items()
+                   if uid not in self.ledger.used
+                   or self.ledger.commands.get(str(uid), {}).get('action') == 'move'}
+        try:
+            # Night movement may cross unbuilt blueprints; actual buildings
+            # still block, and a final post must leave every planned site free.
+            route = self._stage(traffic, allow_unbuilt=True)
+        except DeadlineExceeded:
+            pass
+        if route is not None and route[1] is not None:
+            if self.ledger.add(self.hero.id, command('move', route[1])):
+                self.ledger.explain(self.hero.id, 'imp_first_night_base_return',
+                                    post=self.state['post'], return_steps=route[0])
+                return
+        self.ledger.used.add(self.hero.id)
+        self.ledger.reserved.add(self.hero.pos)
+        self.ledger.explain(self.hero.id, 'imp_first_night_base_guard',
+                            at_post=self.hero.pos in self.posts,
+                            route_available=route is not None)
+
+
 def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
-    """Clear home traffic even before completion; guard only a live local wave."""
-    gates = wall_gates(turn, walls)
+    """Shield the base on night one; otherwise retain local-wave gate duty."""
     if not turn.imps:
         return None
     hero = turn.imps[0]
+    if turn.day == 1 and not turn.is_day and turn.station:
+        mem.sabotage.gate_states.pop(hero.id, None)
+        mem.sabotage.targets.pop(hero.id, None)
+        mem.sabotage.progress.pop(hero.id, None)
+        catches = [t for t in threats(turn, mem.sabotage) if t.catch]
+        if exposed(hero.pos, catches):
+            escape(turn, nav, ledger, hero, catches)
+            return None
+        xs, ys = zip(*turn.station.cells)
+        # Match the existing front-wall orientation, including mirrored bases.
+        front_x = max(xs) + 1 if min(xs) + max(xs) < turn.width - 1 else min(xs) - 1
+        posts = [(front_x, y) for y in sorted(set(ys))]
+        ledger.used.add(hero.id)
+        return FirstNightBaseGuard(turn, nav, ledger, hero, posts, catches)
+    gates = wall_gates(turn, walls)
     built = {u.pos for u in turn.ours if u.kind == 'wall'}
     if len(gates) != 1 or gates & built:
         mem.sabotage.gate_states.pop(hero.id, None)

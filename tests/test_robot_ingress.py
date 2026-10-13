@@ -1,4 +1,4 @@
-"""Geometric cooperation helper checks; direct-first scheduling is tested separately."""
+"""Finite frontage and observation checks for cooperative base ingress."""
 import copy
 import unittest
 
@@ -7,8 +7,7 @@ from test_robot_assault import controlled_robot
 from agent.commands import command
 from agent.model import distance, pos
 from agent.projectiles import line_cells
-from agent.robot_assault import (RobotAssaultMemory, act_robots, enemy_base,
-                                 _make_room_inside, _occupants)
+from agent.robot_assault import RobotAssaultMemory, act_robots
 
 
 def frontage_case(round_no=102):
@@ -42,12 +41,6 @@ def decide(data, memory=None, reserved=(), entry=None):
     turn, _, nav, ledger = setup_case(data, layout_mode="explicit")
     ledger.reserved.update(reserved)
     ledger.robot_assault_entry = entry
-    # Exercise the retained cooperation helper in isolation. Production now
-    # schedules base shots first; test_robot_direct_base checks that priority.
-    base = enemy_base(turn)
-    memory.observe(turn, base)
-    if base and not turn.is_day:
-        _make_room_inside(turn, memory, nav, ledger, base, _occupants(turn, memory))
     act_robots(turn, memory, nav, ledger)
     return turn, ledger, memory
 
@@ -105,8 +98,7 @@ class RobotIngressTests(unittest.TestCase):
         data["teamOur"]["summonRobotList"][0]["pos"] = {"x": 30, "y": 8}
         data["teamOur"]["summonRobotList"][2]["pos"] = {"x": 29, "y": 9}
         _, ledger, _ = decide(data, entry=(28, 12))
-        self.assertEqual(ledger.commands["30036"]["action"], "attack")
-        self.assertEqual(ledger.notes[30036]["conditions"]["target_id"], 20013)
+        self.assertEqual(ledger.commands["30036"], command("move", (29, 11)))
         for uid in (30035, 30037):
             self.assertEqual(ledger.commands[str(uid)]["action"], "attack")
         data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 29, "y": 11}
@@ -191,8 +183,7 @@ class RobotIngressTests(unittest.TestCase):
         data["teamEnemy"]["roles"].append(unit(20010, "worker", 32, 8))
         _, ledger, _ = decide(data)
         self.assertEqual(ledger.commands["30035"], command("attack", (31, 9)))
-        self.assertEqual(ledger.notes[30036]["conditions"]["target_id"], 20013)
-        self.assertNotEqual(ledger.commands["30036"], command("move", (32, 8)))
+        self.assertEqual(ledger.notes[30036]["conditions"]["target_id"], 20010)
 
     def test_single_robot_keeps_attacking(self):
         data = frontage_case()

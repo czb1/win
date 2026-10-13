@@ -69,18 +69,20 @@ class FirstDayAttackSideTests(unittest.TestCase):
                     self.assertTrue(turn.summon_position_legal(spawn))
                     self.assertNotIn(spawn, turn.blocked)
 
-    def test_equal_faces_keep_route_and_incumbent_ties(self):
+    def test_equal_clearance_keeps_route_and_incumbent_ties(self):
         for armed in (False, True):
             with self.subTest(armed=armed):
                 data = block_case(held=True)
                 if armed:
                     turret(data)
                     data['teamEnemy']['roles'].append(unit(20041, 'railgun', 31, 8))
+                entry = (33, 12) if armed else ENTRY
+                data['teamOur']['roles'][1]['pos'] = {'x': entry[0], 'y': entry[1]}
                 turn, _, nav, ledger = setup_case(data)
-                memory = memory_for()
+                memory = memory_for(entry)
                 scout = prepare_first_day_wall_blocker(turn, memory, nav, ledger)
                 self.assertEqual(scout.id, 10)
-                self.assertEqual(memory.wall_entry, ENTRY)
+                self.assertEqual(memory.wall_entry, entry)
                 self.assertFalse(ledger.commands)
 
     def test_dead_own_and_lateral_weapons_do_not_mark_upper_face_armed(self):
@@ -90,7 +92,8 @@ class FirstDayAttackSideTests(unittest.TestCase):
         turn, _, nav, ledger = setup_case(data)
         memory = ScoutMemory()
         prepare_first_day_wall_blocker(turn, memory, nav, ledger)
-        self.assertEqual(memory.wall_entry, ENTRY)
+        # A lateral enemy turret affects clearance, but does not arm a face.
+        self.assertEqual(memory.wall_entry, (33, 12))
         self.assertEqual(first_day_clear_sides(turn, turn.enemies[0]), {7, 12})
 
     def test_new_weapon_reselects_before_use_and_waits_for_real_occupation(self):
@@ -135,9 +138,10 @@ class FirstDayAttackSideTests(unittest.TestCase):
                 turn, _, nav, ledger = setup_case(data)
                 memory = ScoutMemory()
                 self.assertIsNotNone(prepare_first_day_wall_blocker(turn, memory, nav, ledger))
-                self.assertEqual(memory.wall_entry, ENTRY)
+                entry = (33 if sealed else 28, 12)
+                self.assertEqual(memory.wall_entry, entry)
                 ledger.robot_assault_entry = memory.wall_entry
-                self.assertEqual(choose_summon_position(turn, ledger), SPAWN)
+                self.assertEqual(choose_summon_position(turn, ledger), (entry[0], 13))
 
     def test_summon_without_scout_prefers_clear_face_over_rear(self):
         for y, clear_row in ((11, 7), (8, 12)):

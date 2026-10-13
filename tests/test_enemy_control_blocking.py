@@ -109,10 +109,19 @@ class EnemyControlBlockingTests(unittest.TestCase):
     def test_free_pioneer_returns_home_at_night(self):
         data = sole_post(70)
         data['teamOur']['roles'].append(unit(13, 'station', 3, 11))
-        commands = Agent(Config(llm_enabled=False, layout_mode='explicit')).decide(data)['roleCommandMap']
+        agent = Agent(Config(llm_enabled=False, layout_mode='explicit'))
+        commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['11']['action'], 'move')
-        self.assertLess(commands['11']['targetPos'][0]['x'], 8)
-        self.assertGreater(commands['11']['targetPos'][0]['y'], 5)
+        mem = next(iter(agent.sessions.values()))
+        turn, _, _, _ = setup_case(data, layout_mode='explicit')
+        post = mem.pioneer_wait_post
+        self.assertEqual(turn.base_distance(post), 1)
+        self.assertLess(post[0], turn.station.pos[0])
+        self.assertGreater(post[1], turn.station.pos[1])
+        landing = pos(commands['11']['targetPos'][0])
+        self.assertNotIn(landing, turn.blocked)
+        self.assertLess(sum(abs(landing[i] - post[i]) for i in (0, 1)),
+                        sum(abs(turn.pioneer.pos[i] - post[i]) for i in (0, 1)))
 
     def test_occupied_or_reserved_only_post_is_not_entered(self):
         for blocker in ('enemy', 'ally', 'robot', 'reservation', 'construction', 'operator'):

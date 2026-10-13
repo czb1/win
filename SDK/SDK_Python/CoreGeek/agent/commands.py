@@ -15,6 +15,12 @@ def command(action, target=None, **kwargs):
     return result
 
 
+def move_command(hero, target):
+    """Driving carries ordered intermediate and final cells; walking has one."""
+    segment = driving_segment(hero.pos, target) if hero.is_driving else None
+    return {"action": "move", "targetPos": [dump(p) for p in segment]} if segment else command("move", target)
+
+
 class Ledger:
     def __init__(self, turn, cfg, tower_cells, wall_cells):
         self.turn, self.cfg = turn, cfg
@@ -44,6 +50,8 @@ class Ledger:
         # Daytime ownership is separate from issuing a command. Failed recall
         # and intentional watch standby must have different fallback policies.
         self.daytime_waits = {}
+        self.traffic_forbidden = {}
+        self.traffic_holds = set()
         self.income_worker_id = None
         self.watch_pack_slots = {}
         self.work_jobs = {}
@@ -136,7 +144,12 @@ class Ledger:
             return self._reject("invalid_target_position")
         if any(not self.turn.inside(p) for p in points):
             return self._reject("target_outside_map")
-        target = points[0] if points else None
+        target = (points[-1] if action == "move" else points[0]) if points else None
+        if cmd.get("action") == "move":
+            restricted = self.traffic_forbidden.get(uid, set())
+            segment = driving_segment(unit.pos, target) if target is not None else None
+            if any(p in restricted for p in points) or segment and any(p in restricted for p in segment):
+                return self._reject("traffic_corridor_reserved")
         name = cmd.get("name")
         cost = 0
         controller = None
@@ -178,16 +191,20 @@ class Ledger:
                 return self._reject("actor_kind_unsupported")
             if unit.kind == "imp" and action not in ("move", "destroy", "catch"):
                 return self._reject("imp_action_unsupported")
-            needs_pos = action in ("move", "collect", "build", "remove", "summonTreasure", "destroy", "catch")
+            needs_pos = action in ("collect", "build", "remove", "summonTreasure", "destroy", "catch")
             if needs_pos and len(points) != 1:
                 return self._reject("expected_one_target")
             if action == "move":
+                if len(points) not in (1, 2):
+                    return self._reject("move_expected_one_or_two_targets")
                 boarding = (unit.kind == 'pioneer' and self.turn.is_day
                             and target in self.turn.free_vehicle_cells)
                 segment = (driving_segment(unit.pos, target)
                            if unit.kind == 'pioneer' and self.turn.is_day and unit.is_driving
                            and unit.pos in self.turn.vehicle_cells else None)
-                if segment:
+                if len(points) == 2:
+                    if segment is None or tuple(points) != segment:
+                        return self._reject('driving_requires_ordered_two_cell_path')
                     if any(not self.turn.inside(p) or p in self.turn.blocked or p in self.reserved
                            for p in segment):
                         return self._reject('driving_path_occupied')

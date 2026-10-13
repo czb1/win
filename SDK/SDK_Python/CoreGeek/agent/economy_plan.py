@@ -10,6 +10,31 @@ def maxed_weapon_mining_phase(turn, cfg):
             and all(w.level >= 3 for w in turn.weapons))
 
 
+def late_logistics_ready(turn, cfg):
+    """New idle/traffic policies start after the opening firepower tasks.
+
+    Day one keeps the dedicated offense and gun-construction chain, even if
+    a fixture reports upgraded weapons. Later days still need every gun built
+    and upgraded before ordinary logistics may use the new policy.
+    """
+    return (turn.is_day and turn.day > 1
+            and len(turn.weapons) >= min(3, len(cfg.loadout))
+            and bool(turn.weapons) and all(w.level >= 3 for w in turn.weapons))
+
+
+def late_economy_allowed(turn, cfg, mem, ledger, hero):
+    """Repeat income only for a worker without a reserved special assignment."""
+    if (not late_logistics_ready(turn, cfg) or hero.id in mem.return_targets
+            or hero.id in mem.wall_batches or hero.id == ledger.first_day_offense_worker_id):
+        return False
+    job = mem.daytime_jobs.get(hero.id, {})
+    if (job.get('kind') in ('build', 'buy', 'use', 'robot_buy', 'recovery')
+            or job.get('kind') == 'mine' and job.get('want_stone')):
+        return False
+    from .model import SUMMON_ORDERS
+    return not any('UpgradeVoucher' in name or name in SUMMON_ORDERS for name in hero.backpack)
+
+
 def planned_weapons(turn, cfg, mem, sites):
     weapons = list(turn.weapons)
     occupied = {p for u in (*turn.ours, *turn.enemies) if u.kind not in ("worker", "pioneer")

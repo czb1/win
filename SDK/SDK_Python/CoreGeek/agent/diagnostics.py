@@ -92,8 +92,10 @@ def observe(turn, mem):
                       "effect": "unknown"}
         role = current.get(uid)
         if command.get("action") == "move" and role:
-            target = (command.get("targetPos") or [None])[0]
+            target = (command.get("targetPos") or [None])[-1]
             evaluation["effect"] = "target_observed" if role.get("pos") == target else "target_not_observed"
+            if len(command.get("targetPos", [])) == 2 and role.get("pos") == command["targetPos"][0]:
+                evaluation["effect"] = "intermediate_observed"
             evaluation["observed_pos"] = role.get("pos")
             evaluation["cause"] = "unknown; legality_is_not_execution_success"
         evaluations.append(evaluation)
