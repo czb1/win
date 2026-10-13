@@ -40,6 +40,8 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
     xs, ys = zip(*base.cells)
     entries = [p for p in enemy_entries(turn, base)
                if p[1] in (min(ys) - 2, max(ys) + 2)]
+    corners = {(x, y) for x in (min(xs) - 2, max(xs) + 2)
+               for y in (min(ys) - 2, max(ys) + 2)}
     clear_sides = first_day_clear_sides(turn, base, ledger.robot_known_enemies)
     weapon_cells = {u.pos for u in (*ledger.robot_known_enemies, *turn.enemies)
                     if u.kind in WEAPONS}
@@ -78,7 +80,9 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
                 continue
             # Reconsider an armed face before committing any summons. Once
             # spawns are reserved, keep a still-usable gap for those robots.
+            # Keep corners as fallbacks when no straight wall entry is feasible.
             candidates.append((bool(ledger.summon_pending_positions) and entry != memory.wall_entry,
+                               entry in corners,
                                entry[1] not in clear_sides,
                                *entry_clearance[entry],
                                not incumbent, entry != memory.wall_entry,
@@ -101,7 +105,8 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
     *_, entry, scout, route = min(candidates, key=lambda row: row[:-2])
     memory.worker_id, memory.post, memory.wall_entry = scout.id, entry, entry
     clearance, turret_in_front = entry_clearance[entry]
-    selection = dict(entry=entry, nearest_turret_distance=-clearance if weapon_cells else None,
+    selection = dict(entry=entry, corner_entry=entry in corners,
+                     nearest_turret_distance=-clearance if weapon_cells else None,
                      turret_in_front=turret_in_front)
     if route[1] is None:
         if reserve_hold:

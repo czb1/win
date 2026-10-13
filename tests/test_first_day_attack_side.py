@@ -76,7 +76,7 @@ class FirstDayAttackSideTests(unittest.TestCase):
                 if armed:
                     turret(data)
                     data['teamEnemy']['roles'].append(unit(20041, 'railgun', 31, 8))
-                entry = (33, 12) if armed else ENTRY
+                entry = (32, 12) if armed else ENTRY
                 data['teamOur']['roles'][1]['pos'] = {'x': entry[0], 'y': entry[1]}
                 turn, _, nav, ledger = setup_case(data)
                 memory = memory_for(entry)
@@ -93,7 +93,7 @@ class FirstDayAttackSideTests(unittest.TestCase):
         memory = ScoutMemory()
         prepare_first_day_wall_blocker(turn, memory, nav, ledger)
         # A lateral enemy turret affects clearance, but does not arm a face.
-        self.assertEqual(memory.wall_entry, (33, 12))
+        self.assertEqual(memory.wall_entry, LOWER_ENTRY)
         self.assertEqual(first_day_clear_sides(turn, turn.enemies[0]), {7, 12})
 
     def test_new_weapon_reselects_before_use_and_waits_for_real_occupation(self):
@@ -138,7 +138,7 @@ class FirstDayAttackSideTests(unittest.TestCase):
                 turn, _, nav, ledger = setup_case(data)
                 memory = ScoutMemory()
                 self.assertIsNotNone(prepare_first_day_wall_blocker(turn, memory, nav, ledger))
-                entry = (33 if sealed else 28, 12)
+                entry = (32, 12)
                 self.assertEqual(memory.wall_entry, entry)
                 ledger.robot_assault_entry = memory.wall_entry
                 self.assertEqual(choose_summon_position(turn, ledger), (entry[0], 13))
