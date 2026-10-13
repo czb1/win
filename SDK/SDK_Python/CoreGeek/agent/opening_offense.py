@@ -2,7 +2,7 @@
 from dataclasses import replace
 
 from .commands import command
-from .economy import build, build_options
+from .economy import build, build_options, buy_supply, supplies, use_inventory, voucher_for
 from .economy_plan import via
 from .logging_system import emit_event
 from .model import DEFENCE_RETURN_TICK, ORES, SUMMON_ORDERS
@@ -28,12 +28,13 @@ def observe_first_day_gatling(turn, mem):
     scout.cancelled = True
     scout.key, scout.worker_id, scout.post, scout.wall_entry = None, None, None, None
     mem.first_day_offense.clear()
-    mem.first_day_offense.update(worker_id=worker_id, phase='mining',
+    mem.first_day_offense.update(worker_id=worker_id, phase='upgrade_buy',
                                  transition='enemy_gatling_spotted')
     # Release both the worker's old task chain and any other robot buyer.
     mem.daytime_jobs = {uid: job for uid, job in mem.daytime_jobs.items()
                        if uid != worker_id and job.get('kind') != 'robot_buy'}
-    for targets in (mem.build_targets, mem.wall_batches, mem.sale_targets,
+    for targets in (mem.build_targets, mem.wall_batches, mem.sale_targets, mem.mine_targets,
+                    mem.upgrade_targets,
                     mem.return_targets, mem.return_posts):
         targets.pop(worker_id, None)
     for workers in (mem.preparation_workers, mem.sold_workers, mem.sale_workers):
@@ -203,27 +204,70 @@ def _buy(turn, cfg, mem, nav, ledger, hero, base, towers):
     return False, ledger.spending_plan.get('robot_blocked', 'purchase_unavailable')
 
 
+def _upgrade_after_abort(turn, cfg, mem, nav, ledger):
+    """Keep the scout for one affordable shop trip and its observed deliveries."""
+    state = mem.first_day_offense
+    if state.get('worker_id') is None and (len(turn.workers) >= 2 or first_day_guns_built(turn, cfg)):
+        hero = min(turn.workers, key=lambda w: w.id, default=None)
+        state['worker_id'] = hero.id if hero else None
+    hero = next((w for w in turn.workers if w.id == state.get('worker_id')), None)
+    if hero is None or hero.id in ledger.used:
+        return None
+    if state.get('phase') in ('upgrade_buy', 'upgrade_use'):
+        targets = {w.pos for w in turn.weapons}
+        held = any(hero.inventory[voucher_for(w)] for w in turn.weapons if voucher_for(w))
+        if held:
+            state['phase'] = 'upgrade_use'
+        elif state['phase'] == 'upgrade_use':
+            _advance(mem, ledger, hero, state, 'mining', 'weapon_vouchers_delivered')
+        if state['phase'] != 'mining':
+            acted = use_inventory(turn, nav, ledger, hero, mem=mem,
+                                  upgrades_only=True, target_sites=targets)
+            if not acted and not held and hero.health > 165:
+                # Preserve the base heal and remaining opening construction.
+                reserve = (first_day_purchase_reserve(turn, mem, ledger, include_robots=False)
+                           + max(0, min(3, len(cfg.loadout)) - len(turn.weapons)) * cfg.weapon_cost)
+                plan = supplies(turn, cfg, mem, nav, ledger, hero, reserve,
+                                bulk=True, shop_only=state.get('upgrade_shop'), target_sites=targets)
+                if plan is None and state.get('upgrade_shop') is not None:
+                    plan = supplies(turn, cfg, mem, nav, ledger, hero, reserve,
+                                    bulk=True, target_sites=targets)
+                acted = buy_supply(turn, ledger, hero, plan)
+                if acted:
+                    state['upgrade_shop'] = ledger.supply_targets.get(hero.id)
+            if acted:
+                ledger.first_day_offense_worker_id = hero.id
+                mem.daytime_jobs.pop(hero.id, None)
+                ledger.notes[hero.id]['conditions'].update(
+                    first_day_offense_phase=state['phase'], first_day_offense_worker=hero.id,
+                    transition=state.get('transition'))
+                return hero
+            # A blocked paid delivery yields to recovery/recall, never mining.
+            if held:
+                return None
+    if hero.health > 165 and turn.tick < DEFENCE_RETURN_TICK:
+        from .mining import earn
+        earn(turn, cfg, mem, nav, ledger, hero, deadline=DEFENCE_RETURN_TICK)
+    return None
+
+
 def act_first_day_offense(turn, cfg, mem, nav, ledger, towers, walls):
     """From tick 25, one stable worker owns walls -> sell -> buy -> wall denial."""
     base = enemy_base(turn)
     if turn.day != 1:
         mem.first_day_offense.clear()
-    if not turn.is_day or turn.day != 1 or turn.tick < FIRST_DAY_OFFENSE_TICK or base is None:
+    if not turn.is_day or turn.day != 1:
+        return None
+    from .brain import observe_robot_summons
+    observe_robot_summons(turn, mem)
+    if mem.night_scout.cancelled:
+        return _upgrade_after_abort(turn, cfg, mem, nav, ledger)
+    if turn.tick < FIRST_DAY_OFFENSE_TICK or base is None:
         return None
     # With no second worker there is no way to split offense and construction.
     if len(turn.workers) < 2 and not first_day_guns_built(turn, cfg):
         return None
-    from .brain import observe_robot_summons
-    observe_robot_summons(turn, mem)
     state = mem.first_day_offense
-    if mem.night_scout.cancelled:
-        hero = next((w for w in turn.workers if w.id == state.get('worker_id')), None)
-        if hero and hero.health > 165 and turn.tick < DEFENCE_RETURN_TICK:
-            from .mining import earn
-            earn(turn, cfg, mem, nav, ledger, hero, deadline=DEFENCE_RETURN_TICK)
-        # Mining can take an action, but must not retain the scout role or an
-        # idle reservation. Normal recovery/defense handles unavailable work.
-        return None
     key = (turn.day, base.id, base.pos)
     if state.get('key') != key:
         state.clear()

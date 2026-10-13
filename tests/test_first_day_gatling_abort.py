@@ -37,7 +37,7 @@ class FirstDayGatlingAbortTests(unittest.TestCase):
         self.assertFalse(any(c['action'] in ('buy', 'use') and c.get('name') in SUMMON_ORDERS
                              for c in commands.values()), commands)
 
-    def test_wall_worker_immediately_mines_and_stays_released_after_losing_sight(self):
+    def test_no_available_upgrade_trip_allows_mining_after_losing_sight(self):
         agent = Agent(offense.cfg(walls=[]))
         data = offense.case(34, stock=[BOSS], gold=0)
         agent.decide(copy.deepcopy(data))
@@ -65,7 +65,7 @@ class FirstDayGatlingAbortTests(unittest.TestCase):
         self.assertTrue(memory.night_scout.cancelled)
         self.assertIsNone(memory.night_scout.worker_id)
         self.assertIsNone(memory.night_scout.wall_entry)
-        self.assertEqual(memory.first_day_offense['phase'], 'mining')
+        self.assertEqual(memory.first_day_offense['phase'], 'upgrade_buy')
         self.assertNotIn(10, memory.build_targets)
         self.assertNotIn(10, memory.sold_workers)
         self.assertFalse(any(j['kind'] == 'robot_buy' for j in memory.daytime_jobs.values()))
