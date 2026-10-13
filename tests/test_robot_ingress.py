@@ -45,15 +45,15 @@ def decide(data, memory=None, reserved=(), entry=None):
     return turn, ledger, memory
 
 
-def corner_aisle_case():
-    # Relevant observed geometry from r78: two shooters in the west aisle,
-    # one waiting at the gap, and a live tower sealing the north inner row.
+def corner_aisle_case(blocker_kind='worker'):
+    # Variant of r78 with an opaque worker in place of the north-row turret:
+    # keep exercising cooperative yields after turrets became penetrable.
     data = payload(78, [unit(10013, "station", 9, 22),
                         unit(10010, "worker", 27, 11)])
     data["mapInfo"].update(width=41, height=32)
     data["teamEnemy"]["roles"] = [
         unit(20013, "station", 30, 10, health=1420),
-        unit(20041, "rocket", 30, 11, health=960),
+        unit(20041, blocker_kind, 30, 11, health=500),
         unit(20011, "pioneer", 31, 11),
     ]
     walls = [(x, y) for x in range(28, 34) for y in range(7, 13)
@@ -70,6 +70,14 @@ def corner_aisle_case():
 
 
 class RobotIngressTests(unittest.TestCase):
+    def test_original_corner_turret_no_longer_forces_cooperative_yield(self):
+        _, ledger, _ = decide(corner_aisle_case(blocker_kind='rocket'), entry=(28, 12))
+        for uid in (30035, 30037):
+            self.assertEqual(ledger.commands[str(uid)]['action'], 'attack')
+            self.assertEqual(ledger.notes[uid]['conditions']['target_id'], 20013)
+        self.assertEqual(ledger.commands['30036'], command('move', (29, 11)))
+        self.assertEqual(ledger.notes[30036]['conditions']['target_id'], 20013)
+
     def test_corner_shooter_steps_sideways_to_release_the_aisle(self):
         for entry in (None, (28, 12)):
             with self.subTest(entry=entry):
@@ -167,7 +175,7 @@ class RobotIngressTests(unittest.TestCase):
         for action in ledger.commands.values():
             if action["action"] == "move":
                 self.assertNotEqual(pos(action["targetPos"][0]), (31, 8))
-        self.assertEqual(ledger.notes[30036]["reason"], "robot_wait_assault_lane")
+        self.assertEqual(ledger.notes[30036]["reason"], "robot_attack_base")
 
     def test_lead_continues_deeper_when_the_queue_still_needs_space(self):
         data = frontage_case(103)

@@ -29,23 +29,24 @@ def decide(data, memory=None):
 
 
 class RobotPathBlockerTests(unittest.TestCase):
-    def test_each_unavoidable_enemy_building_or_character_is_attacked_first(self):
+    def test_opaque_blockers_are_cleared_and_turrets_allow_direct_base_fire(self):
         for kind in ("gatling", "railgun", "rocket", "wall", "worker", "pioneer", "imp"):
             with self.subTest(kind=kind):
                 data = assault_payload(robot=controlled_robot(x=7))
                 data["teamEnemy"]["roles"].append(unit(50, kind, 8, 4))
                 seal_base(data)
                 ledger, _ = decide(data)
-                self.assertEqual(ledger.commands["30000"], command("attack", (8, 4)))
-                self.assertEqual(ledger.notes[30000]["conditions"]["target_id"], 50)
+                penetrable = kind in ('gatling', 'railgun', 'rocket')
+                self.assertEqual(ledger.commands["30000"], command("attack", (10, 4) if penetrable else (8, 4)))
+                self.assertEqual(ledger.notes[30000]["conditions"]["target_id"], 99 if penetrable else 50)
 
-    def test_nearest_blocker_precedes_a_weaker_wall_and_the_base(self):
+    def test_wall_behind_a_turret_is_cleared_before_the_base(self):
         data = assault_payload(robot=controlled_robot(x=6))
         data["teamEnemy"]["roles"] += [unit(50, "rocket", 7, 4, health=1000),
                                        unit(51, "wall", 8, 4, health=1)]
         seal_base(data)
         ledger, _ = decide(data)
-        self.assertEqual(ledger.commands["30000"], command("attack", (7, 4)))
+        self.assertEqual(ledger.commands["30000"], command("attack", (8, 4)))
 
     def test_clear_unavoidable_worker_wall_then_bypass_tower_and_attack_base(self):
         data = assault_payload(robot=controlled_robot(x=6))
@@ -91,7 +92,7 @@ class RobotPathBlockerTests(unittest.TestCase):
         for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
             with self.subTest(flip_x=flip_x, flip_y=flip_y):
                 data = assault_payload(robot=controlled_robot(x=7))
-                data["teamEnemy"]["roles"].append(unit(50, "rocket", 8, 4))
+                data["teamEnemy"]["roles"].append(unit(50, "worker", 8, 4))
                 seal_base(data)
                 expected = (14 - 8 if flip_x else 8, 14 - 4 if flip_y else 4)
                 for roles in (data["teamOur"]["roles"], data["teamEnemy"]["roles"],
@@ -144,12 +145,14 @@ class RobotObstacleMemoryTests(unittest.TestCase):
         data["teamEnemy"]["roles"] = data["teamEnemy"]["roles"][:1]
         return data, memory
 
-    def test_previously_seen_hidden_weapon_can_be_cleared(self):
+    def test_previously_seen_hidden_weapon_does_not_prevent_base_approach(self):
         data, memory = self.hidden_weapon()
         seal_base(data, openings={(8, 4)})
         ledger, _ = decide(data, memory)
-        self.assertEqual(ledger.commands["30000"], command("attack", (8, 4)))
-        self.assertEqual(ledger.notes[30000]["conditions"]["target_source"], "last_seen_building")
+        self.assertEqual(ledger.commands["30000"], command("move", (7, 4)))
+        self.assertEqual(ledger.notes[30000]["conditions"]["target_id"], 99)
+        self.assertIn(50, memory.buildings)
+        self.assertIn((8, 4), ledger.turn.blocked)
 
     def test_agent_retains_hidden_weapons_from_an_earlier_daytime_request(self):
         data = assault_payload(round_no=65)
@@ -162,7 +165,8 @@ class RobotObstacleMemoryTests(unittest.TestCase):
         data["teamOur"]["summonRobotList"] = [controlled_robot(x=6)]
         data["teamEnemy"]["roles"] = [r for r in data["teamEnemy"]["roles"] if r['id'] != 50]
         response = agent.decide(data)
-        self.assertEqual(response["roleCommandMap"]["30000"], command("attack", (8, 4)))
+        self.assertEqual(response["roleCommandMap"]["30000"], command("move", (7, 4)))
+        self.assertIn(50, next(iter(agent.sessions.values())).robot_assault.buildings)
 
     def test_repeated_invalid_hidden_target_is_bypassed_until_seen_again(self):
         # Consume historical failed shots independently of today's route
@@ -180,7 +184,7 @@ class RobotObstacleMemoryTests(unittest.TestCase):
         ledger, _ = decide(data, memory)
         self.assertIn(50, memory.rejected_buildings)
         self.assertIn(50, memory.buildings)  # Failure is not proof of death.
-        self.assertEqual(ledger.commands["30000"]["action"], "move")
+        self.assertEqual(ledger.commands["30000"]["action"], "attack")
         self.assertEqual(ledger.notes[30000]["conditions"]["target_id"], 99)
         data["roundNo"] += 1
         data["lastRoundRoleActionResults"] = {}
@@ -214,7 +218,7 @@ class RobotObstacleMemoryTests(unittest.TestCase):
         ledger, _ = decide(data, memory)
         self.assertEqual(ledger.commands["30000"], command("attack", (10, 4)))
 
-    def test_reported_positions_avoid_shooting_through_towers_and_allies(self):
+    def test_reported_positions_shoot_through_towers_but_avoid_allies(self):
         # Only relevant coordinates from the uploaded logs, not a full replay.
         data = payload(66, [unit(20013, "station", 32, 11)])
         data["mapInfo"].update(width=41, height=32)
@@ -228,9 +232,9 @@ class RobotObstacleMemoryTests(unittest.TestCase):
                                                     targetTeam="challenger") for i in range(3)]
         data["robot"]["roles"] = copy.deepcopy(data["teamOur"]["summonRobotList"])
         ledger, _ = decide(data, memory)
-        # The towers remain obstacles, but all robots have an open detour.
+        # The towers remain movement obstacles; two robots can fire through them.
         for uid in (31035, 31036, 31037):
-            self.assertEqual(ledger.commands[str(uid)]['action'], 'move')
+            self.assertEqual(ledger.commands[str(uid)]['action'], 'move' if uid == 31035 else 'attack')
             self.assertEqual(ledger.notes[uid]['conditions']['target_id'], 10013)
             self.assertNotIn(pos(ledger.commands[str(uid)]['targetPos'][0]),
                              {(8, 20), (8, 22), (9, 20)})

@@ -89,7 +89,7 @@ class AssaultBypassTests(unittest.TestCase):
             data = assault_payload(robot=controlled_robot(x=7))
             data['teamEnemy']['roles'].append(unit(50, kind, 8, 4, health=1))
             ledger, _ = decide(data)
-            self.assertEqual(ledger.commands['30000']['action'], 'move')
+            self.assertEqual(ledger.commands['30000']['action'], 'attack' if kind == 'rocket' else 'move')
             self.assertEqual(ledger.notes[30000]['conditions']['target_id'], 99)
 
     def test_closed_frontage_repositions_second_robot_to_share_first_wall(self):

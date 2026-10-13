@@ -191,7 +191,8 @@ class RobotAttackEfficiencyTests(unittest.TestCase):
                 else:
                     data["teamEnemy"]["roles"].append(unit(10042, "rocket", 8, 22))
                 ledger, _ = decide(data)
-                self.assertEqual(ledger.commands["31036"], command("attack", (9, 21)))
+                aim = (9, 22) if obstruction == 'enemy_tower' else (9, 21)
+                self.assertEqual(ledger.commands["31036"], command("attack", aim))
                 self.assertEqual(ledger.notes[31036]["conditions"]["target_id"], 10013)
                 self.assertNotIn("30000", ledger.commands)
 

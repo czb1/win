@@ -10,14 +10,15 @@ from agent.commands import command
 def split_blockers():
     data = assault_payload(robot=controlled_robot(x=6, y=3))
     data['teamOur']['summonRobotList'].append(controlled_robot(30001, 5, 5))
-    data['teamEnemy']['roles'] += [unit(70, 'wall', 8, 3), unit(71, 'rocket', 8, 5)]
+    # Both rays are closed; a turret alone now permits a base shot through it.
+    data['teamEnemy']['roles'] += [unit(70, 'wall', 8, 3), unit(71, 'wall', 8, 5)]
     seal_base(data)
     return data
 
 
 class RobotFocusTests(unittest.TestCase):
     def test_robots_focus_one_exposed_blocker_instead_of_splitting_damage(self):
-        for kind in ('worker', 'pioneer', 'imp', 'rocket', 'gatling', 'railgun', 'wall'):
+        for kind in ('worker', 'pioneer', 'imp', 'wall'):
             with self.subTest(kind=kind):
                 data = split_blockers()
                 data['teamEnemy']['roles'][1]['roleType'] = kind
