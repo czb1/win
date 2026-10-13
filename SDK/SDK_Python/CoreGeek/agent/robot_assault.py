@@ -10,6 +10,9 @@ from .projectiles import line_cells
 
 
 FIRST_DAY_SUMMON_RADIUS = 2
+ASSAULT_STALL_LIMIT = 3
+OCCUPANCY_EVIDENCE_ROUNDS = 8
+FAILED_BASE_LANE_ROUNDS = 4
 
 
 _OCCUPIED_MOVE = re.compile(
@@ -56,6 +59,10 @@ class RobotAssaultMemory:
     step_failures: dict = field(default_factory=dict)
     occupied_steps: dict = field(default_factory=dict)
     occupied_failures: dict = field(default_factory=dict)
+    occupied_seen: dict = field(default_factory=dict)
+    failed_base_lanes: dict = field(default_factory=dict)
+    approach_best: dict = field(default_factory=dict)
+    approach_stalls: dict = field(default_factory=dict)
     robot_ids: set = field(default_factory=set)
     entry_crossed: set = field(default_factory=set)
     day: int | None = None
@@ -81,6 +88,10 @@ class RobotAssaultMemory:
             self.step_failures.clear()
             self.occupied_steps.clear()
             self.occupied_failures.clear()
+            self.occupied_seen.clear()
+            self.failed_base_lanes.clear()
+            self.approach_best.clear()
+            self.approach_stalls.clear()
             self.rejected_buildings.clear()
         self.day, self.base_id, self.base_pos = turn.day, base_id, base_pos
         alive = turn.summon_robot_ids
@@ -98,10 +109,23 @@ class RobotAssaultMemory:
                               if key[0] in alive}
         self.occupied_steps = {point: until for point, until in self.occupied_steps.items()
                                if until > turn.round}
+        self.occupied_seen = {point: seen for point, seen in self.occupied_seen.items()
+                              if turn.round - seen <= OCCUPANCY_EVIDENCE_ROUNDS}
+        self.failed_base_lanes = {point: until for point, until in self.failed_base_lanes.items()
+                                  if until > turn.round}
+        self.approach_best = {uid: best for uid, best in self.approach_best.items() if uid in alive}
+        self.approach_stalls = {uid: count for uid, count in self.approach_stalls.items() if uid in alive}
         results = turn.raw.get("lastRoundRoleActionResults") or {}
         occupied_errors = _occupied_move_errors(turn)
         robots = {r.id: r for r in turn.summon_robots}
         visible_ids = {u.id for u in turn.enemies}
+        # Gather all correlated occupied destinations before processing shots,
+        # so evidence sharing does not depend on robot/command insertion order.
+        for uid, (issued, origin, action, point, target_id, context) in self.pending.items():
+            if (issued == turn.round - 1 and uid in alive and action == 'move'
+                    and results.get(str(uid), results.get(uid)) is False
+                    and robots[uid].pos != point and (uid, point) in occupied_errors):
+                self.occupied_seen[point] = turn.round
         for uid, (issued, origin, action, point, target_id, context) in self.pending.items():
             if issued != turn.round - 1 or uid not in alive:
                 continue
@@ -111,6 +135,18 @@ class RobotAssaultMemory:
                 self.failed_shots.add(key)
                 self.shot_contexts[key] = context
                 self.accepted_shots.pop((uid, origin, target_id), None)
+                if target_id == base_id:
+                    self.approach_stalls[uid] = min(ASSAULT_STALL_LIMIT,
+                        self.approach_stalls.get(uid, 0) + 1)
+                    evidence = set(line_cells(origin, point)) & self.occupied_seen.keys()
+                    if evidence:
+                        # A collision alone says nothing about attack geometry.
+                        # A failed base attack through that recently occupied
+                        # cell additionally supports bounded route avoidance,
+                        # without assigning an enemy identity or inventing HP.
+                        self.failed_base_lanes.update((p, turn.round + FAILED_BASE_LANE_ROUNDS)
+                                                      for p in evidence)
+                        self.approach_stalls[uid] = ASSAULT_STALL_LIMIT
                 if (target_id in self.buildings and target_id not in visible_ids
                         and distance(origin, point) <= 2
                         and any(key[2] == target_id and key[1] != origin for key in self.failed_shots)):
@@ -122,8 +158,19 @@ class RobotAssaultMemory:
             elif action == "attack" and result is True:
                 # Legality is useful for aim selection, not proof of damage.
                 self.accepted_shots[uid, origin, target_id] = point
+                if target_id == base_id:
+                    self.approach_stalls.pop(uid, None)
             elif action == "move":
                 key = uid, point
+                if base is not None:
+                    best = self.approach_best.get(uid, base_distance(base, origin))
+                    current = base_distance(base, robots[uid].pos)
+                    if current < best:
+                        self.approach_stalls.pop(uid, None)
+                    else:
+                        self.approach_stalls[uid] = min(ASSAULT_STALL_LIMIT,
+                            self.approach_stalls.get(uid, 0) + 1)
+                    self.approach_best[uid] = min(best, current)
                 if robots[uid].pos != point:
                     # Repeated collisions need a longer avoidance window;
                     # cycling back every four turns wastes attack opportunities.
@@ -142,6 +189,10 @@ class RobotAssaultMemory:
                     self.step_failures.pop(key, None)
                     self.failed_steps.pop(key, None)
                     self._clear_occupied_step(point)
+        if base is not None:
+            for robot in turn.summon_robots:
+                current = base_distance(base, robot.pos)
+                self.approach_best[robot.id] = min(self.approach_best.get(robot.id, current), current)
         self.pending = {uid: value for uid, value in self.pending.items()
                         if uid in alive and value[0] == turn.round}
         # Weapons do not move. Losing sight alone does not prove destruction;
@@ -156,7 +207,7 @@ class RobotAssaultMemory:
         self.rejected_buildings.intersection_update(self.buildings)
         self.rejected_buildings.difference_update(seen)
         turn.blocked.update(u.pos for u in self.buildings.values())
-        for point in tuple(self.occupied_failures):
+        for point in self.occupied_failures.keys() | self.occupied_seen.keys() | self.failed_base_lanes.keys():
             if point not in turn.blocked and any(distance(point, p) <= 4 for p in observers):
                 self._clear_occupied_step(point)
         occupied = _occupants(turn, self)
@@ -172,10 +223,10 @@ class RobotAssaultMemory:
         return (uid, origin, target_id, point) in self.failed_shots
 
     def _clear_occupied_step(self, point):
-        if point not in self.occupied_failures:
-            return
         self.occupied_steps.pop(point, None)
         self.occupied_failures.pop(point, None)
+        self.occupied_seen.pop(point, None)
+        self.failed_base_lanes.pop(point, None)
         self.failed_steps = {key: until for key, until in self.failed_steps.items() if key[1] != point}
         self.step_failures = {key: count for key, count in self.step_failures.items() if key[1] != point}
 
@@ -507,6 +558,8 @@ def _firing_point(origin, robot, target, memory, occupied):
     return next((point for point in points
                  if distance(origin, point) <= robot.attack_range
                  and not memory.rejected(robot.id, origin, target.id, point)
+                 and (target.kind != 'station' or accepted == point or not memory.failed_base_lanes
+                      or not memory.failed_base_lanes.keys() & set(line_cells(origin, point)))
                  and _clear_shot(origin, target, point, occupied, robot.id)), None)
 
 
@@ -530,6 +583,8 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
     facts = dict(phase=phase, target_id=target.id, target_kind=target.kind,
                  target_source="visible" if target in turn.enemies else "last_seen_building",
                  observed_health=target.health, focus_target_id=memory.focus_target_id,
+                 approach_stalls=memory.approach_stalls.get(robot.id, 0),
+                 failed_base_lane_count=len(memory.failed_base_lanes),
                  assault_choice="base_route" if phase == "base" else
                  "shared_clearance" if target.id == memory.focus_target_id else "local_clearance",
                  focus_unreachable=memory.focus_target_id is not None and target.id != memory.focus_target_id)
@@ -849,6 +904,24 @@ def act_robots(turn, memory, nav, ledger):
         # it. This retains current legal base shots without moving closer.
         _act_toward_target(turn, memory, nav, ledger, robot, base, occupied, attack_only=True)
 
+    # A found route is not evidence that repeatedly following it is useful.
+    # After correlated failures/backtracking, jointly clear an observed enemy
+    # on base-directed rays before allocating another speculative detour.
+    # Direct base shooters were allocated first and cannot be pulled away.
+    early_focus = None
+    if base and not turn.is_day and any(
+            memory.approach_stalls.get(r.id, 0) >= ASSAULT_STALL_LIMIT
+            for r in turn.summon_robots if r.id not in ledger.used):
+        memory.focus_target_id = previous_focus
+        early_focus = _focus_blocker(turn, memory, ledger, base, occupied)
+        if early_focus is not None:
+            for attack_only in (True, False):
+                for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
+                    check_time(nav.deadline)
+                    if robot.id not in ledger.used:
+                        _act_toward_target(turn, memory, nav, ledger, robot, early_focus,
+                                           occupied, attack_only=attack_only)
+
     # Allocate all existing shots before moves so even a higher-ID shooter's
     # lane is protected from a lower-ID robot's new stance.
     for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
@@ -865,8 +938,9 @@ def act_robots(turn, memory, nav, ledger):
             if robot.id not in ledger.used:
                 _wait_for_scout_gap(turn, memory, nav, ledger, robot, base, entry, occupied)
 
-    memory.focus_target_id = previous_focus
-    focus = _focus_blocker(turn, memory, ledger, base, occupied) if base and not turn.is_day else None
+    memory.focus_target_id = early_focus.id if early_focus else previous_focus
+    focus = early_focus or (_focus_blocker(turn, memory, ledger, base, occupied)
+                            if base and not turn.is_day else None)
     if focus is None:
         memory.focus_target_id = None
     else:
