@@ -22,7 +22,7 @@ from .task_schedule import task_descriptor, task_signature
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
 from .task_inputs import input_context
 from .task_runtime import runtime_code, runtime_result, command_output
-from .task_sop import answer_contract, answer_error
+from .task_sop import answer_contract
 from .task_query import reference_paths
 from .market import observe_prices, merge_signals
 from .movement import MovementMemory
@@ -55,12 +55,7 @@ def log_task_payload(round_no, event, value, limit=6000, **context):
 
 
 def answer_identity(answer):
-    """Compare JSON answers independently of whitespace and object key order."""
-    try:
-        answer = json.dumps(json.loads(answer), sort_keys=True, ensure_ascii=False,
-                            separators=(",", ":"))
-    except (ValueError, TypeError):
-        answer = str(answer).strip()
+    """Compare the actual submission text, including significant formatting."""
     return hashlib.sha256(answer.encode()).hexdigest()
 
 
@@ -193,13 +188,21 @@ def parse_object(text):
 def parse_task_reply(text):
     if not isinstance(text, str) or len(text) > 64000:
         return None
+    original = text
+    # Parse the action envelope before any code/protocol convenience cleanup.
+    first, separator, body = text.partition("\n")
+    if separator and first.strip().upper().rstrip(":：") == "ANSWER":
+        return {"answer": body}
+    inline = re.fullmatch(r"[ \t]*ANSWER[ \t]*[:：](.*)", text, re.I | re.S)
+    if inline:
+        return {"answer": inline[1]}
     text = text.strip()
     if text.startswith("```") and not text.lower().startswith("```python"):
         text = unfence(text)
     tool = parse_file_tool(text)
     if tool:
         return tool
-    for marker, key in (("ANSWER", "answer"), ("PYTHON", "python")):
+    for marker, key in (("PYTHON", "python"),):
         first, separator, body = text.partition("\n")
         if separator and first.strip().upper().rstrip(":：") == marker and body.strip():
             return {key: unfence(body)}
@@ -225,12 +228,12 @@ def parse_task_reply(text):
         if set(parsed) & {"answer", "python", "skill", "use_skill", "read", "list"}:
             return parsed
         # Some small models obey the task's JSON format instead of our wrapper.
-        return {"answer": parsed}
+        return {"answer": original}
     try:
-        value = json.loads(unfence(text))
+        json.loads(unfence(text))
     except (ValueError, TypeError):
         return None
-    return {"answer": value} if value is not None else None
+    return {"answer": original}
 
 
 def excerpt(text, limit=6000):
@@ -252,9 +255,9 @@ def sandbox_result(text):
         return header or "missing", body, None
     if "[TRUNCATED]" in body or oversized:
         return "truncated", body, None
-    marker, separator, answer = body.strip().partition("\n")
-    if marker == "FINAL_ANSWER" and separator and answer.strip():
-        return "ok", body, answer.strip()
+    marker, separator, answer = body.partition("\n")
+    if marker == "FINAL_ANSWER" and separator and answer:
+        return "ok", body, answer
     return "ok", body, None
 
 
@@ -321,7 +324,6 @@ class Memory:
     last_attempt: dict = field(default_factory=dict)
     documents: list = field(default_factory=list)
     reference_reads: set = field(default_factory=set)
-    query_blocked: bool = False
     input_blocked: bool = False
     inputs: dict = field(default_factory=dict)
     contract: dict = field(default_factory=dict)
@@ -639,7 +641,6 @@ class Memory:
             self.method_calls.clear()
             self.supported_output = self.supported_python = ""
             self.reference_reads.clear()
-            self.query_blocked = False
             self.input_blocked = False
             self.inputs.clear()
             self.contract = answer_contract([{'kind': 'discover', 'output': turn.phase_task}]) if turn.phase_task else {}
@@ -711,13 +712,7 @@ class Memory:
             status, body, answer = sandbox_result(result)
             if status == 'ok' and snapshot is not None:
                 self.task_sources = [d for d in self.task_sources if d['path'] != snapshot['path']] + [snapshot]
-            if report.get('http_errors'):
-                status, answer = 'query_failed', None
             if not tool:
-                if report.get('http_errors'):
-                    self.query_blocked = True
-                elif report.get('http_successes'):
-                    self.query_blocked = False
                 self.input_blocked = status != 'ok'
                 self.supported_output = self.supported_python = ''
             observation = result if snapshot is not None else raw
@@ -777,14 +772,8 @@ class Memory:
                     self.supported_output, self.supported_python = body, self.running_python
                     self.successful_python, self.successful_output = self.running_python, body
                     self.task_failures = 0
-                    if self.query_blocked:
-                        answer = None
-                        self.reject('查询错误尚未解决，先成功查询；失败不等于空数据。')
                     if answer is not None:
-                        error = answer_error(answer, self.contract)
-                        if error:
-                            self.reject(error)
-                        elif answer_identity(answer) in self.rejected_answers:
+                        if answer_identity(answer) in self.rejected_answers:
                             self.reject('答案已被判错；修正有证据的问题，不原样重交。')
                         else:
                             self.answer, self.answer_python = answer, self.running_python
@@ -896,13 +885,11 @@ class Memory:
                 proposal = "python:" + ast.dump(tree, include_attributes=False)
             else:
                 answer = parsed["answer"]
-                answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
-                if not answer.strip() or len(answer.encode("utf-8")) > 64000:
-                    self.reject("答案为空或过长。")
+                if not isinstance(answer, str):
+                    self.reject("答案必须是最终提交文本；请使用 ANSWER，JSON 答案由模型或程序编码一次。")
                     return
-                error = answer_error(answer, self.contract)
-                if error:
-                    self.reject(error)
+                if not answer or len(answer.encode("utf-8")) > 64000:
+                    self.reject("答案为空或过长。")
                     return
                 proposal = "answer:" + answer
             signature = hashlib.sha256(proposal.encode()).hexdigest()
@@ -920,7 +907,7 @@ class Memory:
                 self.running_tool = file_request
             else:
                 self.answer = answer
-                self.answer_python = (self.supported_python if not self.query_blocked and not self.input_blocked
+                self.answer_python = (self.supported_python if not self.input_blocked
                                       and output_supports(answer, self.supported_output) else "")
                 self.history.append({"submitted_candidate": answer[:4000]})
         elif purpose == "news":
@@ -1120,7 +1107,7 @@ class Intelligence:
         remaining = max(0, remaining)
         self.mem.work_deadline = self.turn.round + remaining
         if self.mem.answer is not None:
-            if self.mem.query_blocked or self.mem.input_blocked:
+            if self.mem.input_blocked:
                 self.mem.answer = None
                 self.mem.answer_python = ''
                 self.mem.reject('影响结果的执行错误尚未解决，请成功重算后提交。')
@@ -1161,7 +1148,7 @@ class Intelligence:
             return '', 'python3 -c ' + shlex.quote(executed)
         if not self.can_call():
             return '', ''
-        if remaining <= 2 and (self.mem.input_blocked or self.mem.query_blocked):
+        if remaining <= 2 and self.mem.input_blocked:
             return self.budget_wait(remaining, 3, 'insufficient_rounds_for_model_execute_submit')
         history = previous_tasks(self.mem)
         prompt = render_prompt(self.mem, remaining, history)

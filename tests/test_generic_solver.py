@@ -15,7 +15,7 @@ import tempfile
 import threading
 import unittest
 
-from agent.intelligence import Memory, Intelligence, sandbox_result
+from agent.intelligence import Memory, Intelligence, sandbox_result, answer_identity
 from agent.task_history import remember, references, solution_record, solution_hints
 from agent.task_prompt import render_prompt
 from agent.task_runtime import runtime_code, runtime_result
@@ -88,6 +88,89 @@ def retry_api():
 
 
 class GenericSolverTests(unittest.TestCase):
+    def test_answer_and_program_preserve_exact_final_text(self):
+        texts = ['  缩进\t\r\n\r\n', '```text\nhello\n```\n',
+                 '{ "b": 1e+02, "a": -0.0 }\n', '"a JSON string"',
+                 'null', ' \t', 'ANSWER\nPYTHON\nFINAL_ANSWER\n']
+        with tempfile.TemporaryDirectory() as root:
+            for text in texts:
+                for route in ('answer', 'program', 'legacy_text'):
+                    with self.subTest(text=text, route=route):
+                        mem = Memory(task_text='query', task_started=1, bootstrap_done=True)
+                        if route in ('answer', 'legacy_text'):
+                            mem.pending = ('task', 1)
+                            reply = ('ANSWER\n' + text if route == 'answer' else
+                                     json.dumps({'answer': text}, ensure_ascii=False))
+                            _, _, ledger = step(mem, 2, llmResp=reply)
+                        else:
+                            code = 'task_result(' + repr(text) + ')'
+                            # Decode bytes explicitly: text=True would normalize CRLF in this fixture.
+                            result = subprocess.run([sys.executable, '-c', runtime_code(code, root)],
+                                                    capture_output=True, timeout=3)
+                            raw = f'[exitCode:{result.returncode}]\n' + result.stdout.decode('utf-8')
+                            mem.pending, mem.running_python = ('cmd', 1), code
+                            _, _, ledger = step(mem, 2, lastCmdResult=raw)
+                        self.assertEqual(ledger.commands['11']['taskAnswer'], text)
+
+    def test_bare_json_compatibility_preserves_text_without_reserialization(self):
+        for text in (' \n{ "b":1e+02, "a":-0.0 }\n', ' [1,  2]\n', '"文字"', 'null', ' 1e+02 '):
+            mem = Memory(task_text='query', task_started=1, bootstrap_done=True, pending=('task', 1))
+            _, _, ledger = step(mem, 2, llmResp=text)
+            self.assertEqual(ledger.commands['11']['taskAnswer'], text)
+
+    def test_nontext_legacy_answers_are_not_automatically_encoded(self):
+        for value in ({'a': 1}, [1, 2], 42, False):
+            mem = Memory(task_text='query', task_started=1, bootstrap_done=True, pending=('task', 1))
+            prompt, _, ledger = step(mem, 2, llmResp=json.dumps({'answer': value}))
+            self.assertFalse(ledger.commands)
+            self.assertIn('答案必须是最终提交文本', prompt)
+
+    def test_format_only_correction_is_distinct_from_rejected_text(self):
+        wrong = 'hello'
+        fixed = '  hello\n'
+        for text, accepted in ((wrong, False), (fixed, True)):
+            mem = Memory(task_text='query', task_started=1, bootstrap_done=True, pending=('task', 1),
+                         rejected_answers={answer_identity(wrong)})
+            _, _, ledger = step(mem, 2, llmResp='ANSWER\n' + text)
+            self.assertEqual(bool(ledger.commands), accepted)
+            if accepted:
+                self.assertEqual(ledger.commands['11']['taskAnswer'], fixed)
+
+    def test_json_response_example_never_overrides_plaintext_submission(self):
+        docs = [{'kind': 'discover', 'output': '## API 返回示例\n```json\n{"city":"北京"}\n```\n'
+                 '只提交城市名称，不要 JSON。'}]
+        contract = answer_contract(docs)
+        self.assertNotIn('format', contract)
+        self.assertEqual(contract['example'], {'city': '北京'})
+        for purpose in ('task', 'cmd'):
+            # Even a stale inferred format must not become an active submission gate.
+            mem = Memory(task_text='query', task_started=1, bootstrap_done=True, documents=docs,
+                         contract={**contract, 'format': 'json'}, pending=(purpose, 1))
+            key = 'llmResp' if purpose == 'task' else 'lastCmdResult'
+            value = ('ANSWER\n' if purpose == 'task' else '[exitCode:0]\nFINAL_ANSWER\n') + '北京'
+            _, _, ledger = step(mem, 2, **{key: value})
+            self.assertEqual(ledger.commands['11']['taskAnswer'], '北京')
+
+    def test_expected_http_404_can_supply_answer_with_diagnostics(self):
+        from test_task_runtime import heritage_api, install_transport_double
+        with heritage_api() as (base, _), tempfile.TemporaryDirectory() as root:
+            install_transport_double(root)
+            programs = [
+                "from urllib.request import urlopen\nfrom urllib.error import HTTPError\n"
+                f"try: urlopen({base!r} + '/missing')\n"
+                "except HTTPError as error:\n assert error.code == 404\n task_result('MISSING')",
+                f"import requests\nr = requests.get({base!r} + '/missing')\n"
+                "assert r.status_code == 404\ntask_result('MISSING')",
+            ]
+            for code in programs:
+                raw, result, report = execute(code, root)
+                self.assertEqual(result[2], 'MISSING', raw)
+                self.assertIn('404', report['http_errors'][0]['error'])
+                mem = Memory(task_text='query', task_started=1, bootstrap_done=True,
+                             pending=('cmd', 1), running_python=code)
+                _, _, ledger = step(mem, 2, lastCmdResult=raw)
+                self.assertEqual(ledger.commands['11']['taskAnswer'], 'MISSING')
+
     def test_final_text_reaches_submission_without_another_json_encoding(self):
         answers = [
             {'errors': {'monitor': 44, 'gateway': 44, 'logistics': 15},
@@ -255,10 +338,10 @@ class GenericSolverTests(unittest.TestCase):
     def test_schema_example_is_not_closed_keys_or_nullability(self):
         docs = [{'kind': 'discover', 'path': '/q.md', 'output': '## 提交格式\n```json\n{"a":1}\n```'}]
         contract = answer_contract(docs)
-        for answer in ('{"new_key":2}', '{"a":null}', '[]'):
+        self.assertNotIn('format', contract)
+        for answer in ('{"new_key":2}', '{"a":null}', '[]', 'not json',
+                       '{"a":1,"a":2}', '{"a":NaN}', '{"a":1e999}'):
             self.assertEqual(answer_error(answer, contract), '')
-        for answer in ('not json', '{"a":1,"a":2}', '{"a":NaN}', '{"a":1e999}'):
-            self.assertTrue(answer_error(answer, contract))
         self.assertNotIn('input_kind', contract)
 
     def test_transport_retry_recovers_only_same_url(self):
@@ -274,7 +357,7 @@ task_result(json.dumps(sum(value['records'])))'''
             self.assertFalse(report['http_errors'])
             code = code.replace("+'/data')\nexcept", "+'/other')\nexcept")
             raw, result, report = execute(code, root)
-            self.assertIsNone(result[2], raw)
+            self.assertEqual(result[2], '10', raw)
             self.assertTrue(report['http_errors'])
 
     def test_budget_uses_actions_not_seven_round_business_deadline(self):
@@ -371,7 +454,7 @@ requests.get({base!r}+'/search',params={{'location':'北京','page':2}})
 requests.get({base!r}+'/search',params={{'location':'北京','page':1}},headers={{'Authorization':'Bearer fixture-key'}})
 task_result(str(0))'''
             raw,result,report=execute(code,root)
-            self.assertIsNone(result[2],raw)
+            self.assertEqual(result[2], '0', raw)
             self.assertTrue(report['http_errors'])
 
     def test_question_keywords_do_not_create_validation_contract_or_prompt_rules(self):
