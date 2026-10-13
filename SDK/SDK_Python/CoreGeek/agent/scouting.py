@@ -19,10 +19,13 @@ class ScoutMemory:
     worker_id: int | None = None
     post: tuple | None = None
     wall_entry: tuple | None = None
+    # Match-long cancellation: losing sight or starting another day must not
+    # revive the opening assault or consume its remaining orders.
+    cancelled: bool = False
 
 
 def _sync_scout(turn, memory, base):
-    key = (turn.day, base.id, base.pos) if base and turn.day == 1 else None
+    key = (turn.day, base.id, base.pos) if base and turn.day == 1 and not memory.cancelled else None
     if memory.key != key or key is None:
         memory.key, memory.worker_id, memory.post, memory.wall_entry = key, None, None, None
 
@@ -33,7 +36,7 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
     """Occupy an unbuilt upper/lower enemy wall cell after the departure tick."""
     base = enemy_base(turn)
     _sync_scout(turn, memory, base)
-    if not turn.is_day or turn.day != 1 or turn.tick < departure_tick or base is None:
+    if memory.cancelled or not turn.is_day or turn.day != 1 or turn.tick < departure_tick or base is None:
         return None
     if memory.worker_id is not None and not any(w.id == memory.worker_id for w in turn.workers):
         memory.worker_id, memory.post, memory.wall_entry = None, None, None
@@ -201,7 +204,7 @@ def _routes(turn, memory, nav, ledger, scout, base, reserved):
 
 def prepare_night_scout(turn, memory, nav, ledger, excluded=(), jobs=None):
     """Prepare the first night's observer; later days belong to normal work."""
-    if turn.day != 1:
+    if memory.cancelled or turn.day != 1:
         _sync_scout(turn, memory, None)
         return None
     scout = prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded, jobs)
@@ -251,7 +254,7 @@ def prepare_night_scout(turn, memory, nav, ledger, excluded=(), jobs=None):
 def act_night_scout(turn, memory, nav, ledger, home_roles=(), excluded=()):
     base = enemy_base(turn)
     _sync_scout(turn, memory, base)
-    if turn.is_day or turn.day != 1 or base is None:
+    if memory.cancelled or turn.is_day or turn.day != 1 or base is None:
         return None
     workers = {h.id: h for h in turn.workers if h.id not in excluded}
     scout = workers.get(memory.worker_id)

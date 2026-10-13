@@ -40,7 +40,7 @@ def first_day_purchase_reserve(turn, mem, ledger, include_robots=True):
                for role in turn.raw.get('teamOur', {}).get('roles', [])) if name else False
     reserve = (max(0, turn.shop.get(name, 0)) if name and not held
                and not state['station_purchased'] and name not in ledger.purchases else 0)
-    if include_robots and enemy_base(turn) is not None:
+    if include_robots and not mem.night_scout.cancelled and enemy_base(turn) is not None:
         remaining = max(0, FIRST_DAY_ROBOT_PURCHASE_LIMIT - state['purchased'])
         planned = ledger.spending_plan.get('robot_purchase')
         if planned and ledger.commands.get(str(planned['actor']), {}).get('action') != 'buy':
@@ -180,6 +180,8 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
         robot_name = 'BossRobotSummonOrder'
         robot_price = turn.shop.get(robot_name, -1)
         remaining = max(0, FIRST_DAY_ROBOT_PURCHASE_LIMIT - state['robot_purchased'])
+        if mem.night_scout.cancelled:
+            remaining = 0
         stock = sum(h.inventory[item] for h in turn.heroes for item in SUMMON_ORDERS)
         quantity = min(remaining, max(0, DAILY_SUMMON_LIMIT - summons['count'] - stock),
                        max(0, hero.space - int(base_missing)))
@@ -265,7 +267,7 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
     if state['phase'] == 'station':
         state['phase'] = 'robots'
     if state['phase'] == 'robots':
-        if held:
+        if held and not mem.night_scout.cancelled:
             if (turn.is_day and summons['count'] < DAILY_SUMMON_LIMIT
                     and summon_best_robot(turn, cfg, mem, nav, ledger, ledger.tower_cells, ledger.wall_cells,
                                          excluded={h.id for h in turn.heroes if h.id != hero.id}, use_only=True)):
@@ -275,7 +277,9 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
                            waiting_for_daylight=not turn.is_day,
                            daily_limit_reached=summons['count'] >= DAILY_SUMMON_LIMIT)
             return True
-        state['robots_done'] = True
+        state['robots_done'] = not mem.night_scout.cancelled
+        if mem.night_scout.cancelled:
+            state['robots_cancelled'] = True
         state['phase'] = 'return'
     if state['phase'] == 'return':
         if not turn.weapons:
