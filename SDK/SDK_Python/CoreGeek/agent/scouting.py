@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 
 from .commands import command
-from .model import distance, neighbours, SUMMON_ORDERS
+from .model import distance, neighbours, SUMMON_ORDERS, WEAPONS
 from .navigation import check_time
 from .projectiles import line_cells
 from .robot_assault import (base_distance, enemy_base, enemy_entries,
@@ -41,6 +41,14 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
     entries = [p for p in enemy_entries(turn, base)
                if p[1] in (min(ys) - 2, max(ys) + 2)]
     clear_sides = first_day_clear_sides(turn, base, ledger.robot_known_enemies)
+    weapon_cells = {u.pos for u in (*ledger.robot_known_enemies, *turn.enemies)
+                    if u.kind in WEAPONS}
+    # Compare the nearest known turret, then avoid an immediately adjacent
+    # turret in the entry's inward column when Chebyshev distances tie.
+    entry_clearance = {entry: (
+        -min((distance(entry, p) for p in weapon_cells), default=0),
+        (entry[0], entry[1] + (1 if entry[1] < min(ys) else -1)) in weapon_cells,
+    ) for entry in entries}
     jobs = jobs or {}
     candidates = []
     for scout in turn.workers:
@@ -72,6 +80,7 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
             # spawns are reserved, keep a still-usable gap for those robots.
             candidates.append((bool(ledger.summon_pending_positions) and entry != memory.wall_entry,
                                entry[1] not in clear_sides,
+                               *entry_clearance[entry],
                                not incumbent, entry != memory.wall_entry,
                                jobs.get(scout.id, {}).get('kind') == 'build',
                                entry[0] not in xs, route[0], scout.id, entry, scout, route))
@@ -89,15 +98,18 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
                                waiting_reason='entry_occupied')
                 return scout
         return None
-    _, _, _, _, _, _, _, _, entry, scout, route = min(candidates, key=lambda row: row[:9])
+    *_, entry, scout, route = min(candidates, key=lambda row: row[:-2])
     memory.worker_id, memory.post, memory.wall_entry = scout.id, entry, entry
+    clearance, turret_in_front = entry_clearance[entry]
+    selection = dict(entry=entry, nearest_turret_distance=-clearance if weapon_cells else None,
+                     turret_in_front=turret_in_front)
     if route[1] is None:
         if reserve_hold:
             ledger.used.add(scout.id)
         ledger.reserved.add(scout.pos)
-        ledger.explain(scout.id, 'first_day_wall_block_hold', entry=entry)
+        ledger.explain(scout.id, 'first_day_wall_block_hold', **selection)
     elif ledger.add(scout.id, command('move', route[1])):
-        ledger.explain(scout.id, 'first_day_wall_block_approach', entry=entry,
+        ledger.explain(scout.id, 'first_day_wall_block_approach', **selection,
                        route_steps=route[0], departure_tick=departure_tick)
     else:
         return None
