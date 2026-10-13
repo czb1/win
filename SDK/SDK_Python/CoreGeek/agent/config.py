@@ -37,6 +37,8 @@ class Config:
     task_switch_rounds: int = 10
     # Strategy policy: preserve opening purchases, stop new orders afterwards.
     robot_purchase_last_day: int = 1
+    # Per base aim: bounded observation, not an official projectile rule.
+    robot_base_probe_rounds: int = 2
 
     @classmethod
     def load(cls, path=None):
@@ -58,7 +60,8 @@ class Config:
             raise ValueError("loadout must contain 1..3 weapons")
         for name in ("weapon_cost", "wall_stones", "stone_batch", "sell_batch", "sell_batch_max",
                      "task_min_rounds", "task_danger_radius", "max_body_bytes",
-                     "build_retry_rounds", "task_max_rounds", "task_switch_rounds", "robot_purchase_last_day", "max_python_chars"):
+                     "build_retry_rounds", "task_max_rounds", "task_switch_rounds", "robot_purchase_last_day",
+                     "robot_base_probe_rounds", "max_python_chars"):
             if type(getattr(cfg, name)) is not int or getattr(cfg, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
         if not 0 < cfg.decision_seconds < 5 or cfg.round_origin not in (0, 1):

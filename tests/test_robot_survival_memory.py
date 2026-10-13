@@ -59,8 +59,9 @@ class RobotSurvivingSessionTests(unittest.TestCase):
 
     def test_base_loss_preserves_hidden_weapons_feedback_and_next_turn_cache(self):
         agent, data, before, memory = self.agent_before_base_loss()
-        self.assertEqual(before["roleCommandMap"]["31036"]['action'], 'move')
-        step = before['roleCommandMap']['31036']['targetPos'][0]
+        self.assertEqual(before["roleCommandMap"]["31035"]['action'], 'move')
+        step = before['roleCommandMap']['31035']['targetPos'][0]
+        self.assertEqual(before["roleCommandMap"]["31036"]['action'], 'attack')
         data["roundNo"] = 97
         data["teamOur"]["roles"] = []
         data["lastRoundRoleActionResults"] = {"31035": True, "31036": True}
@@ -70,9 +71,10 @@ class RobotSurvivingSessionTests(unittest.TestCase):
         self.assertEqual(set(memory.robot_assault.buildings), {10040, 10041, 10042})
         # A legal command without the observed movement is still a collision;
         # losing our base must not reset this feedback or the hidden obstacles.
-        self.assertIn((31036, (step['x'], step['y'])), memory.robot_assault.failed_steps)
-        self.assertEqual(after["roleCommandMap"]["31036"]['action'], 'move')
-        self.assertNotEqual(after['roleCommandMap']['31036'], before['roleCommandMap']['31036'])
+        self.assertIn((31035, (step['x'], step['y'])), memory.robot_assault.failed_steps)
+        self.assertEqual(after["roleCommandMap"]["31035"]['action'], 'move')
+        self.assertNotEqual(after['roleCommandMap']['31035'], before['roleCommandMap']['31035'])
+        self.assertEqual(after['roleCommandMap']['31036'], before['roleCommandMap']['31036'])
         self.assertEqual(agent.decide(copy.deepcopy(data)), after)
         data["roundNo"] = 98
         agent.decide(data)
@@ -199,6 +201,8 @@ class RobotOccupiedStepTests(unittest.TestCase):
             data["roundNo"] = issued + 1
             data["lastRoundRoleActionResults"] = {"31035": True, "31036": False}
             data["errors"] = [occupied_error(31036, point)]
+            # Preserve aggregate attack progress while testing movement evidence.
+            data["teamEnemy"]["roles"][0]["health"] -= 1
             ledger, _ = decide(data, memory)
             self.assertIn(point, memory.avoided_steps(31035))
             self.assertEqual(ledger.commands["31035"], command("attack", (9, 21)))
