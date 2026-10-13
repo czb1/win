@@ -5,9 +5,23 @@ from .model import DEFENCE_RETURN_TICK
 FIRST_DAY_ROBOT_PURCHASE_LIMIT = 3
 
 
+def first_day_pioneer_plan_active(turn):
+    """Use the task-first opening when authoritative task points are present."""
+    return bool(turn.is_day and turn.day == 1 and turn.pioneer and turn.tasks)
+
+
+def first_day_tasks_finished(turn):
+    """A cooling or temporarily unreachable point is not an exhausted point."""
+    return bool(turn.tasks and not turn.phase_task and all(
+        task.get('isValid') is False and int(task.get('coldDownRounds', 0)) <= 0
+        for task in turn.tasks))
+
+
 def first_day_purchase_reserve(turn, mem, ledger, include_robots=True):
     """Protect the base heal and unbought opening orders, counting trips once."""
     if not turn.is_day or turn.day != 1:
+        return 0
+    if first_day_pioneer_plan_active(turn) and mem.first_day_pioneer.get('phase') == 'return':
         return 0
     from .brain import observe_robot_summons
     from .economy import voucher_for
@@ -50,7 +64,8 @@ def prepare_station_reserve(turn, cfg, mem, nav, ledger):
     from .mining import return_destination
     hero, station = turn.pioneer, turn.station
     state = observe_robot_summons(turn, mem)
-    if (not turn.is_day or turn.day != 1 or turn.tick >= DEFENCE_RETURN_TICK
+    if (first_day_pioneer_plan_active(turn)
+            or not turn.is_day or turn.day != 1 or turn.tick >= DEFENCE_RETURN_TICK
             or not hero or hero.id in ledger.used or turn.phase_task or not hero.space
             or not station or state.get('station_purchased')):
         return False
@@ -94,6 +109,178 @@ def prepare_station_reserve(turn, cfg, mem, nav, ledger):
                        station_health=station.health, heal_below=500,
                        shop=shop, purchase_submitted=route[1] is None)
     return accepted
+
+
+def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
+    """Finish tasks, buy both item types, use them, then recall the pioneer."""
+    if not first_day_pioneer_plan_active(turn) or not first_day_tasks_finished(turn):
+        return False
+    from .brain import DAILY_SUMMON_LIMIT, observe_robot_summons, summon_best_robot
+    from .commands import command
+    from .economy import voucher_for
+    from .mining import return_destination
+    from .model import SUMMON_ORDERS
+    from .robot_assault import enemy_base
+
+    hero, station = turn.pioneer, turn.station
+    if hero.id in ledger.used or not station:
+        return False
+    summons = observe_robot_summons(turn, mem)
+    state = mem.first_day_pioneer
+    if not state:
+        state.update(phase='shop', station_item=voucher_for(station), pending_buy=None)
+        mem.task_target = mem.task_wait_cell = None
+        # A former recall must not preempt this feasible post-task trip.
+        mem.return_targets.pop(hero.id, None)
+        mem.return_posts.pop(hero.id, None)
+    pending = state['pending_buy']
+    if pending and pending[0] < turn.round:
+        previous, _ = pending
+        results = turn.raw.get('lastRoundRoleActionResults') or {}
+        if (previous == turn.round - 1
+                and results.get(str(hero.id), results.get(hero.id)) is False):
+            state['phase'] = 'shop'
+        state['pending_buy'] = None
+    home, exact = return_destination(turn, nav, ledger, hero, mem)
+    if not home:
+        return False
+    name = state['station_item']
+    base_held = bool(name and name == voucher_for(station) and hero.inventory[name])
+    held = sum(hero.inventory[item] for item in SUMMON_ORDERS)
+
+    if state['phase'] == 'shop':
+        base_missing = bool(name and name == voucher_for(station)
+                            and not summons['station_purchased']
+                            and not any(name in (role.get('backpack') or [])
+                                        for role in turn.raw['teamOur'].get('roles', [])))
+        base_price = turn.shop.get(name, -1) if base_missing else 0
+        robot_name = 'BossRobotSummonOrder'
+        robot_price = turn.shop.get(robot_name, -1)
+        remaining = max(0, FIRST_DAY_ROBOT_PURCHASE_LIMIT - summons['purchased'])
+        stock = sum(h.inventory[item] for h in turn.heroes for item in SUMMON_ORDERS)
+        quantity = min(remaining, max(0, DAILY_SUMMON_LIMIT - summons['count'] - stock),
+                       max(0, hero.space - int(base_missing)))
+        if enemy_base(turn) is None or robot_price < 0:
+            quantity = 0
+        elif robot_price:
+            quantity = min(quantity, max(0, ledger.gold - max(0, base_price)) // robot_price)
+        if not base_missing and (held or not hero.space or not remaining
+                                 or robot_price < 0 or enemy_base(turn) is None):
+            state['phase'] = 'station'
+        elif turn.tick >= DEFENCE_RETURN_TICK:
+            state['phase'] = 'station'
+        elif base_missing and (base_price < 0 or not hero.space):
+            state['phase'] = 'return'
+        else:
+            options = []
+            shop_seen, route_seen = False, False
+            for shop, kind in turn.zones.items():
+                if kind != 'weaponShop':
+                    continue
+                shop_seen = True
+                if mem.movement.avoids(hero.id, shop):
+                    continue
+                route = nav.approach(hero, [shop], ledger.reserved, with_endpoint=True)
+                if route is None:
+                    continue
+                route_seen = True
+                groups = [[shop]] + ([station.cells] if base_held or base_missing else []) + [home]
+                trip = via(nav, hero, groups, ledger.reserved, final_exact=exact, future_return=True)
+                if trip is None:
+                    continue
+                count = quantity
+                # Include both purchases, the base use and every individual summon.
+                actions = int(base_missing) + int(base_held or base_missing) + held
+                while count and trip + actions + 1 + count + cfg.return_margin > turn.day_left:
+                    count -= 1
+                # Leave room for at least one robot purchase/use while waiting for income.
+                needed = actions + (1 + count if count else 2 if remaining and robot_price >= 0 else 0)
+                if trip + needed + cfg.return_margin <= turn.day_left:
+                    options.append((-count, route[0], shop, route))
+            if not options:
+                if shop_seen and not route_seen:
+                    ledger.used.add(hero.id)
+                    ledger.explain(hero.id, 'first_day_pioneer_shop_blocked')
+                    return True
+                state['phase'] = 'station'
+            else:
+                negative_count, _, shop, route = min(options)
+                quantity = -negative_count
+                item, count = (name, 1) if base_missing else (robot_name, quantity)
+                price = base_price if base_missing else robot_price * count
+                retry = (hero.id, item) in mem.buy_failures
+                waiting = not count or ledger.gold < price
+                if route[1] is not None:
+                    accepted = nav.move_along(hero, ledger, route, {route[2]})
+                elif count and not retry and ledger.gold >= price:
+                    accepted = ledger.add(hero.id, command('buy', name=item, num=count))
+                    if accepted:
+                        state['pending_buy'] = turn.round, item
+                        if base_missing:
+                            summons['station_purchased'] = True
+                            summons['station_pending'] = turn.round, hero.id
+                        else:
+                            summons['purchased'] += count
+                            summons['pending_purchase'] = turn.round, hero.id, count
+                            state['phase'] = 'station'
+                else:
+                    accepted = True
+                    ledger.used.add(hero.id)
+                if accepted:
+                    if route[1] is not None or not count or retry:
+                        reserved = min(ledger.gold, max(0, base_price) + max(0, robot_price) * quantity)
+                        ledger.gold -= reserved
+                        if base_missing:
+                            ledger.purchases.add(name)
+                        if quantity:
+                            ledger.spending_plan['robot_purchase'] = dict(
+                                actor=hero.id, item=robot_name, quantity=quantity,
+                                unit_price=robot_price, total_cost=robot_price * quantity)
+                    ledger.explain(hero.id, 'first_day_pioneer_shop', item=item, quantity=count,
+                                   shop=shop, route_steps=route[0], waiting_for_gold=waiting,
+                                   buy_retry_cooldown=retry, tasks_finished=True)
+                    return True
+
+    if state['phase'] == 'station':
+        if base_held:
+            route = (nav.approach(hero, station.cells, ledger.reserved)
+                     if station.id not in ledger.upgrade_claims
+                     and not mem.movement.avoids(hero.id, station.pos) else None)
+            if route is not None:
+                if route[1] is None:
+                    accepted = ledger.add(hero.id, command('use', station.nearest_cell(hero.pos), name=name))
+                else:
+                    accepted = nav.move_along(hero, ledger, route)
+                if accepted:
+                    ledger.upgrade_claims.add(station.id)
+                    ledger.explain(hero.id, 'first_day_pioneer_upgrade_station', item=name,
+                                   station_health=station.health, tasks_finished=True)
+                    return True
+            # Retry a paid delivery; a blocked route must not silently finish it.
+            ledger.used.add(hero.id)
+            ledger.explain(hero.id, 'first_day_pioneer_delivery_blocked', item=name)
+            return True
+        state['phase'] = 'robots'
+    if state['phase'] == 'robots':
+        if held and summons['count'] < DAILY_SUMMON_LIMIT:
+            if summon_best_robot(turn, cfg, mem, nav, ledger, ledger.tower_cells, ledger.wall_cells,
+                                 excluded={h.id for h in turn.heroes if h.id != hero.id}, use_only=True):
+                return True
+            ledger.used.add(hero.id)
+            ledger.explain(hero.id, 'first_day_pioneer_summon_blocked')
+            return True
+        state['phase'] = 'return'
+    if state['phase'] == 'return':
+        tower = next((w for h, w in ledger.return_pairs if h.id == hero.id), None)
+        if tower:
+            mem.return_targets[hero.id] = tower.id
+            if hero.id in ledger.operator_posts:
+                mem.return_posts[hero.id] = ledger.operator_posts[hero.id]
+        else:
+            route = nav.search(hero, home, ledger.reserved) if exact else nav.approach(hero, home, ledger.reserved)
+            if route and route[1] is not None:
+                return nav.move_along(hero, ledger, route)
+    return False
 
 
 def prepare_paid_upgrades(turn, mem, nav, ledger, heroes, excluded=()):
