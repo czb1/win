@@ -35,6 +35,7 @@ class Ledger:
         self.summon_daily_count = 0
         self.robot_assault_entry = None
         self.robot_summon_anchor = None
+        self.robot_summon_mode = None
         self.first_day_offense_worker_id = None
         # Only previously observed, stationary enemy weapons may be added by
         # robot assault memory. They remain estimates, not current visibility.

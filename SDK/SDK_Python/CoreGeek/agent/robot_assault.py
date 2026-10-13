@@ -424,6 +424,10 @@ def open_assault_entry(turn, base, entry):
 
 
 def in_summon_cluster(ledger, point):
+    # Rear robots do not enter through the scout. Keep its existing wall gap
+    # available as a fallback instead of dragging it to the new spawn cluster.
+    if ledger.robot_summon_mode == 'rear_direct':
+        return True
     anchor = ledger.robot_summon_anchor
     return anchor is None or distance(anchor, point) <= FIRST_DAY_SUMMON_RADIUS
 
@@ -474,22 +478,71 @@ def _summon_at_gap(turn, ledger, base, entry, deadline):
     return min(options)[-1] if options else None
 
 
+def scouted_rear_summon_position(turn, ledger, deadline=None):
+    """Use an observed turret's open rear to shoot the base from legal land.
+
+    Walls are globally reported. Weapons must have been seen, and remembered
+    weapons still obstruct lanes; absence from local sight is not destruction.
+    The rear is relative to the two bases, not a hard-coded map direction.
+    """
+    base = enemy_base(turn)
+    if turn.day != 1 or not turn.is_day or base is None:
+        return None
+    weapons = {u.id: u for u in (*ledger.robot_known_enemies, *turn.enemies)
+               if u.kind in WEAPONS and base_distance(base, u.pos) == 1}
+    if not weapons:
+        return None
+    blocked = (turn.blocked | ledger.reserved | ledger.summon_pending_positions
+               | {p for u in weapons.values() for p in u.cells})
+    obstacles = blocked - base.cells
+    candidates = []
+    # Every summon type has range three. Check the same conservative rays as
+    # night attacks, including characters/NPCs, without shooting through towers.
+    for point in sorted(_attack_goals(turn, base.cells, 3)):
+        if deadline is not None:
+            check_time(deadline)
+        if (point in blocked or not rear_approach(turn, base, point)
+                or not turn.summon_position_legal(point)):
+            continue
+        if any(distance(point, cell) <= 3
+               and not obstacles.intersection(line_cells(point, cell)) for cell in base.cells):
+            candidates.append(point)
+    anchor = ledger.robot_summon_anchor
+    clear_sides = first_day_clear_sides(turn, base, weapons.values())
+    # Keep a rear group together when it still has an open lane. A newly
+    # scouted rear or a newly closed lane may require a different deployment.
+    return min(candidates, key=lambda p: (
+        bool(anchor and distance(p, anchor) > FIRST_DAY_SUMMON_RADIUS),
+        distance(p, anchor) if anchor else 0,
+        not any(_on_entry_side(base, p, row) for row in clear_sides),
+        -min(distance(p, w.pos) for w in weapons.values()), p)) if candidates else None
+
+
 def choose_summon_position(turn, ledger, deadline=None):
     base = enemy_base(turn)
     if base is None:
         return None
     entry = open_assault_entry(turn, base, ledger.robot_assault_entry)
-    if turn.day == 1 and ledger.robot_summon_anchor is not None:
+    rear = scouted_rear_summon_position(turn, ledger, deadline)
+    if rear is not None:
+        ledger.robot_summon_mode = 'rear_direct'
+        return rear
+    # If the rear is now walled/blocked, release its grouping preference and
+    # return to the worker's gap. Already submitted positions stay reserved.
+    if (turn.day == 1 and ledger.robot_summon_anchor is not None
+            and ledger.robot_summon_mode != 'rear_direct'):
         return _summon_in_cluster(turn, ledger, base, entry, deadline)
     if entry is not None:
         position = _summon_at_gap(turn, ledger, base, entry, deadline)
         if position is not None:
+            ledger.robot_summon_mode = 'scout_gap'
             return position
     clear_sides = first_day_clear_sides(turn, base, ledger.robot_known_enemies) if base else set()
-    # An occupied gap stays authoritative. Without one, prefer the unarmed
-    # horizontal face over the old geometric rear; equal faces keep old ties.
+    # Without a direct rear shot or a usable gap, retain the old weak-entry
+    # fallback, preferring an unarmed horizontal face when one is known.
     plan = weakest_approach(turn, ledger, deadline, prefer_rear=True,
                             preferred_sides=clear_sides if len(clear_sides) == 1 else ())
+    ledger.robot_summon_mode = 'weakest_entry'
     return plan.position if plan else None
 
 
