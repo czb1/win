@@ -19,7 +19,7 @@ def parse_line(line, system):
     return {'system':system, 'timestamp':int(match[1]), 'is_fault':match[2]=='BAD', 'module':match[3]}
 with open('sensor.log') as source:
     rows = [parse_line(line, 'sensor') for line in source]
-task_result({'count':sum(row['is_fault'] for row in rows if row is not None)})
+task_result(__import__('json').dumps({'count':sum(row['is_fault'] for row in rows if row is not None)}))
 '''
 GOOD_FUNCTION = r'''def parse_line(line, system):
     match = re.match(r'(\d+)\s+(\w+)\s+module=(\S+)', line)

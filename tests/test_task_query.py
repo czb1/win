@@ -106,7 +106,7 @@ selected = [r for r in rows if only_type is None or r['type'] == only_type]
 result = {{'city': {city!r}, 'total_count': len(selected),
           'world_heritage_count': sum(r['protected_level'] == '世界遗产' for r in selected),
           'types': sorted({{r['type'] for r in selected}}, reverse={reverse!r})}}
-task_result(result)
+task_result(json.dumps(result))
 '''
 
 
@@ -178,7 +178,7 @@ class QueryTests(unittest.TestCase):
             mem = self.ready(documents(base), directory)
             step(mem, 2)
             code = 'try:\n' + '\n'.join('    ' + line for line in model_program(base).splitlines())
-            code += '\nexcept Exception:\n    task_result({"total_count": 0})'
+            code += '\nexcept Exception:\n    task_result(json.dumps({"total_count": 0}))'
             _, command, _ = step(mem, 3, llmResp='PYTHON\n' + code)
             raw = run_sandbox({'executeCmd':command}, directory)
             prompt, command, ledger = step(mem, 4, lastCmdResult=raw)

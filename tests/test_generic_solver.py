@@ -73,12 +73,41 @@ def retry_api():
 
 
 class GenericSolverTests(unittest.TestCase):
+    def test_final_text_reaches_submission_without_another_json_encoding(self):
+        answers = [
+            {'errors': {'monitor': 44, 'gateway': 44, 'logistics': 15},
+             'peak_hour': '13时', 'peak_count': 13},
+            [0, False, '中文'],
+            'a real JSON string value',
+        ]
+        texts = [json.dumps(value, ensure_ascii=False) for value in answers]
+        texts += ['普通文本答案', 'line one\nline two']
+        with tempfile.TemporaryDirectory() as root:
+            for text in texts:
+                with self.subTest(text=text):
+                    code = 'task_result(' + repr(text) + ')'
+                    raw, result, _ = execute(code, root)
+                    self.assertEqual(result[2], text, raw)
+                    mem = Memory(task_text='query', task_started=1, bootstrap_done=True,
+                                 pending=('cmd', 1), running_python=code)
+                    _, _, ledger = step(mem, 2, lastCmdResult=raw)
+                    self.assertEqual(ledger.commands['11']['taskAnswer'], text)
+
+    def test_non_text_task_result_reports_protocol_error_without_submitting(self):
+        with tempfile.TemporaryDirectory() as root:
+            for value in ('{}', '[]', '0', 'None', 'False'):
+                with self.subTest(value=value):
+                    raw, result, _ = execute('task_result(' + value + ')', root)
+                    self.assertNotEqual(result[0], 'ok', raw)
+                    self.assertIsNone(result[2])
+                    self.assertIn('task_result 需要最终提交文本', raw)
+
     def test_log_filename_does_not_impose_fault_record_schema(self):
         with tempfile.TemporaryDirectory() as root:
             Path(root, 'data.log').write_text('alice,8\nbob,3\n')
             for expression, expected in [("sum(int(x[1]) for x in rows)", 11),
                                           ("[x[0] for x in rows if int(x[1]) > 5]", ['alice'])]:
-                code = "rows=[line.strip().split(',') for line in open('data.log')]\n" + f'task_result({expression})'
+                code = "rows=[line.strip().split(',') for line in open('data.log')]\n" + f'import json\ntask_result(json.dumps({expression}))'
                 raw, result, report = execute(code, root)
                 self.assertEqual(result[0], 'ok', raw)
                 self.assertEqual(json.loads(result[2]), expected)
@@ -87,22 +116,22 @@ class GenericSolverTests(unittest.TestCase):
     def test_function_names_and_return_shapes_do_not_change_execution(self):
         with tempfile.TemporaryDirectory() as root:
             for value in ('None', 'False', '0', '[]', "{'custom': 2}"):
-                raw, result, _ = execute(f'def parse_line(line): return {value}\ntask_result(parse_line("x"))', root)
+                raw, result, _ = execute(f'def parse_line(line): return {value}\nimport json\ntask_result(json.dumps(parse_line("x")))', root)
                 self.assertEqual(result[0], 'ok', raw)
                 self.assertEqual(json.loads(result[2]), ast.literal_eval(value))
 
     def test_zero_and_empty_results_are_valid_after_successful_execution(self):
         for value in ('0', '[]', '{"count":0}'):
             with tempfile.TemporaryDirectory() as root:
-                raw, _, _ = execute('task_result(' + value + ')', root)
+                raw, _, _ = execute('import json\ntask_result(json.dumps(' + value + '))', root)
                 mem = Memory(task_text='query', task_started=1, bootstrap_done=True,
-                             pending=('cmd', 1), running_python='task_result(' + value + ')')
+                             pending=('cmd', 1), running_python='import json\ntask_result(json.dumps(' + value + '))')
                 _, _, ledger = step(mem, 2, lastCmdResult=raw)
                 self.assertEqual(json.loads(ledger.commands['11']['taskAnswer']), json.loads(value))
 
     def test_unhandled_failure_never_submits_even_after_result_marker(self):
         with tempfile.TemporaryDirectory() as root:
-            for code in ('task_result(0)\nraise ValueError("missing input")',
+            for code in ('task_result(str(0))\nraise ValueError("missing input")',
                          "print('FINAL_ANSWER\\n0')\nopen('missing.log')"):
                 raw, result, _ = execute(code, root)
                 self.assertNotEqual(result[0], 'ok')
@@ -114,20 +143,20 @@ class GenericSolverTests(unittest.TestCase):
 
     def test_caught_optional_parse_error_is_not_automatically_business_failure(self):
         with tempfile.TemporaryDirectory() as root:
-            code = 'values=[]\nfor x in ["header", "4"]:\n try: values.append(int(x))\n except ValueError: continue\ntask_result(sum(values))'
+            code = 'values=[]\nfor x in ["header", "4"]:\n try: values.append(int(x))\n except ValueError: continue\ntask_result(str(sum(values)))'
             raw, result, _ = execute(code, root)
             self.assertEqual(result[0], 'ok', raw)
             self.assertEqual(result[2], '4')
 
     def test_round_and_history_functions_are_never_injected(self):
         with tempfile.TemporaryDirectory() as root:
-            raw, result, _ = execute("task_result([round(2.5), 'old' in globals()])", root,
+            raw, result, _ = execute("import json\ntask_result(json.dumps([round(2.5), 'old' in globals()]))", root,
                                      rounding='half_up', log_task=True, parser='def old(): return 9')
             self.assertEqual(json.loads(result[2]), [2, False], raw)
 
     def test_full_repair_can_change_signature_and_caller_in_one_reply(self):
         mem = Memory(task_text='query', task_started=1, bootstrap_done=True, pending=('task', 1))
-        code = 'def parse_line(line, factor): return int(line)*factor\ntask_result(parse_line("3", 4))'
+        code = 'def parse_line(line, factor): return int(line)*factor\ntask_result(str(parse_line("3", 4)))'
         _, command, _ = step(mem, 2, llmResp='PYTHON\n' + code)
         with tempfile.TemporaryDirectory() as root:
             raw = run_sandbox({'executeCmd': command}, root)
@@ -153,7 +182,7 @@ class GenericSolverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             for extra, value in [('', 10), ('raise SystemExit(1)', 13), ("print('TOKEN: another')", 13)]:
                 _, contract = checker_task(root, extra=extra)
-                raw, result, report = execute(f"open('result.json','w').write('{{\"sum\":{value}}}')\ntask_result({{'token':'invented'}})", root, contract)
+                raw, result, report = execute(f"open('result.json','w').write('{{\"sum\":{value}}}')\nimport json\ntask_result(json.dumps({{'token':'invented'}}))", root, contract)
                 self.assertNotEqual(result[0], 'ok', raw)
                 self.assertFalse(report['checker']['passed'])
 
@@ -203,7 +232,7 @@ from urllib.request import urlopen
 try: urlopen({base!r}+'/data')
 except Exception: pass
 value=json.load(urlopen({base!r}+'/data'))
-task_result(sum(value['records']))'''
+task_result(json.dumps(sum(value['records'])))'''
             raw, result, report = execute(code, root)
             self.assertEqual(result[2], '10', raw)
             self.assertFalse(report['http_errors'])
@@ -221,7 +250,7 @@ task_result(sum(value['records']))'''
         mem.task_started = 1
         mem.task_timeout = 3
         mem.pending = ('task', 1)
-        _, command, _ = step(mem, 2, llmResp='PYTHON\ntask_result(7)')
+        _, command, _ = step(mem, 2, llmResp='PYTHON\ntask_result(str(7))')
         self.assertTrue(command)
         with tempfile.TemporaryDirectory() as root:
             raw = run_sandbox({'executeCmd': command}, root)
@@ -250,7 +279,7 @@ task_result(sum(value['records']))'''
         self.assertNotIn('old-secret', json.dumps(hints))
         self.assertIn('重新读取', hints[0]['scope'])
         with tempfile.TemporaryDirectory() as root:
-            raw, result, _ = execute("task_result('api_key' in globals())", root)
+            raw, result, _ = execute("import json\ntask_result(json.dumps('api_key' in globals()))", root)
             self.assertEqual(result[2], 'false', raw)
 
     def test_explicit_previous_question_precedes_same_shape_heuristic(self):
@@ -306,7 +335,7 @@ task_result(sum(value['records']))'''
             code=f'''import requests
 requests.get({base!r}+'/search',params={{'location':'北京','page':2}})
 requests.get({base!r}+'/search',params={{'location':'北京','page':1}},headers={{'Authorization':'Bearer fixture-key'}})
-task_result(0)'''
+task_result(str(0))'''
             raw,result,report=execute(code,root)
             self.assertIsNone(result[2],raw)
             self.assertTrue(report['http_errors'])

@@ -21,7 +21,8 @@ class RepairEvidenceTests(unittest.TestCase):
 def parse_line(line):
     return parse_worker_line(line)
 rows = [parse_line('link-down')]
-task_result({'count':sum(row['is_fault'] for row in rows)})
+import json
+task_result(json.dumps({'count':sum(row['is_fault'] for row in rows)}))
 """
         context = repair_context(code, {'logs':{'parsers':{'parse_line':{'unmatched_count':1}}}})
         self.assertIn('parse_worker_line', context['allowed_functions'])

@@ -225,9 +225,10 @@ if checker_files:
     report['checker_files'] = checker_files
 
 answer_value = []
-def task_result(value):
-    json.dumps(value, ensure_ascii=False, allow_nan=False)
-    answer_value[:] = [value]
+def task_result(text):
+    if not isinstance(text, str):
+        raise TypeError("task_result 需要最终提交文本；JSON 答案请先调用 json.dumps")
+    answer_value[:] = [text]
 
 exit_code = 0
 with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
@@ -267,7 +268,7 @@ if not exit_code and not report['http_errors'] and TASK_CONTRACT.get('requires_c
             if TASK_CONTRACT.get('kind') == 'check_token':
                 passed = passed and len(tokens) == 1
                 if passed:
-                    answer_value[:] = [{'token': tokens[0]}]
+                    answer_value[:] = [json.dumps({'token': tokens[0]}, ensure_ascii=False, allow_nan=False)]
             report['checker'] = {'passed': passed, 'command': checker_selection,
                                  'exitCode': checked.returncode, 'feedback': feedback[:16000]}
             if not passed:
@@ -283,7 +284,7 @@ if answer_value:
 print('TASK_RUNTIME ' + json.dumps(report, ensure_ascii=False))
 if answer_value and not exit_code and not report['http_errors'] and len(body) <= 60000:
     print('FINAL_ANSWER')
-    print(json.dumps(answer_value[0], ensure_ascii=False, allow_nan=False))
+    print(answer_value[0])
 else:
     print(body[:60000], end='')
 if len(body) > 60000:
