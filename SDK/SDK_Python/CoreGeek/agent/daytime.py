@@ -57,7 +57,8 @@ def guard_station_with_pioneer(turn, mem, nav, ledger):
         return True
     _, _, _, _, post, route = min(options)
     if route[1] is not None and not nav.move_along(
-            hero, ledger, route, {post}, reserved | danger, prefer_vehicle=False, max_rounds=route[0]):
+            hero, ledger, route, {post}, reserved | danger, prefer_vehicle=False,
+            max_rounds=route[0], returning=True):
         return False
     mem.pioneer_wait_post = post
     ledger.used.add(hero.id)

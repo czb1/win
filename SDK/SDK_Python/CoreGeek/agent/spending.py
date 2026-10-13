@@ -293,7 +293,7 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
             route = nav.search(hero, home, ledger.reserved) if exact else nav.approach(hero, home, ledger.reserved)
             if route and route[1] is not None:
                 goals = set(home) if exact else {p for cell in home for p in neighbours(cell)} - set(home)
-                return nav.move_along(hero, ledger, route, goals)
+                return nav.move_along(hero, ledger, route, goals, returning=True)
     return False
 
 

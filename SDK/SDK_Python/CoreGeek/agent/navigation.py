@@ -35,7 +35,7 @@ class Navigator:
             record["last_failure"] = {"reason": outcome, **facts}
 
     def move_along(self, hero, ledger, route, goals, reserved=(), *, journey=None,
-                   max_rounds=None, prefer_vehicle=True, targets=()):
+                   max_rounds=None, prefer_vehicle=True, targets=(), returning=False):
         """Change transport only, after the caller has selected its business goal."""
         from .commands import command, move_command
         from .logging_system import emit_event
@@ -54,11 +54,13 @@ class Navigator:
         vehicle, reason = None, 'no_available_route'
         eligible = hero.kind == 'pioneer' and self.turn.is_day and self.turn.vehicle_cells
         if eligible:
+            returning_onboard = (returning and hero.is_driving
+                                 and hero.pos in self.turn.vehicle_cells)
             prefer = (prefer_vehicle and self.vehicle_detours and not self.turn.phase_task
                       and self.turn.tick < DEFENCE_RETURN_TICK and hero.health > 150
                       and ledger.plans.get(hero.id, {}).get('reason') != 'defence_recall')
             limit = max_rounds
-            if prefer:
+            if prefer and not returning_onboard:
                 limit = min(limit if limit is not None else self.turn.day_left,
                             DEFENCE_RETURN_TICK - self.turn.tick)
             else:
@@ -71,7 +73,8 @@ class Navigator:
             else:
                 try:
                     vehicle = plan_route(self, ledger, hero, goals, route, reserved,
-                                         prefer=True, max_rounds=limit)
+                                         prefer=True, max_rounds=limit,
+                                         returning=returning_onboard)
                     reason = vehicle.mode if vehicle else 'unavailable_or_deadline'
                 except DeadlineExceeded:
                     reason = 'search_budget_exhausted'

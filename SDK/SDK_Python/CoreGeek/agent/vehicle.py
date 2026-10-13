@@ -88,7 +88,8 @@ def _field(nav, goals, blocked):
     return distances
 
 
-def plan_route(nav, ledger, hero, goals, walking, reserved=(), *, prefer=True, max_rounds=None):
+def plan_route(nav, ledger, hero, goals, walking, reserved=(), *, prefer=True, max_rounds=None,
+               returning=False):
     """Price a complete board/drive/exit trip; never select the business goal."""
     from .navigation import check_time
     turn = nav.turn
@@ -97,6 +98,9 @@ def plan_route(nav, ledger, hero, goals, walking, reserved=(), *, prefer=True, m
             or (nav.memory and hero.id in getattr(nav.memory, 'driving_disabled', ()))):
         return None
     driving = hero.is_driving and hero.pos in turn.vehicle_cells
+    # An onboard return may finish on foot after dark. Only its driving prefix
+    # uses the daylight budget; pickup and other trips retain full-trip limits.
+    allow_late_walk = returning and driving
     cars = turn.free_vehicle_cells
     if not driving and not cars:
         return None
@@ -153,7 +157,7 @@ def plan_route(nav, ledger, hero, goals, walking, reserved=(), *, prefer=True, m
             for target in neighbours(cell):
                 tail = foot.get(target)
                 if (tail is not None and tail < foot.get(cell, float('inf'))
-                        and length + 1 + tail <= limit):
+                        and (allow_late_walk or length + 1 + tail <= limit)):
                     candidates.append((length + 1 + tail, 1 + tail, cell,
                                        first if first is not None else target))
         if length >= limit:
