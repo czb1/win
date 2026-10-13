@@ -13,7 +13,7 @@ from agent.brain import Agent
 from agent.commands import command
 from agent.combat import select_targets, emergency_items
 from agent.config import Config
-from agent.economy import worker, use_inventory
+from agent.economy import worker, use_inventory, supplies
 from agent.intelligence import Memory, Intelligence, parse_task_reply
 from agent.model import Turn, distance
 from agent.task_tools import file_code, document_path
@@ -157,7 +157,12 @@ class SuppliesTests(unittest.TestCase):
             p["teamOur"]["roles"][1]["level"] = 3
             p["teamOur"]["roles"].append(unit(30, building, 3, 7, health=400 if building == "wall" else 1500))
             p["weaponShopList"] = [{"name": name, "price": 20}]
-            self.assertEqual(self.decide_worker(p)["name"], name)
+            if building == "station":
+                p["teamOur"]["roles"][0]["roleType"] = "pioneer"
+                t, cfg, nav, ledger = setup_case(p)
+                self.assertEqual(supplies(t, cfg, Memory(), nav, ledger, t.pioneer)[0], name)
+            else:
+                self.assertEqual(self.decide_worker(p)["name"], name)
 
     def test_save_for_weapon_instead_of_buying_cheap_wall_voucher(self):
         p = self.case()

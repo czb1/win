@@ -292,6 +292,8 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
     upgrades = []
     pioneer_emergency = hero.kind == 'pioneer' and pioneer_needs_night_relief(turn)
     for building in turn.ours:
+        if building.kind == 'station' and hero.kind != 'pioneer':
+            continue
         station_heal = (building.kind == 'station' and building.level < 3
                         and (critical_station(turn, building, mem) or pioneer_emergency))
         if target_sites is not None and building.pos not in target_sites:
@@ -414,6 +416,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         reject('no_shop_route')
         return None
     candidates = []
+    from .wall_supply import active
+    dedicated = active(turn, mem)
     paid_walls = []
     wounded = hero.health <= (165 if hero.kind == "worker" else 150)
     if not hero.inventory["Medicine"] and wounded:
@@ -424,6 +428,12 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
         first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
         for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
+            if (building.kind == 'station' and hero.kind != 'pioneer'
+                    or dedicated and building.kind == 'wall' and hero.id != mem.wall_watch_id):
+                continue
+            if building.kind == 'station':
+                for level in (1, 2):
+                    carried[f'StationUpgradeVoucher{level}'] = hero.inventory[f'StationUpgradeVoucher{level}']
             if target_sites is not None and building.pos not in target_sites:
                 continue
             if building.kind == "station" and not station_purchase_allowed(turn, building, mem):
@@ -608,8 +618,12 @@ def refresh_stone_reserves(turn, cfg, mem, ledger):
                and p not in mem.build_failures and turn.zones.get(p, "land") == "land"]
     stone_need = len(missing) * cfg.wall_stones
     mem.stone_reserves.clear()
+    from .wall_supply import active
     for h in sorted(turn.workers, key=lambda h: (h.id != mem.wall_repair_worker,
                                                -h.inventory["stone"], h.id)):
+        if active(turn, mem) and h.id == mem.wall_watch_id:
+            mem.stone_reserves[h.id] = 0
+            continue
         if h.id == ledger.income_worker_id and h.id != mem.wall_repair_worker:
             mem.stone_reserves[h.id] = 0
             continue
@@ -657,7 +671,10 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
     refresh_stone_reserves(turn, cfg, mem, ledger)
     planned = planned_weapons(turn, cfg, mem, tower_sites)
     reserve = sum(w.id < 0 for w in planned) * cfg.weapon_cost
+    from .wall_supply import active
     for hero in turn.heroes:
+        if active(turn, mem) and hero.kind == 'worker':
+            continue
         if hero.id in ledger.used or hero.kind == "pioneer" and turn.phase_task:
             continue
         if hero.health <= 165 and hero.inventory["Medicine"]:
@@ -1134,6 +1151,22 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
 
 def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
     """Allocate only today's outstanding jobs; all other worker time earns gold."""
+    from .wall_supply import active, other_worker
+    if active(turn, mem):
+        for hero in turn.workers:
+            if hero.id in ledger.used or hero.id in excluded:
+                continue
+            if hero.id == mem.wall_watch_id:
+                if turn.tick < cfg.economy_rounds:
+                    job = mem.daytime_jobs.get(hero.id, {})
+                    if job.get('kind') in ('mine', 'sell', 'spare') and not job.get('want_stone'):
+                        from .worker_jobs import _continue
+                        if _continue(turn, cfg, mem, nav, ledger, hero, job, tower_sites, wall_sites)[0]:
+                            continue
+                    earn(turn, cfg, mem, nav, ledger, hero, deadline=cfg.economy_rounds)
+            else:
+                other_worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites)
+        return
     if ledger.income_worker_id is None:
         reserve_income_worker(turn, mem, nav, ledger, excluded)
     free = [h for h in turn.workers if h.id not in ledger.used and h.id not in excluded]
@@ -1426,9 +1459,12 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
         mem.trace_treasure(turn, "treasure_progress", dedupe=True,
                            reason="done" if mem.treasure_done else "already_attempted"
                            if mem.treasure_attempted else "expired")
-    if not cfg.llm_enabled:
+    if cfg.llm_enabled and shopping and prepare_treasure(turn, cfg, mem, nav, ledger, hero):
         return
-    if shopping and prepare_treasure(turn, cfg, mem, nav, ledger, hero):
+    from .wall_supply import prepare_station
+    if shopping and prepare_station(turn, cfg, mem, nav, ledger, hero):
+        return
+    if not cfg.llm_enabled:
         return
     options = pioneer_task_options(turn, cfg, mem, nav, ledger, hero)
     previous = mem.task_target

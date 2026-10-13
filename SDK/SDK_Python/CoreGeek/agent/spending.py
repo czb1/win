@@ -302,7 +302,10 @@ def prepare_paid_upgrades(turn, mem, nav, ledger, heroes, excluded=()):
     if not turn.is_day or turn.day == 1:
         return
     from .economy import use_inventory
+    from .wall_supply import active
     for hero in sorted(heroes, key=lambda h: (h.id != mem.supply_worker, h.id)):
+        if active(turn, mem) and hero.kind == 'worker':
+            continue
         if (hero.id in ledger.used or hero.id in excluded
                 or hero.kind == 'pioneer' and turn.phase_task
                 or mem.daytime_jobs.get(hero.id, {}).get('kind') in ('use', 'sell')
@@ -377,6 +380,44 @@ def plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded=()):
                                    medical_gold_reserved=0, priority_actors=[], purchase_actor=None,
                                    day_left=turn.day_left)
         return set(), reserve
+    from .wall_supply import active, station_plan
+    if active(turn, mem):
+        from .economy import supplies
+        purchases = {}
+        ledger.defense_purchase = None
+        # The watch and material/sale journeys precede optional robot errands.
+        # Keep surplus robot shopping available once these duties are done.
+        # Watch money was already removed by prepare_watch.
+        actors = {mem.wall_watch_id}
+        built = {w.pos for w in turn.ours if w.kind == 'wall'}
+        missing = set(ledger.wall_cells) - built - set(mem.build_failures)
+        for hero in turn.workers:
+            job = mem.daytime_jobs.get(hero.id, {})
+            if (turn.tick < cfg.economy_rounds or missing
+                    or job.get('kind') in ('sell', 'build')
+                    or job.get('kind') == 'mine' and job.get('want_stone')):
+                actors.add(hero.id)
+        for hero in turn.workers:
+            if hero.id == mem.wall_watch_id or hero.id in excluded or hero.id in ledger.used:
+                continue
+            planned = planned_weapons(turn, cfg, mem, towers)
+            plan = supplies(turn, cfg, mem, nav, ledger, hero,
+                            sum(w.id < 0 for w in planned) * cfg.weapon_cost,
+                            planned=planned, bulk=True)
+            if plan:
+                purchases[plan[0]] = turn.shop[plan[0]] * plan[2]
+                actors.add(hero.id)
+        station = station_plan(turn, cfg, mem, nav, ledger, turn.pioneer)
+        if station:
+            purchases[station[0]] = turn.shop[station[0]]
+            actors.add(turn.pioneer.id)
+        construction = max(0, len(cfg.loadout) - len(turn.weapons)) * cfg.weapon_cost
+        reserve = min(ledger.gold, construction + sum(purchases.values()))
+        ledger.spending_plan.update(gold_available=ledger.gold, reserved_gold=reserve,
+                                   surplus=max(0, ledger.gold-reserve), purchases=purchases,
+                                   priority_actors=sorted(actors), purchase_actor=None,
+                                   day_left=turn.day_left, wall_supply_owner=mem.wall_watch_id)
+        return actors, reserve
     from .economy import supplies, build_options
     planned = planned_weapons(turn, cfg, mem, towers)
     construction = sum(w.id < 0 for w in planned) * cfg.weapon_cost
@@ -399,6 +440,10 @@ def plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded=()):
             if plan:
                 name, _, quantity = plan
                 purchases[name] = max(purchases.get(name, 0), turn.shop[name] * quantity)
+    base_plan = station_plan(turn, cfg, mem, nav, ledger, turn.pioneer)
+    if base_plan:
+        purchases[base_plan[0]] = turn.shop[base_plan[0]]
+        actors.add(turn.pioneer.id)
     selected = min(buyers, key=lambda row: row[:3]) if buyers else None
     buyer = selected[2] if selected else None
     ledger.defense_purchase = (buyer, selected[3]) if selected else None

@@ -49,7 +49,7 @@ class DuskResourceTests(unittest.TestCase):
         p["teamOur"]["roles"][0]["backpack"] = ["StationUpgradeVoucher1", "WeaponUpgradeVoucher2"]
         t, c, n, l = self.setup(p)
         self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=Memory()))
-        self.assertEqual(l.commands["1"]["name"], "StationUpgradeVoucher1")
+        self.assertEqual(l.commands["1"]["name"], "WeaponUpgradeVoucher2")
 
     def test_critical_base_waits_for_wall_repair_and_upgrade(self):
         p = self.case(gold=100)
@@ -63,8 +63,9 @@ class DuskResourceTests(unittest.TestCase):
         # be converted into the base upgrade and restore it to full health.
         p["teamOur"]["roles"][3]["level"] = 3
         p["teamOur"]["goldNum"] = 100
+        p["teamOur"]["roles"][0]["roleType"] = "pioneer"
         t, c, n, l = self.setup(p)
-        self.assertEqual(supplies(t, c, Memory(), n, l, t.workers[0])[0],
+        self.assertEqual(supplies(t, c, Memory(), n, l, t.pioneer)[0],
                          "StationUpgradeVoucher1")
 
     def test_sixty_spends_affordable_wall_money_when_weapon_is_too_expensive(self):
@@ -262,7 +263,7 @@ class DuskResourceTests(unittest.TestCase):
                 p["lastRoundRoleActionResults"] = {uid: True for uid in response["roleCommandMap"]}
             self.assertEqual(p["teamOur"]["roles"][2]["level"], 3)
             self.assertEqual(p["teamOur"]["roles"][3]["level"], 3)
-            self.assertEqual(p["teamOur"]["roles"][0]["backpack"], ['StationUpgradeVoucher1'])
+            self.assertEqual(p["teamOur"]["roles"][0]["backpack"], [])
             self.assertEqual(p["teamOur"]["roles"][1]["level"], 1)
-            self.assertEqual(p["teamOur"]["goldNum"], 300)
+            self.assertEqual(p["teamOur"]["goldNum"], 400)
 

@@ -10,7 +10,7 @@ from agent.worker_jobs import resume_daytime_jobs
 
 
 class StationUseTargetTests(unittest.TestCase):
-    def case(self, origin=(3, 11), actor=(5, 9), level=1, kind='worker', round_no=131):
+    def case(self, origin=(3, 11), actor=(5, 9), level=1, kind='pioneer', round_no=131):
         return payload(round_no, [
             unit(13, 'station', *origin, health=100, level=level),
             unit(10, kind, *actor, health=500,
@@ -32,8 +32,11 @@ class StationUseTargetTests(unittest.TestCase):
                             with self.subTest(origin=origin, actor=actor, level=level,
                                               kind=kind, round_no=round_no):
                                 t, _, n, l = setup_case(self.case(origin, actor, level, kind, round_no))
-                                self.assertTrue(use_inventory(t, n, l, t.heroes[0],
-                                                              local_only=True, mem=Memory()))
+                                self.assertEqual(use_inventory(t, n, l, t.heroes[0],
+                                                               local_only=True, mem=Memory()), kind == 'pioneer')
+                                if kind == 'worker':
+                                    self.assertFalse(l.commands)
+                                    continue
                                 self.assertEqual(l.commands['10'], command(
                                     'use', expected, name=f'StationUpgradeVoucher{level}'))
                                 self.assertTrue(t.adjacent(actor, expected))
@@ -70,28 +73,27 @@ class StationUseTargetTests(unittest.TestCase):
                 _, _, _, l = setup_case(self.case(actor=actor))
                 self.assertFalse(l.add(10, command('use', target, name='StationUpgradeVoucher1')))
 
-    def test_recovery_uses_current_position_instead_of_stored_base_anchor(self):
+    def test_worker_recovery_never_uses_station_coupon(self):
         for actor, expected in (((5, 9), (4, 10)), ((2, 12), (3, 11))):
             with self.subTest(actor=actor):
                 t, c, n, l = setup_case(self.case(actor=actor))
                 mem = Memory()
                 goal = (10, 'use', (3, 11))
                 action = mem.recovery.action(goal, t, c, mem, n, l)
-                self.assertEqual(action, command('use', expected, name='StationUpgradeVoucher1'))
-                self.assertTrue(l.add(10, action))
+                self.assertIsNone(action)
+                self.assertFalse(l.commands)
 
     def test_resumed_delivery_recomputes_target_after_movement(self):
         data = self.case(actor=(7, 8))
         t, _, n, l = setup_case(data)
         mem = Memory()
-        self.assertTrue(use_inventory(t, n, l, t.workers[0], mem=mem))
+        self.assertTrue(use_inventory(t, n, l, t.pioneer, mem=mem))
         self.assertEqual(l.commands['10']['action'], 'move')
-        self.assertEqual(l.work_jobs[10]['target'], (3, 11))
-        mem.daytime_jobs = l.work_jobs.copy()
+        self.assertEqual(mem.upgrade_targets[10], (3, 11))
         data['roundNo'] += 1
         data['teamOur']['roles'][1]['pos'] = {'x': 5, 'y': 9}
         t, c, n, l = setup_case(data)
-        resume_daytime_jobs(t, c, mem, n, l, [], [], returning=set())
+        use_inventory(t, n, l, t.pioneer, mem=mem)
         self.assertEqual(pos(l.commands['10']['targetPos'][0]), (4, 10))
         self.assertEqual(l.commands['10']['action'], 'use')
 

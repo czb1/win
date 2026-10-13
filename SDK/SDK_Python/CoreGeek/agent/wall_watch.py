@@ -72,6 +72,9 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     """Return (worker locked, gold reserved); retain early daytime production."""
     if not hero or hero.id in ledger.used:
         return False, 0
+    from .wall_supply import active, prepare
+    if turn.is_day and active(turn, mem):
+        return prepare(turn, cfg, mem, nav, ledger, hero, sites)
     ledger.watch_pack_slots[hero.id] = 0
     walls = [w for w in turn.ours if w.kind == 'wall']
     if not walls:

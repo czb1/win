@@ -20,7 +20,7 @@ class StationEmergencyTests(unittest.TestCase):
         if backpack is None:
             backpack = [f"StationUpgradeVoucher{station_level}"]
         p = payload(round_no, [unit(13, "station", 3, 11, health=health, level=station_level),
-                               unit(10, "worker", *worker_pos, health=500, backpack=backpack),
+                               unit(10, "pioneer", *worker_pos, health=500, backpack=backpack),
                                unit(20, "rocket", 5, 10, health=2000, level=3),
                                unit(30, "wall", 5, 8, health=1000)])
         p["teamOur"]["goldNum"] = 0
@@ -39,7 +39,7 @@ class StationEmergencyTests(unittest.TestCase):
                             p["teamOur"]["roles"].pop()
                         turn, _, nav, ledger = self.setup(p)
                         mem = Memory(wall_rebuild_levels={(5, 8): 3})
-                        self.assertTrue(use_inventory(turn, nav, ledger, turn.workers[0],
+                        self.assertTrue(use_inventory(turn, nav, ledger, turn.pioneer,
                                                       local_only=True, urgent_only=True, mem=mem))
                         self.assertEqual(ledger.commands["10"], command(
                             "use", (3, 10), name=f"StationUpgradeVoucher{station_level}"))
@@ -54,7 +54,7 @@ class StationEmergencyTests(unittest.TestCase):
                 turn, _, nav, ledger = self.setup(p)
                 mem = Memory(wall_rebuild_levels={(5, 8): 3},
                              upgrade_targets={10: (5, 8)})
-                self.assertTrue(use_inventory(turn, nav, ledger, turn.workers[0], mem=mem))
+                self.assertTrue(use_inventory(turn, nav, ledger, turn.pioneer, mem=mem))
                 self.assertEqual(ledger.commands["10"], command(
                     "use", (4, 10), name="StationUpgradeVoucher1"))
                 self.assertEqual(ledger.upgrade_claims, {13})
@@ -66,11 +66,11 @@ class StationEmergencyTests(unittest.TestCase):
                 p = self.case(round_no, health=health, worker_pos=(4, 9))
                 turn, _, nav, ledger = self.setup(p)
                 mem = Memory(wall_rebuild_levels={(5, 8): 3})
-                self.assertFalse(use_inventory(turn, nav, ledger, turn.workers[0], mem=mem))
+                self.assertFalse(use_inventory(turn, nav, ledger, turn.pioneer, mem=mem))
                 self.assertFalse(ledger.commands)
                 p["teamOur"]["roles"][1]["backpack"].append("WallUpgradeVoucher1")
                 turn, _, nav, ledger = self.setup(p)
-                self.assertTrue(use_inventory(turn, nav, ledger, turn.workers[0], mem=mem))
+                self.assertTrue(use_inventory(turn, nav, ledger, turn.pioneer, mem=mem))
                 self.assertEqual(ledger.commands["10"], command(
                     "use", (5, 8), name="WallUpgradeVoucher1"))
 
@@ -85,7 +85,7 @@ class StationEmergencyTests(unittest.TestCase):
                 turn, _, nav, ledger = self.setup(p)
                 if claimed:
                     ledger.upgrade_claims.add(13)
-                self.assertFalse(use_inventory(turn, nav, ledger, turn.workers[0],
+                self.assertFalse(use_inventory(turn, nav, ledger, turn.pioneer,
                                                mem=Memory(wall_rebuild_levels={(5, 8): 3})))
                 self.assertFalse(ledger.commands)
 
@@ -98,8 +98,8 @@ class StationEmergencyTests(unittest.TestCase):
         p["teamEnemy"]["roles"] = [unit(100 + i, "wall", *cell, health=1000)
                                      for i, cell in enumerate(sorted(ring))]
         turn, _, nav, ledger = self.setup(p)
-        self.assertIsNone(nav.approach(turn.workers[0], turn.station.cells))
-        self.assertTrue(use_inventory(turn, nav, ledger, turn.workers[0],
+        self.assertIsNone(nav.approach(turn.pioneer, turn.station.cells))
+        self.assertTrue(use_inventory(turn, nav, ledger, turn.pioneer,
                                       mem=Memory(wall_rebuild_levels={(5, 8): 3})))
         self.assertEqual(ledger.commands["10"], command(
             "use", (5, 8), name="WallUpgradeVoucher1"))
@@ -109,7 +109,7 @@ class StationEmergencyTests(unittest.TestCase):
                       backpack=["StationUpgradeVoucher1", "WallUpgradeVoucher1"])
         turn, _, nav, ledger = self.setup(p)
         ledger.operator_posts[10] = (5, 7)
-        self.assertTrue(use_inventory(turn, nav, ledger, turn.workers[0],
+        self.assertTrue(use_inventory(turn, nav, ledger, turn.pioneer, local_only=True,
                                       mem=Memory(wall_rebuild_levels={(5, 8): 3})))
         self.assertEqual(ledger.commands["10"], command(
             "use", (5, 8), name="WallUpgradeVoucher1"))
@@ -120,7 +120,8 @@ class StationEmergencyTests(unittest.TestCase):
         turn, cfg, nav, ledger = self.setup(p)
         mem = Memory(wall_rebuild_levels={(5, 8): 3}, daytime_jobs={
             10: dict(kind="use", target=(5, 8), name="WallUpgradeVoucher1")})
-        resume_daytime_jobs(turn, cfg, mem, nav, ledger, [(5, 10)], [(5, 8)], returning=set())
+        from agent.spending import heal_station_with_pioneer
+        heal_station_with_pioneer(turn, mem, nav, ledger)
         self.assertEqual(ledger.commands["10"], command(
             "use", (4, 10), name="StationUpgradeVoucher1"))
         self.assertEqual(mem.wall_rebuild_levels, {(5, 8): 3})

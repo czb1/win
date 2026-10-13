@@ -266,11 +266,12 @@ class DaytimeProductivityTests(unittest.TestCase):
         self.assertEqual(memory.post, (10, 2))
         self.assertEqual(ledger.notes[1]['conditions']['route_steps'], 19)
 
-    def test_unfunded_partial_stock_releases_with_twenty_three_turns_left(self):
+    def test_unfunded_partial_stock_keeps_watch_and_works_inside(self):
         turn, cfg, nav, ledger = self.watch_setup()
         mem = Memory(wall_watch_id=2)
-        self.assertEqual(prepare_watch(turn, cfg, mem, nav, ledger, turn.workers[1], ledger.wall_cells), (False, 0))
-        self.assertNotIn(2, ledger.daytime_waits)
+        self.assertEqual(prepare_watch(turn, cfg, mem, nav, ledger, turn.workers[1], ledger.wall_cells), (True, 0))
+        self.assertEqual(mem.wall_supply_trip['phase'], 'deliver')
+        self.assertNotEqual(ledger.commands.get('2', {}).get('action'), 'buy')
 
     def test_unfunded_far_shop_does_not_set_the_recall_deadline(self):
         turn, cfg, nav, ledger = self.watch_setup(tick=20, distant_shop=True)

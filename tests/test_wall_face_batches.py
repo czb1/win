@@ -97,14 +97,15 @@ class WallFaceBatchTests(unittest.TestCase):
         self.assertNotIn(1, mem.wall_batches)
         self.assertNotIn('1', ledger.commands)
 
-    def test_critical_station_still_preempts_batch(self):
+    def test_worker_batch_does_not_take_pioneer_station_duty(self):
         t, cfg, nav, ledger = self.frame(bag=['stone', 'StationUpgradeVoucher2'],
                                         station_level=2, station_health=100)
         station, hero = t.station, t.workers[0]
         mem = Memory(day=4)
         start_batch(t, mem, ledger, hero, (4, 4))
         resume_daytime_jobs(t, cfg, mem, nav, ledger, [(6, 4)], SITES, set())
-        self.assertEqual(ledger.work_jobs[1]['target'], station.pos)
+        self.assertFalse(any(c.get('name', '').startswith('StationUpgradeVoucher')
+                             for c in ledger.commands.values()))
 
     def test_scoped_purchase_does_not_buy_for_other_face(self):
         complete = [unit(40+y, 'wall', 4, y, health=2000, level=3) for y in range(4, 7)]

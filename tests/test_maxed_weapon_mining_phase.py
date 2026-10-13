@@ -157,7 +157,7 @@ class MaxedWeaponMiningPhaseTests(unittest.TestCase):
                         self.assertEqual((locked, funds), (False, 30))
                         self.assertFalse(l.commands)
                     else:
-                        self.assertEqual((locked, funds), (True, 0))
+                        self.assertEqual((locked, funds), (True, 420))
                         self.assertEqual(l.commands['1'], command('buy', name='WallFixer', num=8))
 
     def test_new_robot_purchase_waits_but_paid_order_can_be_used(self):
@@ -193,7 +193,7 @@ class MaxedWeaponMiningPhaseTests(unittest.TestCase):
         self.assertEqual(l.work_jobs[2]['kind'], 'build')
         self.assertEqual(l.work_jobs[2]['name'], 'rocket')
 
-    def test_incomplete_maxed_battery_keeps_original_nearby_watch_order(self):
+    def test_incomplete_battery_does_not_cancel_watch_mining_window(self):
         from test_daylight_spending import case as watch_case, setup as watch_setup
         data, cfg = watch_case(tick=10, packs=1)
         cfg.loadout = ['rocket'] * 3
@@ -202,8 +202,8 @@ class MaxedWeaponMiningPhaseTests(unittest.TestCase):
         t, c, n, l = watch_setup(data, cfg)
         locked, funds = prepare_watch(t, c, Memory(wall_watch_id=1), n, l,
                                      t.workers[0], list(l.wall_cells))
-        self.assertEqual((locked, funds), (True, 0))
-        self.assertEqual(l.commands['1'], command('buy', name='WallFixer', num=8))
+        self.assertEqual((locked, funds), (False, 30))
+        self.assertFalse(l.commands)
 
 
 if __name__ == '__main__':

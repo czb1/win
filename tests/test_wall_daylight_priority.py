@@ -174,28 +174,29 @@ class WallDaylightPriorityTests(unittest.TestCase):
                               {'name': 'WallUpgradeVoucher2', 'price': 30}]
         return p
 
-    def test_stocked_watch_finishes_feasible_build_before_small_surplus_sale(self):
+    def test_stocked_watch_leaves_building_to_helper_and_collects_whole_order(self):
         p = self.watch_case()
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(wall_watch_id=1, sold_workers={1},
                      daytime_jobs={1: dict(kind='build', target=(33, 8), name='wall')})
-        # Even when selling is due, the funded watch retains its wall journey.
+        # A stale build job must not interrupt the dedicated shop journey.
         cfg.sell_batch = 9
         self.assertTrue(batch_sale_ready(t, cfg, mem, nav, ledger, t.workers[0]))
         locked, funds = prepare_watch(t, cfg, mem, nav, ledger, t.workers[0], ledger.wall_cells)
         self.assertTrue(locked)
-        self.assertEqual(funds, 0)
-        self.assertEqual(ledger.work_jobs[1]['kind'], 'build')
-        self.assertEqual(ledger.work_jobs[1]['target'], (33, 8))
-        self.assertNotIn(1, mem.sale_workers)
+        self.assertEqual(funds, 650)
+        self.assertEqual(ledger.work_jobs[1]['kind'], 'sell')
+        self.assertEqual(ledger.work_jobs[1]['target'], (20, 16))
+        self.assertIn(1, mem.sale_workers)
+        self.assertEqual(mem.wall_supply_trip['phase'], 'sell')
 
-    def test_stocked_watch_delivers_paid_v2_before_optional_sale(self):
+    def test_stocked_watch_finishes_remaining_shop_order_before_paid_delivery(self):
         p = self.watch_case(vouchers=['WallUpgradeVoucher2'] * 6)
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(wall_watch_id=1, sold_workers={1})
         prepare_watch(t, cfg, mem, nav, ledger, t.workers[0], ledger.wall_cells)
-        self.assertEqual(ledger.work_jobs[1]['kind'], 'use')
-        self.assertEqual(ledger.work_jobs[1]['name'], 'WallUpgradeVoucher2')
+        self.assertEqual(ledger.work_jobs[1]['kind'], 'buy')
+        self.assertEqual(ledger.work_jobs[1]['name'], 'WallUpgradeVoucher1')
         self.assertNotIn(1, mem.sale_workers)
 
     def test_watch_uses_adjacent_paid_v2_on_final_daylight_turn(self):
