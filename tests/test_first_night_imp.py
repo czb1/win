@@ -175,14 +175,62 @@ class FirstNightImpTests(unittest.TestCase):
         self.assertEqual(ledger.commands['14']['action'], 'move')
         self.assertEqual(ledger.notes[14]['reason'], 'imp_escape')
 
-    def test_daylight_later_nights_and_round_origin_keep_existing_sabotage(self):
+    def test_day55_recall_boundary_later_days_and_round_origin(self):
         for origin in (0, 1):
             agent = Agent(Config(llm_enabled=False, round_origin=origin))
-            for round_no in (66, 70, 129, 130, 200):
+            for round_no in (54, 55, 56, 66, 69, 70, 129, 130, 184, 185, 200):
                 data = base_case(round_no + origin, point=(11, 2))
                 action = agent.decide(data)['roleCommandMap']['14']
                 with self.subTest(origin=origin, round_no=round_no):
-                    self.assertEqual(action['action'], 'move' if round_no in (70, 129) else 'destroy')
+                    self.assertEqual(action['action'], 'move' if 55 <= round_no < 130 else 'destroy')
+
+    def test_day55_interrupts_almost_complete_destroy_without_walls(self):
+        data = base_case(54, point=(11, 2))
+        agent = Agent(Config(llm_enabled=False))
+        self.assertEqual(agent.decide(data)['roleCommandMap']['14']['action'], 'destroy')
+        mem = next(iter(agent.sessions.values()))
+        mem.sabotage.progress[14] = 2
+        data['roundNo'] = 55
+        data['lastRoundRoleActionResults'] = {'14': True}
+        action = agent.decide(data)['roleCommandMap']['14']
+        self.assertEqual(action['action'], 'move')
+        turn = Turn(data, agent.cfg)
+        self.assertLess(turn.base_distance(pos(action['targetPos'][0])),
+                        turn.base_distance(turn.imps[0].pos))
+        self.assertNotIn(14, mem.sabotage.targets)
+        self.assertNotIn(14, mem.sabotage.progress)
+
+    def test_day55_explicit_layout_without_gate_still_recalls(self):
+        turn, _, ledger, _, guard = prepare(base_case(55, point=(11, 2)),
+                                            layout_mode='explicit')
+        self.assertIsInstance(guard, FirstNightBaseGuard)
+        guard.finish()
+        self.assertEqual(ledger.commands['14']['action'], 'move')
+        self.assertLess(turn.base_distance(pos(ledger.commands['14']['targetPos'][0])),
+                        turn.base_distance(turn.imps[0].pos))
+        self.assertEqual(ledger.notes[14]['reason'], 'imp_first_day_base_return')
+
+    def test_day55_arrival_waits_through_night_despite_new_enemy_mine(self):
+        data = base_case(55, point=(8, 10))
+        agent = Agent(Config(llm_enabled=False))
+        action = agent.decide(data)['roleCommandMap']['14']
+        self.assertEqual(action, command('move', (7, 10)))
+        data['teamOur']['roles'][1]['pos'] = action['targetPos'][0]
+        data['mapInfo']['zones'].append(dict(neutralType='copper', pos=dict(x=13, y=3), remain=10))
+        self.assertTrue(Turn(data, agent.cfg).enemy_mine((13, 3)))
+        for round_no in (56, 69, 70, 71):
+            with self.subTest(round_no=round_no):
+                data['roundNo'] = round_no
+                self.assertNotIn('14', agent.decide(data)['roleCommandMap'])
+
+    def test_day55_blocked_return_retries_without_resuming_sabotage(self):
+        data = base_case(55, point=(11, 2))
+        data['teamOur']['roles'] += [unit(100+y, 'wall', 8, y) for y in range(15)]
+        agent = Agent(Config(llm_enabled=False))
+        self.assertNotIn('14', agent.decide(data)['roleCommandMap'])
+        data['roundNo'] = 56
+        data['teamOur']['roles'] = [u for u in data['teamOur']['roles'] if u['roleType'] != 'wall']
+        self.assertEqual(agent.decide(data)['roleCommandMap']['14']['action'], 'move')
 
     def test_dead_imp_or_base_does_not_activate_front_guard(self):
         for dead in (13, 14):

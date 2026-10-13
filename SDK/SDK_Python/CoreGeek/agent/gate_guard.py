@@ -7,6 +7,9 @@ from .projectiles import wall_gates
 from .sabotage import escape, exposed, threats, rear_waiting_posts
 
 
+FIRST_DAY_IMP_RETURN_TICK = 55
+
+
 class GateGuard:
     def __init__(self, turn, nav, ledger, hero, gate, inward, posts, state, catches=()):
         self.turn, self.nav, self.ledger = turn, nav, ledger
@@ -171,7 +174,7 @@ class GateGuard:
 
 
 class FirstNightBaseGuard(GateGuard):
-    """Use the existing legal post/traffic selection beside the base's front."""
+    """Return from day-one tick 55, then hold beside the base through night."""
 
     def __init__(self, turn, nav, ledger, hero, posts, catches):
         # Staging avoids catch reach but deliberately accepts robot damage.
@@ -188,29 +191,35 @@ class FirstNightBaseGuard(GateGuard):
                    if uid not in self.ledger.used
                    or self.ledger.commands.get(str(uid), {}).get('action') == 'move'}
         try:
-            # Night movement may cross unbuilt blueprints; actual buildings
+            # Return movement may cross unbuilt blueprints; actual buildings
             # still block, and a final post must leave every planned site free.
             route = self._stage(traffic, allow_unbuilt=True)
         except DeadlineExceeded:
             pass
         if route is not None and route[1] is not None:
             if self.ledger.add(self.hero.id, command('move', route[1])):
-                self.ledger.explain(self.hero.id, 'imp_first_night_base_return',
+                reason = ('imp_first_day_base_return' if self.turn.is_day
+                          else 'imp_first_night_base_return')
+                self.ledger.explain(self.hero.id, reason,
                                     post=self.state['post'], return_steps=route[0])
                 return
         self.ledger.used.add(self.hero.id)
         self.ledger.reserved.add(self.hero.pos)
-        self.ledger.explain(self.hero.id, 'imp_first_night_base_guard',
+        reason = ('imp_first_day_base_wait' if self.turn.is_day
+                  else 'imp_first_night_base_guard')
+        self.ledger.explain(self.hero.id, reason,
                             at_post=self.hero.pos in self.posts,
                             route_available=route is not None)
 
 
 def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
-    """Shield the base on night one; otherwise retain local-wave gate duty."""
+    """Recall at day-one tick 55 for night duty; later days keep gate duty."""
     if not turn.imps:
         return None
     hero = turn.imps[0]
-    if turn.day == 1 and not turn.is_day and turn.station:
+    if turn.day == 1 and turn.tick >= FIRST_DAY_IMP_RETURN_TICK and turn.station:
+        # The fixed recall takes priority even with unfinished walls or an
+        # almost-complete destroy channel, and lasts until the next morning.
         mem.sabotage.gate_states.pop(hero.id, None)
         mem.sabotage.targets.pop(hero.id, None)
         mem.sabotage.progress.pop(hero.id, None)
