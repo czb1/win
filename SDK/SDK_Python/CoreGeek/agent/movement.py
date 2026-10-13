@@ -2,10 +2,12 @@
 from collections import deque
 from dataclasses import dataclass, field
 from .model import WEAPONS, distance, pos
+from .vehicle import VehicleMemory
 
 
 @dataclass
 class MovementMemory:
+    vehicle: VehicleMemory = field(default_factory=VehicleMemory)
     failures: dict = field(default_factory=dict)
     failure_counts: dict = field(default_factory=dict)
     trails: dict = field(default_factory=dict)
@@ -18,6 +20,7 @@ class MovementMemory:
     driving_day: int = 0
 
     def observe(self, turn, mem):
+        self.vehicle.observe(turn, mem)
         self.looped.clear()
         if self.driving_day != turn.day:
             self.driving_disabled.clear()
@@ -45,10 +48,10 @@ class MovementMemory:
                 # loops within one destination task, without losing collisions.
                 self.trails.pop(hero.id, None)
             self.trail_jobs[hero.id] = job_key
-            target = pos(cmd["targetPos"][0])
+            target = pos(cmd["targetPos"][-1])
             if hero.pos != target:
                 origin = self.positions.get(hero.id, hero.pos)
-                if hero.kind == 'pioneer' and distance(origin, target) == 2:
+                if hero.kind == 'pioneer' and (len(cmd['targetPos']) == 2 or distance(origin, target) == 2):
                     # Repeatedly trying another two-cell landing can strand a
                     # driver. Finish this day's authorized trips one cell at a time.
                     self.driving_disabled.add(hero.id)
