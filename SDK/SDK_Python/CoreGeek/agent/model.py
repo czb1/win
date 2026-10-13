@@ -11,6 +11,8 @@ CHARACTERS = (*HEROES, "imp")
 ORES = ("stone", "iron", "copper")
 # Daily tick: recall operators and stop wall construction at the same time.
 DEFENCE_RETURN_TICK = 67
+# First-day task handoff; an already active task may finish after this tick.
+FIRST_DAY_PIONEER_SHOP_TICK = 51
 Pos = tuple[int, int]
 
 

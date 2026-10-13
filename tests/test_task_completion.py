@@ -439,22 +439,22 @@ print('repair done')
         self.assertFalse(prompt)
         self.assertFalse(cmd)
 
-    def test_agent_uses_fixed_defence_tick_as_task_deadline(self):
-        p = task_payload(64, 'query')
+    def test_later_day_agent_uses_fixed_defence_tick_as_task_deadline(self):
+        p = task_payload(194, 'query')
         p['teamOur']['roles'].append(unit(13, 'station', 3, 11))
         agent = Agent(Config(layout_mode='explicit', return_margin=5))
         response = agent.decide(p)
         context = json.loads(response['prompt'].split('上下文：\n', 1)[1])
         self.assertEqual(context['remainingRounds'], 3)
-        p.update(roundNo=65, llmResp='READ not_enough_time.md')
+        p.update(roundNo=195, llmResp='READ not_enough_time.md')
         self.assertFalse(agent.decide(p)['executeCmd'])
-        p.update(roundNo=66, llmResp='ANSWER\n42')
+        p.update(roundNo=196, llmResp='ANSWER\n42')
         self.assertEqual(agent.decide(p)['roleCommandMap']['11']['taskAnswer'], '42')
 
     def test_task_budget_uses_tick_67_independent_of_return_margin(self):
         for margin in (0, 5):
             with self.subTest(return_margin=margin):
-                p = task_payload(58, 'query')
+                p = task_payload(188, 'query')
                 p['teamOur']['roles'].append(unit(13, 'station', 3, 11))
                 response = Agent(Config(layout_mode='explicit', return_margin=margin)).decide(p)
                 context = json.loads(response['prompt'].split('上下文：\n', 1)[1])
