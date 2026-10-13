@@ -503,15 +503,18 @@ class ImpIntegrationTests(unittest.TestCase):
         data["teamOur"]["roles"] += [unit(10, "worker", 3, 26), unit(11, "pioneer", 9, 22),
                                        unit(12, "worker", 3, 25), unit(20, "rocket", 3, 27)]
         data["robot"]["roles"] = [unit(90, "smallRobot", 9, 27, targetTeam="challenger", attackRange=3)]
-        # This checks independent sabotage in an explicit layout with no gate.
-        # The default perimeter now recalls the imp to guard its sole opening.
+        # First-night shielding and later sabotage must both leave the crew's
+        # independent assignments intact, including an explicit layout.
         cfg = Config(llm_enabled=False, layout_mode='explicit', weapon_cells=[[3, 27]])
-        result = Agent(cfg).decide(data)["roleCommandMap"]
-        original = copy.deepcopy(data)
-        original["teamOur"]["roles"] = [r for r in original["teamOur"]["roles"] if r["roleType"] != "imp"]
-        baseline = Agent(cfg).decide(original)["roleCommandMap"]
-        self.assertEqual({uid: cmd for uid, cmd in result.items() if uid != "14"}, baseline)
-        self.assertEqual(result["14"]["action"], "destroy")
+        for round_no, expected in ((70, 'move'), (200, 'destroy')):
+            with self.subTest(round_no=round_no):
+                data['roundNo'] = round_no
+                result = Agent(cfg).decide(data)["roleCommandMap"]
+                original = copy.deepcopy(data)
+                original["teamOur"]["roles"] = [r for r in original["teamOur"]["roles"] if r["roleType"] != "imp"]
+                baseline = Agent(cfg).decide(original)["roleCommandMap"]
+                self.assertEqual({uid: cmd for uid, cmd in result.items() if uid != "14"}, baseline)
+                self.assertEqual(result["14"]["action"], expected)
 
 
 if __name__ == "__main__":
