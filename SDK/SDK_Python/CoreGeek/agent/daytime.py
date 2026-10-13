@@ -12,11 +12,69 @@ from .economy_plan import late_logistics_ready, late_economy_allowed
 LOG = logging.getLogger(__name__)
 
 
+def guard_station_with_pioneer(turn, mem, nav, ledger):
+    """Without guns, wait on a reachable rear neighbour ready to heal the base."""
+    hero, station = turn.pioneer, turn.station
+    if (not hero or not station or turn.weapons or hero.id in ledger.used
+            or turn.is_day and turn.phase_task):
+        return False
+    from .robot_assault import enemy_base
+    base = enemy_base(turn)
+    centre = (2 * station.pos[0] + 1, 2 * station.pos[1] - 1)
+    enemy = (2 * base.pos[0] + 1, 2 * base.pos[1] - 1) if base else (turn.width - 1, turn.height - 1)
+    direction = enemy[0] - centre[0], enemy[1] - centre[1]
+    threats = [r for r in turn.robots if turn.threatens_us(r)]
+
+    def risk(point):
+        return sum(r.power for r in threats if distance(point, r.pos) <= r.attack_range + 1)
+
+    danger = {(x, y) for r in threats
+              for x in range(max(0, r.pos[0] - r.attack_range - 1),
+                             min(turn.width, r.pos[0] + r.attack_range + 2))
+              for y in range(max(0, r.pos[1] - r.attack_range - 1),
+                             min(turn.height, r.pos[1] + r.attack_range + 2))}
+    reserved = ledger.reserved | set(ledger.operator_posts.values())
+    forbidden = reserved | ledger.tower_cells | ledger.wall_cells
+    posts = {p for cell in station.cells for p in neighbours(cell)
+             if turn.inside(p) and p not in station.cells and p not in forbidden}
+    options = []
+    for avoid in (danger, set()):
+        for post in sorted(posts - avoid):
+            route = nav.search(hero, {post}, reserved | avoid)
+            if route is None or risk(route[1] or hero.pos) > risk(hero.pos):
+                continue
+            clearance = min((distance(post, r.pos) - r.attack_range for r in threats), default=0)
+            facing = sum((2 * post[i] - centre[i]) * direction[i] for i in (0, 1))
+            options.append((risk(post), -clearance, facing, route[0], post, route))
+        if options:
+            break
+    mem.return_targets.pop(hero.id, None)
+    mem.return_posts.pop(hero.id, None)
+    if not options:
+        ledger.used.add(hero.id)
+        ledger.reserved.add(hero.pos)
+        ledger.explain(hero.id, 'pioneer_station_guard_blocked', station_health=station.health)
+        return True
+    _, _, _, _, post, route = min(options)
+    if route[1] is not None and not nav.move_along(
+            hero, ledger, route, {post}, reserved | danger, prefer_vehicle=False, max_rounds=route[0]):
+        return False
+    mem.pioneer_wait_post = post
+    ledger.used.add(hero.id)
+    if route[1] is None:
+        ledger.reserved.add(post)
+    ledger.explain(hero.id, 'pioneer_station_guard', post=post, route_steps=route[0],
+                   station_health=station.health, heal_below=500)
+    return True
+
+
 def park_idle_pioneer(turn, cfg, mem, nav, ledger, hero):
     """Wait outside the rear wall; a gate is a transit cell, never a parking spot."""
     if (not turn.is_day or turn.phase_task or not turn.station or hero.id in ledger.used
             or hero.id in mem.return_targets):
         return False
+    if not turn.weapons:
+        return guard_station_with_pioneer(turn, mem, nav, ledger)
     home, exact = return_destination(turn, nav, ledger, hero)
     if not home:
         return False
