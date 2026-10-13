@@ -411,6 +411,9 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                     else:
                         self.fail(cmd)
                 p["lastRoundRoleActionResults"] = {uid: True for uid in result}
-            self.assertEqual(used[:2], [("WallUpgradeVoucher1", 99), ("WallUpgradeVoucher2", 99)])
+            self.assertEqual(used, [("WallUpgradeVoucher1", 99), ("WallUpgradeVoucher2", 99)])
             self.assertEqual(p["teamOur"]["roles"][3]["level"], 3)
-            self.assertEqual(p["teamOur"]["roles"][0]["backpack"], [])
+            self.assertEqual(p["teamOur"]["roles"][1]["level"], 1)
+            self.assertEqual(p["teamOur"]["roles"][1]["health"], 1500)
+            self.assertCountEqual(p["teamOur"]["roles"][0]["backpack"],
+                                  ['StationUpgradeVoucher1', 'StationUpgradeVoucher2'])

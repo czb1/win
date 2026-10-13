@@ -6,7 +6,8 @@ from time import monotonic
 from .logging_system import turn_context, update_context, request_context, emit_event
 from . import diagnostics
 from .config import Config
-from .daytime import finish_daytime_work, park_idle_pioneer, yield_idle_worker_for_traffic
+from .daytime import (finish_daytime_work, park_idle_pioneer, yield_idle_worker_for_traffic,
+                      guard_station_with_pioneer)
 from .traffic import coordinate_traffic
 from .worker_jobs import resume_daytime_jobs, save_daytime_jobs
 from .model import Turn, distance, SUMMON_ORDERS, DEFENCE_RETURN_TICK, FIRST_DAY_PIONEER_SHOP_TICK
@@ -125,6 +126,7 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     excluded = set(excluded)
     pioneer_plan = first_day_pioneer_plan_active(turn, mem)
     pioneer_summoning = (pioneer_plan and mem.first_day_pioneer.get('phase') == 'robots'
+                         and not mem.first_day_pioneer.get('pending_buy')
                          and not turn.phase_task)
     if turn.pioneer and (turn.phase_task or (treasure_active(turn, mem) and not pioneer_summoning)):
         excluded.add(turn.pioneer.id)
@@ -615,6 +617,8 @@ class Agent:
             if turn.is_day:
                 ledger.daytime_gunner_post = mem.gunner_post if shared is not None else None
             prepare_first_day_pioneer(turn, self.cfg, mem, nav, ledger)
+            if not turn.is_day:
+                guard_station_with_pioneer(turn, mem, nav, ledger)
             returning = set()
             for hero, tower in pairs:
                 if (hero.kind == 'pioneer'
@@ -786,7 +790,8 @@ class Agent:
                         pioneer(turn, self.cfg, mem, nav, ledger, h, shopping=turn.day > 1)
                         if h.id not in ledger.used:
                             from .vehicle import take_idle_vehicle
-                            if not take_idle_vehicle(turn, self.cfg, mem, nav, ledger, h):
+                            if (not guard_station_with_pioneer(turn, mem, nav, ledger)
+                                    and not take_idle_vehicle(turn, self.cfg, mem, nav, ledger, h)):
                                 park_idle_pioneer(turn, self.cfg, mem, nav, ledger, h)
                 yield_idle_worker_for_traffic(turn, mem, nav, ledger, returning)
                 finish_daytime_work(turn, self.cfg, mem, nav, ledger, returning)

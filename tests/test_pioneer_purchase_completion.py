@@ -44,7 +44,7 @@ class PioneerPurchaseCompletionTests(unittest.TestCase):
         self.assertEqual(ledger.commands['2'], command('buy', name=BASE, num=1))
         self.assertEqual(mem.first_day_pioneer['phase'], 'shop')
 
-    def test_tight_daylight_uses_robots_before_delivering_base_voucher(self):
+    def test_tight_daylight_uses_robots_while_reserving_base_voucher(self):
         data = self.data(round_no=66)
         data['teamOur']['roles'][2]['backpack'] = [BASE] + [BOSS] * 3
         mem = Memory(first_day_pioneer=self.state('station'))
@@ -135,7 +135,7 @@ class PioneerPurchaseCompletionTests(unittest.TestCase):
         agent.decide(copy.deepcopy(data))
         self.assertEqual(mem.first_day_pioneer['phase'], 'return')
 
-    def test_pending_base_delivery_yields_at_night_and_resumes_next_day(self):
+    def test_legacy_base_delivery_yields_at_night_then_returns_with_voucher(self):
         data = self.data(round_no=70)
         data['teamOur']['roles'][2]['backpack'] = [BASE]
         mem = Memory(first_day_pioneer=self.state('station', robots_done=True))
@@ -148,11 +148,7 @@ class PioneerPurchaseCompletionTests(unittest.TestCase):
         data['roundNo'] = 130
         data['teamOur']['roles'][2]['pos'] = {'x': 5, 'y': 10}
         _, _, ledger = self.prepare(data, mem)
-        self.assertEqual(ledger.commands['2'], command('use', (4, 10), name=BASE))
-        data['roundNo'] = 131
-        data['teamOur']['roles'][0].update(level=2, health=3000)
-        data['teamOur']['roles'][2]['backpack'] = []
-        self.prepare(data, mem)
+        self.assertFalse(any(c['action'] == 'use' and c.get('name') == BASE for c in ledger.commands.values()))
         self.assertEqual(mem.first_day_pioneer['phase'], 'return')
         self.assertIn(2, mem.return_targets)
 
