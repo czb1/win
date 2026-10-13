@@ -6,8 +6,8 @@ FIRST_DAY_ROBOT_PURCHASE_LIMIT = 3
 
 
 def first_day_pioneer_work_pending(turn, mem):
-    """Paid or started opening work owns the pioneer until every order is used."""
-    return bool(turn.pioneer and mem.first_day_pioneer.get('phase') in
+    """Opening work owns daylight actions; unfinished orders yield to night guns."""
+    return bool(turn.is_day and turn.pioneer and mem.first_day_pioneer.get('phase') in
                 ('shop', 'station', 'robots'))
 
 
@@ -120,7 +120,7 @@ def prepare_station_reserve(turn, cfg, mem, nav, ledger):
 
 
 def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
-    """Persist through shopping and actual uses; only then release the recall."""
+    """Continue opening work in daylight, preserving it during night recall."""
     if (not first_day_pioneer_plan_active(turn, mem) or turn.phase_task
             or not (mem.first_day_pioneer or first_day_tasks_finished(turn)
                     or turn.tick >= FIRST_DAY_PIONEER_SHOP_TICK)):

@@ -1,4 +1,4 @@
-"""Purchase and deployment must finish before the opening pioneer recalls."""
+"""Opening purchases persist in daylight and yield to night defense."""
 import copy
 import unittest
 from unittest.mock import patch
@@ -123,36 +123,85 @@ class PioneerPurchaseCompletionTests(unittest.TestCase):
         mem.first_day_pioneer = self.state('robots')
         data.update(roundNo=70, lastRoundRoleActionResults={'2': False})
         response = agent.decide(copy.deepcopy(data))['roleCommandMap']
-        self.assertNotIn('2', response)
+        self.assertEqual(response['2']['action'], 'move')
         self.assertEqual(mem.first_day_pioneer['phase'], 'robots')
-        self.assertNotIn(2, mem.return_targets)
+        self.assertIn(2, mem.return_targets)
         data['roundNo'] = 130
         response = agent.decide(copy.deepcopy(data))['roleCommandMap']
         self.assertEqual((response['2']['action'], response['2']['name']), ('use', BOSS))
+        self.assertNotIn(2, mem.return_targets)
         data.update(roundNo=131, lastRoundRoleActionResults={'2': True})
         data['teamOur']['roles'][2]['backpack'] = []
         agent.decide(copy.deepcopy(data))
         self.assertEqual(mem.first_day_pioneer['phase'], 'return')
 
-    def test_base_delivery_can_cross_night_after_robot_use(self):
+    def test_pending_base_delivery_yields_at_night_and_resumes_next_day(self):
         data = self.data(round_no=70)
         data['teamOur']['roles'][2]['backpack'] = [BASE]
         mem = Memory(first_day_pioneer=self.state('station', robots_done=True))
         accepted, _, ledger = self.prepare(data, mem)
-        self.assertTrue(accepted)
-        self.assertEqual(ledger.commands['2']['action'], 'move')
+        self.assertFalse(accepted)
+        self.assertFalse(ledger.commands)
+        self.assertNotIn(2, ledger.used)
         self.assertEqual(mem.first_day_pioneer['phase'], 'station')
         self.assertNotIn(2, mem.return_targets)
-        data['roundNo'] = 71
+        data['roundNo'] = 130
         data['teamOur']['roles'][2]['pos'] = {'x': 5, 'y': 10}
         _, _, ledger = self.prepare(data, mem)
         self.assertEqual(ledger.commands['2'], command('use', (4, 10), name=BASE))
-        data['roundNo'] = 72
+        data['roundNo'] = 131
         data['teamOur']['roles'][0].update(level=2, health=3000)
         data['teamOur']['roles'][2]['backpack'] = []
         self.prepare(data, mem)
         self.assertEqual(mem.first_day_pioneer['phase'], 'return')
         self.assertIn(2, mem.return_targets)
+
+    def test_unfinished_opening_stages_return_and_fire_with_orders_at_night(self):
+        for phase, backpack in (('shop', []), ('station', [BASE, BOSS]), ('robots', [BOSS])):
+            with self.subTest(phase=phase):
+                data = self.data(round_no=69)
+                _, cfg, _, _ = fortified_case(data)
+                cfg.loadout = ['rocket'] * 3
+                for role in data['teamOur']['roles']:
+                    if role['roleType'] == 'gatling':
+                        role['roleType'] = 'rocket'
+                agent = Agent(cfg)
+                agent.decide(copy.deepcopy(data))
+                mem = next(iter(agent.sessions.values()))
+                mem.first_day_pioneer = self.state(phase)
+                data['teamOur']['roles'][2]['backpack'] = backpack
+                if phase == 'robots':
+                    mem.robot_summon_state['count'] = 10
+                data['roundNo'] = 70
+                response = agent.decide(copy.deepcopy(data))['roleCommandMap']
+                self.assertEqual(response['2']['action'], 'move')
+                self.assertIn(2, mem.return_targets)
+                self.assertEqual(mem.first_day_pioneer['phase'], phase)
+                data['teamOur']['roles'][2]['pos'] = dict(zip(('x', 'y'), mem.gunner_post))
+                data['roundNo'] = 71
+                data['robot']['roles'] = [unit(90, 'smallRobot', 7, 8, targetTeam='challenger')]
+                response = agent.decide(copy.deepcopy(data))['roleCommandMap']
+                self.assertTrue(any(c['action'] == 'attack' and c['controllerId'] == '2'
+                                    for c in response.values()))
+                self.assertEqual(mem.first_day_pioneer['phase'], phase)
+
+    def test_carried_orders_release_the_pioneer_every_night_without_losing_work(self):
+        for round_no in (69, 70, 129, 130, 199, 200, 259, 260):
+            with self.subTest(round_no=round_no):
+                data = self.data(round_no=round_no)
+                data['teamOur']['roles'][0].update(level=3, health=4500)
+                data['teamOur']['roles'][2]['backpack'] = [BOSS]
+                mem = Memory(first_day_pioneer=self.state('robots', robot_purchased=3))
+                accepted, turn, ledger = self.prepare(data, mem)
+                self.assertEqual(accepted, turn.is_day)
+                self.assertEqual(2 in ledger.used, turn.is_day)
+                self.assertEqual(mem.first_day_pioneer['phase'], 'robots')
+                self.assertEqual(mem.first_day_pioneer['robot_purchased'], 3)
+                if turn.is_day:
+                    self.assertEqual((ledger.commands['2']['action'], ledger.commands['2']['name']),
+                                     ('use', BOSS))
+                else:
+                    self.assertFalse(ledger.commands)
 
 
 class DrivingFailureFallbackTests(unittest.TestCase):
