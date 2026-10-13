@@ -216,7 +216,7 @@ task_result(sum(value['records']))'''
         mem = Memory(task_text='query', bootstrap_done=True)
         for rounds, actions in [(2, ['ANSWER']), (3, ['ANSWER', 'PYTHON']),
                                (5, ['ANSWER', 'PYTHON', 'READ', 'LIST'])]:
-            context = json.loads(render_prompt(mem, rounds, [], []).split('上下文：\n')[1])
+            context = json.loads(render_prompt(mem, rounds, []).split('上下文：\n')[1])
             self.assertEqual(context['allowedActions'], actions)
         mem.task_started = 1
         mem.task_timeout = 3
@@ -266,7 +266,7 @@ task_result(sum(value['records']))'''
         mem.exploration.append({'status': 'failed', 'python': 'old code', 'sandbox': 'specific old error'})
         mem.exploration.append({'status': 'ok', 'python': 'new code', 'sandbox': 'new result'})
         mem.last_attempt = dict(mem.exploration[-1])
-        prompt = render_prompt(mem, 8, [], [])
+        prompt = render_prompt(mem, 8, [])
         self.assertIn('specific old error', prompt)
         self.assertIn('old code', prompt)
         self.assertEqual(prompt.count('new code'), 1)
@@ -275,7 +275,7 @@ task_result(sum(value['records']))'''
 
     def test_truncated_document_exposes_exact_reread_origin(self):
         mem = Memory(task_text='query', documents=[{'path': '/large.md', 'start': 6000, 'output': 'x'*24000}])
-        context = json.loads(render_prompt(mem, 8, [], []).split('上下文：\n')[1])
+        context = json.loads(render_prompt(mem, 8, []).split('上下文：\n')[1])
         self.assertTrue(context['documents'][0]['truncated'])
         self.assertEqual(context['documents'][0]['reread'], {'path': '/large.md', 'start': 6000})
 
@@ -283,7 +283,7 @@ task_result(sum(value['records']))'''
         mem = Memory(task_text='query')
         mem.exploration.append({'status':'failed','python':'failing complete program','sandbox':'ValueError: original'})
         mem.last_attempt = {'tool':'read','status':'ok','sandbox':'supplement'}
-        context=json.loads(render_prompt(mem,8,[],[]).split('上下文：\n')[1])
+        context=json.loads(render_prompt(mem,8,[]).split('上下文：\n')[1])
         self.assertEqual(context['lastAttempt']['python'],'failing complete program')
         self.assertEqual(context['lastToolResult']['sandbox'],'supplement')
 

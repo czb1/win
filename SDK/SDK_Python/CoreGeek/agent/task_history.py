@@ -157,3 +157,37 @@ def solution_hints(mem, referenced):
             result.append({'id': item['id'], 'source': item.get('source'),
                            'omitted': '历史方法超过上下文预算；先补读被引用题面，不使用残缺程序。'})
     return result
+
+
+
+def completed_record(mem):
+    """Immutable submission snapshot; no redaction, clipping or method extraction."""
+    from copy import deepcopy
+    task_type = mem.task_descriptor.get('taskType')
+    if not task_type:
+        return None
+    return {'taskType': task_type, 'question': mem.task_text,
+            'documents': deepcopy(mem.task_sources),
+            'python': mem.answer_python, 'answer': mem.answer,
+            'evidence': 'legal_submission_then_task_disappeared'}
+
+
+def previous_tasks(mem):
+    """Only this type, in completion order, without a count/character budget."""
+    return mem.completed_tasks.get(mem.task_descriptor.get('taskType'), [])
+
+
+def source_snapshot(output):
+    """Unpack the full source emitted by our discovery tool, separately from preview."""
+    import json
+    marker = '\nTASK_SOURCE '
+    head, found, tail = output.rpartition(marker)
+    if not found:
+        return output, None
+    try:
+        value = json.loads(tail)
+    except (ValueError, TypeError):
+        return output, None
+    if not isinstance(value, dict) or not isinstance(value.get('path'), str) or not isinstance(value.get('text'), str):
+        return output, None
+    return head, value

@@ -17,7 +17,7 @@ from agent.economy import pioneer
 from agent.intelligence import Intelligence, Memory, parse_task_reply
 from agent.model import Turn
 from agent.task_sop import answer_contract, answer_error, engineering_code
-from agent.task_tools import document_code, document_path
+from agent.task_tools import task_document_code, document_code, document_path
 from agent.task_skills import learned_method
 from agent.task_schedule import task_descriptor, task_signature
 
@@ -161,7 +161,8 @@ class TaskCompletionTests(unittest.TestCase):
         mem.bootstrap_done = True
         t, cfg, _, ledger = setup_case(p)
         prompt, _ = Intelligence(t, cfg, mem).task(ledger)
-        self.assertIn('Bearer', prompt)
+        self.assertNotIn('Bearer', prompt)  # Legacy method metadata is not raw completed-task history.
+        self.assertIn('previousTasks', prompt)
         self.assertNotIn('API_SCHEMA', prompt)
         self.assertIn('必须重新查询', prompt)
 
@@ -173,7 +174,7 @@ class TaskCompletionTests(unittest.TestCase):
                 self.assertIsNotNone(path)
                 response = Agent(Config(layout_mode='explicit')).decide(task_payload(2, question))
                 self.assertFalse(response['prompt'])
-                self.assertEqual(shlex.split(response['executeCmd'])[-1], document_code(path))
+                self.assertEqual(shlex.split(response['executeCmd'])[-1], task_document_code(path))
         self.assertIsNone(document_path('请阅读https://example.com/spec.md'))
         self.assertIsNone(document_path('请阅读../old/spec.md'))
         self.assertEqual(parse_task_reply('读取文件：READ task_1_alpha.md'),

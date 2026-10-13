@@ -7,7 +7,7 @@ LIST 路径：查看目录。
 PYTHON：第一行写 PYTHON，随后写完整可执行 Python3 程序，不用 JSON 转义。
 ANSWER：第一行写 ANSWER，随后直接写题目要求的答案，不添加包装。
 程序在官方沙盒执行，最多15秒，结果下一回合返回；每次切换到 taskDirectory，不保留上一轮 Python 变量。算出答案时调用 task_result(value)，框架负责序列化；探索结果正常打印。
-当前题面明确更新的要求优先；沿用的规则查 referencedTasks。历史题面和程序只是参考，旧参数、路径、凭据和答案不能照搬，必须重新查询并适配当前输入。
+当前题面明确更新的要求优先；沿用的规则查 previousTasks。历史题面和程序只是参考，旧参数、路径、凭据和答案不能照搬，必须重新查询并适配当前输入。
 只用题面或实际观测到的路径、接口和字段。已读文档无需重复读；预览和截断内容不等于完整输入，按需要补读。相关文件可以一次处理，避免逐文件往返。
 过滤、排序、分组、边界、舍入与并列规则按题目确定，不自创固定映射、数量上限或次级排序。用程序核对全量相关数据，输出必要的数量和关键对照证据。
 请求 API 按文档和真实响应核对分页与完整性，能一次取全就一次，否则在程序内分页；不猜参数，失败不等于空数据。退出码0不证明业务正确。
@@ -24,7 +24,7 @@ def clipped(text, budget):
     return text[:budget * 3 // 4] + '\n[TRUNCATED: 原文未全部展示，按源路径补读]\n' + text[-budget // 4:]
 
 
-def render_prompt(mem, remaining, referenced, methods):
+def render_prompt(mem, remaining, previous_tasks):
     actions = ['ANSWER']
     if remaining >= 3:
         actions += ['PYTHON']
@@ -75,7 +75,7 @@ def render_prompt(mem, remaining, referenced, methods):
             'command': contract.get('checker_command'),
             'execution': '明确的 checker 在每次成功 PYTHON 后自动运行，和代码共用15秒预算。'},
         'taskDirectory': mem.task_directory(), 'inputPreview': mem.inputs,
-        'referencedTasks': referenced, 'previousSolutions': methods,
+        'previousTasks': previous_tasks,
         'exploration': list(reversed(previous)),
         'historyTruncated': len(mem.exploration) > len(previous) + 1,
     }

@@ -78,7 +78,9 @@ class SkillTests(unittest.TestCase):
             mem.contract = deepcopy(CONTRACT)
             mem.pending = None
             prompt, _, _ = step(mem, 6, 'query second city')
-            self.assertIn(learned['id'], prompt)
+            self.assertNotIn(learned['id'], prompt)  # Prompt now carries the actual prior program and answer.
+            self.assertIn('previousTasks', prompt)
+            self.assertIn('query first city', prompt)
             p = task_payload(7, 'query second city')
             p['llmResp'] = json.dumps({'use_skill': learned['id'],
                                       'inputs': {'source': str(second), 'city': '上海'}}, ensure_ascii=False)

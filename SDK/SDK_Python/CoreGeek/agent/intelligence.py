@@ -15,7 +15,8 @@ from .model import ORES, pos
 from .recovery import Recovery
 from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status, merge_material_plan, resolve_location, retry_allowed
 from .wall_watch_state import WallWatchState
-from .task_history import remember, references, solution_record, solution_hints
+from .task_history import remember, references, solution_record, completed_record, previous_tasks, source_snapshot
+from .task_tools import task_document_code
 from .task_prompt import render_prompt
 from .task_schedule import task_descriptor, task_signature
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
@@ -333,6 +334,9 @@ class Memory:
     task_wait_cell: tuple | None = None
     knowledge: list = field(default_factory=list)
     task_archive: dict = field(default_factory=dict)
+    completed_tasks: dict = field(default_factory=dict)
+    task_sources: list = field(default_factory=list)
+    submitted_task: dict | None = None
     submission_feedback: str = ""
     stop_reason: str = ""
     history: deque = field(default_factory=lambda: deque(maxlen=6))
@@ -495,6 +499,10 @@ class Memory:
                         for task in turn.tasks if pos(task["taskPosition"]) == self.task_point
                         for p in turn.task_cells(task))
                 and turn.round - self.task_started < self.task_timeout)
+        if completed and self.submitted_task:
+            record = self.submitted_task
+            self.completed_tasks.setdefault(record['taskType'], []).append(record)
+            self.submitted_task = None
         if completed and self.submitted_method:
             self.submitted_method["rounds"] = turn.round - self.task_started
             promote(self.skills, self.submitted_method)
@@ -622,6 +630,8 @@ class Memory:
             self.bootstrap_done = False
             self.last_attempt.clear()
             self.documents.clear()
+            self.task_sources.clear()
+            self.submitted_task = None
             self.recipe_candidate = self.submitted_method = None
             self.active_skill = None
             self.method_calls.clear()
@@ -688,12 +698,17 @@ class Memory:
             raw = turn.raw.get("lastCmdResult") or ""
             tool = self.running_tool or {}
             if tool.get('kind') == 'read':
-                refs, _ = references(self.documents, self.task_archive)
+                refs, _ = references(self.documents, self.current_task_archive())
                 target = str(PurePosixPath(self.task_directory() or '.') / tool.get('path', ''))
                 if target in {r.get('source') for r in refs}:
                     tool = self.running_tool = {**tool, 'kind': 'reference'}
             result, report = runtime_result(raw) if not tool else (raw, {})
+            snapshot = None
+            if tool.get('kind') == 'discover':
+                result, snapshot = source_snapshot(result)
             status, body, answer = sandbox_result(result)
+            if status == 'ok' and snapshot is not None:
+                self.task_sources = [d for d in self.task_sources if d['path'] != snapshot['path']] + [snapshot]
             if report.get('http_errors'):
                 status, answer = 'query_failed', None
             if not tool:
@@ -703,11 +718,12 @@ class Memory:
                     self.query_blocked = False
                 self.input_blocked = status != 'ok'
                 self.supported_output = self.supported_python = ''
-            self.cmd_result = excerpt(str(raw), 12000)
+            observation = result if snapshot is not None else raw
+            self.cmd_result = excerpt(str(observation), 12000)
             self.history.append({'sandbox': self.cmd_result})
             self.last_attempt = {'python': self.running_python if not tool else '',
-                                 'sandbox': excerpt(str(raw), 16000), 'status': status,
-                                 'runtimeError': tail_excerpt(raw, 2000) if status != 'ok' else '',
+                                 'sandbox': excerpt(str(observation), 16000), 'status': status,
+                                 'runtimeError': tail_excerpt(observation, 2000) if status != 'ok' else '',
                                  'tool': tool.get('kind', 'python')}
             if report:
                 for call in report.get('http_calls', []):
@@ -738,7 +754,7 @@ class Memory:
                              tool=tool.get('kind', 'python'), code_sha=digest_text(self.running_python))
             if status == 'ok':
                 if tool.get('kind') == 'reference':
-                    remember(self.task_archive, {**tool, 'output': body,
+                    remember(self.current_task_archive(), {**tool, 'output': body,
                              'resolved_path': resolved_document(body) or tool['path']})
                 elif tool.get('kind') in ('discover', 'read', 'list'):
                     self.inputs = input_context(body) or self.inputs
@@ -746,7 +762,7 @@ class Memory:
                     resolved = resolved_document(body) if tool.get('kind') != 'list' else None
                     if resolved:
                         record['resolved_path'] = resolved
-                    remember(self.task_archive, {**record, 'output': body})
+                    remember(self.current_task_archive(), {**record, 'output': body})
                     pages = [d for d in self.documents if (d.get('path'), d.get('start')) !=
                              (record.get('path'), record.get('start'))]
                     self.documents = pages + [record]
@@ -1042,6 +1058,10 @@ class Memory:
                 return str(PurePosixPath(document["resolved_path"]).parent)
         return None
 
+    def current_task_archive(self):
+        task_type = self.task_descriptor.get('taskType')
+        return self.task_archive.setdefault(task_type, {}) if task_type else {}
+
     def task_directory(self):
         if self.contract.get("workspace"):
             return self.contract["workspace"]
@@ -1088,6 +1108,7 @@ class Intelligence:
                              in ('engineering', 'check', 'transform') else "model",
                              remaining=self.mem.remaining(self.turn, self.cfg))
             # Save the actual program with its source question; no model-authored Skill needed.
+            self.mem.submitted_task = completed_record(self.mem)
             self.mem.submitted_method = solution_record(self.mem) if self.mem.answer_python else None
             self.mem.submitted = (self.turn.round, self.mem.answer)
             self.mem.submitted_python = self.mem.answer_python
@@ -1125,9 +1146,9 @@ class Intelligence:
             self.mem.bootstrap_done = True
             path = document_path(self.turn.phase_task)
             if path and remaining >= 5:
-                self.mem.python = document_code(path)
+                self.mem.python = task_document_code(path)
                 self.mem.running_tool = {'kind': 'discover', 'path': path, 'start': 0}
-        referenced, missing = references(self.mem.documents, self.mem.task_archive)
+        referenced, missing = references(self.mem.documents, self.mem.current_task_archive())
         if self.mem.documents and self.mem.python is None and self.mem.pending is None and remaining >= 5:
             paths = missing + document_paths(self.mem.documents[0].get('output', '')) + reference_paths(self.mem.documents, self.mem.knowledge, self.mem.task_point)
             read_paths = {p for d in self.mem.documents for p in (d.get('resolved_path'), d.get('path')) if p}
@@ -1151,7 +1172,10 @@ class Intelligence:
             return '', ''
         if remaining <= 2 and (self.mem.contract.get('requires_checker') or self.mem.contract.get('kind') == 'check_token' or self.mem.input_blocked or self.mem.query_blocked):
             return self.budget_wait(remaining, 3, 'insufficient_rounds_for_model_execute_submit')
-        prompt = render_prompt(self.mem, remaining, referenced, solution_hints(self.mem, referenced))
+        history = previous_tasks(self.mem)
+        prompt = render_prompt(self.mem, remaining, history)
+        LOG.info("task_history type=%s count=%s chars=%s", self.mem.task_descriptor.get("taskType"),
+                 len(history), len(json.dumps(history, ensure_ascii=False)))
         LOG.info('round=%s task_request remaining=%s prompt_chars=%s prompt_sha=%s',
                  self.turn.round, remaining, len(prompt), digest_text(prompt))
         return self.request('task', prompt), ''

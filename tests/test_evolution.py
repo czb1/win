@@ -144,7 +144,7 @@ class EvolutionTests(unittest.TestCase):
         agent.decide(p)
         p.update(roundNo=37, phaseTask="读取 weather.json，返回上海温度的整数。")
         response = agent.decide(p)
-        self.assertIn("previousSolutions", response["prompt"])
+        self.assertIn("previousTasks", response["prompt"])
         self.assertIn("weather.json", response["prompt"])
         self.assertIn("legal_submission_then_task_disappeared", response["prompt"])
         self.assertNotIn("11", response["roleCommandMap"])
