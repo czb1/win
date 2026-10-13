@@ -29,7 +29,8 @@ from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_positio
 from .spending import (first_day_guns_built, first_day_purchase_reserve, plan_day_spending, robot_purchase_plan,
                        prepare_paid_upgrades, prepare_defense_purchase, FIRST_DAY_ROBOT_PURCHASE_LIMIT,
                        heal_station_with_pioneer, prepare_station_reserve,
-                       first_day_pioneer_plan_active, prepare_first_day_pioneer)
+                       first_day_pioneer_plan_active, first_day_pioneer_work_pending,
+                       prepare_first_day_pioneer)
 from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scout,
                        yield_wall_entry)
 from .task_schedule import task_options
@@ -121,7 +122,7 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     ledger.summon_daily_count = state["count"]
     ledger.robot_summon_anchor = state["anchor"] if turn.day == 1 else None
     excluded = set(excluded)
-    pioneer_plan = first_day_pioneer_plan_active(turn)
+    pioneer_plan = first_day_pioneer_plan_active(turn, mem)
     pioneer_summoning = (pioneer_plan and mem.first_day_pioneer.get('phase') == 'robots'
                          and not turn.phase_task)
     if turn.pioneer and (turn.phase_task or (treasure_active(turn, mem) and not pioneer_summoning)):
@@ -609,9 +610,14 @@ class Agent:
                     ledger.weapon_diagnostics[weapon.id] = current.copy()
             if turn.is_day:
                 ledger.daytime_gunner_post = mem.gunner_post if shared is not None else None
-                prepare_first_day_pioneer(turn, self.cfg, mem, nav, ledger)
+            prepare_first_day_pioneer(turn, self.cfg, mem, nav, ledger)
             returning = set()
             for hero, tower in pairs:
+                if (hero.kind == 'pioneer'
+                        and first_day_pioneer_work_pending(turn, mem)):
+                    mem.return_targets.pop(hero.id, None)
+                    mem.return_posts.pop(hero.id, None)
+                    continue
                 route = (nav.search(hero, {posts[hero.id][0]}, ledger.reserved) if hero.id in posts
                          else nav.approach(hero, [tower.pos], ledger.reserved))
                 # Include today's congestion, not only the route with teammates

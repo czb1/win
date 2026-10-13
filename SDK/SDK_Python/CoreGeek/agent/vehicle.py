@@ -22,7 +22,8 @@ def faster_route(nav, ledger, hero, goals, walking, reserved=()):
     """Return a strictly faster route, or None; never select a business goal."""
     turn = nav.turn
     if (hero.kind != 'pioneer' or not turn.is_day or not walking or walking[1] is None
-            or hero.id in ledger.used):
+            or hero.id in ledger.used
+            or (nav.memory and hero.id in getattr(nav.memory, 'driving_disabled', ()))):
         return None
     driving = hero.is_driving and hero.pos in turn.vehicle_cells
     cars = turn.free_vehicle_cells
