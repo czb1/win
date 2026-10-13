@@ -34,6 +34,7 @@ class Ledger:
         self.summon_pending_positions = set()
         self.summon_daily_count = 0
         self.robot_assault_entry = None
+        self.robot_firing_lanes = {}
         self.robot_summon_anchor = None
         self.robot_summon_mode = None
         self.first_day_offense_worker_id = None
