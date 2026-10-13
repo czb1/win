@@ -283,6 +283,13 @@ def voucher_for(building):
     return f"{prefix}UpgradeVoucher{building.level}" if prefix and building.level < 3 else None
 
 
+def first_day_scout_upgrades(turn, mem, hero):
+    """Only the recalled opening scout may spend day-one weapon vouchers."""
+    return bool(mem and turn.day == 1 and turn.is_day and mem.night_scout.cancelled
+                and hero.kind == 'worker' and mem.first_day_offense.get('worker_id') == hero.id
+                and mem.first_day_offense.get('phase') in ('upgrade_buy', 'upgrade_use'))
+
+
 def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
                   target_only=None, name_only=None, urgent_only=False, upgrades_only=False,
                   target_sites=None):
@@ -305,7 +312,8 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
             continue
         if building.kind == 'station' and not station_heal:
             continue
-        if turn.day == 1 and building.kind in WEAPONS:
+        if (turn.day == 1 and building.kind in WEAPONS
+                and not first_day_scout_upgrades(turn, mem, hero)):
             continue
         if target_only is not None and building.pos != target_only:
             continue
@@ -396,11 +404,13 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     emptied by the worker before buying, and duplicate walking buyers reserve
     both their item and the shared gold for this decision.
     """
-    # Opening money funds the base heal, then three BOSS orders, then guns.
+    opening_upgrades = first_day_scout_upgrades(turn, mem, hero)
+    # The recalled scout can replace the cancelled robot trip with gun upgrades.
     if turn.day == 1:
         from .spending import first_day_purchase_reserve
         reserve = max(reserve, first_day_purchase_reserve(turn, mem, ledger))
-        if item_only and item_only != 'Medicine':
+        if (item_only and item_only != 'Medicine'
+                and not (opening_upgrades and item_only.startswith('WeaponUpgradeVoucher'))):
             ledger.supply_reports.setdefault(hero.id, {'reasons': []})['reasons'].append(
                 {'reason': 'first_day_boss_priority'})
             return None
@@ -427,12 +437,14 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     wounded = hero.health <= (165 if hero.kind == "worker" else 150)
     if not hero.inventory["Medicine"] and wounded:
         candidates.append(((-2 if hero.health <= 110 else -.5,), "Medicine", hero.cells))
-    if not urgent_only and turn.day > 1:
+    if not urgent_only and (turn.day > 1 or opening_upgrades):
         carried = Counter(item for h in turn.heroes for item in h.backpack)
         own_carried = hero.inventory.copy()
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
         first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
         for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
+            if opening_upgrades and building.kind not in WEAPONS:
+                continue
             if (building.kind == 'station' and hero.kind != 'pioneer'
                     or dedicated and building.kind == 'wall'):
                 continue
@@ -577,7 +589,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                     # the assigned post before night.  The other preparation
                     # purchases keep their established, lighter estimate
                     # until dusk so opening construction is not delayed.
-                    strict_delivery = name.startswith("WallUpgradeVoucher") or name == "WallFixer" or dusk
+                    strict_delivery = (opening_upgrades or name.startswith("WallUpgradeVoucher")
+                                       or name == "WallFixer" or dusk)
                     for num in range(count, 0, -1):
                         targets = prerequisites + matches[:num] if name.startswith("WallUpgradeVoucher") else matches[:num]
                         delivery_walk = (delivery_trip(turn, nav, ledger, hero, cell, targets)
