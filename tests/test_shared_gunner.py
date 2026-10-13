@@ -172,11 +172,17 @@ class SharedGunnerTests(unittest.TestCase):
         self.assertTrue(any(c.get('controllerId') == '2' for c in commands.values()))
         self.assertEqual(next(iter(agent.sessions.values())).gunner_id, 2)
 
-    def test_pioneer_keeps_post_before_first_night(self):
-        p = self.case(67)
+    def test_pioneer_keeps_post_before_first_night_after_opening_orders_finish(self):
+        p = self.case(66)
         p['teamOur']['roles'][1]['pos'] = {'x': 2, 'y': 11}
         p['teamOur']['roles'].append(unit(3, 'pioneer', 4, 11))
         agent = Agent(Config(llm_enabled=False))
+        agent.decide(p)
+        mem = next(iter(agent.sessions.values()))
+        # This is a completed-procurement gunner scenario. An unfinished
+        # shopping chain must instead own the pioneer past the recall cutoff.
+        mem.first_day_pioneer = dict(phase='return', station_item=None,
+                                     pending_buy=None, robot_purchased=3, robots_done=True)
         for round_no in (67, 68, 69, 70):
             p['roundNo'] = round_no
             commands = agent.decide(p)['roleCommandMap']

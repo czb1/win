@@ -370,15 +370,18 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
         self.assertFalse(any(c['action'] == 'use' and c.get('name') == BASE
                              for c in ledger.commands.values()))
 
-    def test_short_daylight_cannot_start_a_shop_trip(self):
+    def test_short_daylight_keeps_required_purchases_ahead_of_recall(self):
         for round_no in (66, 67, 69):
             with self.subTest(round_no=round_no):
                 data = self.data(round_no=round_no)
-                _, _, ledger = self.prepare(data, Memory())
-                self.assertFalse(any(c['action'] == 'buy' for c in ledger.commands.values()))
+                mem = Memory()
+                _, _, ledger = self.prepare(data, mem)
+                self.assertEqual(ledger.commands['2'], command('buy', name=BASE, num=1))
+                self.assertEqual(mem.first_day_pioneer['phase'], 'shop')
+                self.assertNotIn(2, mem.return_targets)
 
     def test_remaining_daylight_reduces_batch_to_include_each_use(self):
-        data, mem = self.data(round_no=64), Memory()
+        data, mem = self.data(round_no=67), Memory()
         self.prepare(data, mem)
         self.next_turn(data, [BASE], gold=568)
         _, _, ledger = self.prepare(data, mem)
