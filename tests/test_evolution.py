@@ -31,8 +31,12 @@ class EvolutionTests(unittest.TestCase):
             root = Path(directory, "tmp", "selfEvolutionTask", "3-fixed", "ws_9")
             root.mkdir(parents=True)
             Path(root, "task_3_gamma.md").write_text("CURRENT TASK", encoding="utf-8")
-            code = document_code("task_3_gamma.md").replace(
-                "root = '/tmp/selfEvolutionTask'", f"root = {str(Path(directory, 'tmp', 'selfEvolutionTask'))!r}")
+            code = document_code("task_3_gamma.md")
+            # Keep discovery inside this fixture after the runtime broadened
+            # its search root to /tmp; never depend on the host temp directory.
+            self.assertIn("root = '/tmp'\n", code)
+            code = code.replace("root = '/tmp'\n",
+                f"root = {str(Path(directory, 'tmp', 'selfEvolutionTask'))!r}\n")
             result = subprocess.run([sys.executable, "-c", code], cwd=directory,
                                     capture_output=True, text=True, timeout=3)
         self.assertEqual(result.returncode, 0, result.stderr)
