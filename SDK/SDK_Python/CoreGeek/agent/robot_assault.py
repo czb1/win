@@ -424,6 +424,10 @@ def open_assault_entry(turn, base, entry):
 
 
 def in_summon_cluster(ledger, point):
+    # Rear robots do not enter through the scout. Keep its existing wall gap
+    # available as a fallback instead of dragging it to the new spawn cluster.
+    if ledger.robot_summon_mode == 'rear_direct':
+        return True
     anchor = ledger.robot_summon_anchor
     return anchor is None or distance(anchor, point) <= FIRST_DAY_SUMMON_RADIUS
 
@@ -474,22 +478,71 @@ def _summon_at_gap(turn, ledger, base, entry, deadline):
     return min(options)[-1] if options else None
 
 
+def scouted_rear_summon_position(turn, ledger, deadline=None):
+    """Use an observed turret's open rear to shoot the base from legal land.
+
+    Walls are globally reported. Weapons must have been seen, and remembered
+    weapons still obstruct lanes; absence from local sight is not destruction.
+    The rear is relative to the two bases, not a hard-coded map direction.
+    """
+    base = enemy_base(turn)
+    if turn.day != 1 or not turn.is_day or base is None:
+        return None
+    weapons = {u.id: u for u in (*ledger.robot_known_enemies, *turn.enemies)
+               if u.kind in WEAPONS and base_distance(base, u.pos) == 1}
+    if not weapons:
+        return None
+    blocked = (turn.blocked | ledger.reserved | ledger.summon_pending_positions
+               | {p for u in weapons.values() for p in u.cells})
+    obstacles = blocked - base.cells
+    candidates = []
+    # Every summon type has range three. Check the same conservative rays as
+    # night attacks, including characters/NPCs, without shooting through towers.
+    for point in sorted(_attack_goals(turn, base.cells, 3)):
+        if deadline is not None:
+            check_time(deadline)
+        if (point in blocked or not rear_approach(turn, base, point)
+                or not turn.summon_position_legal(point)):
+            continue
+        if any(distance(point, cell) <= 3
+               and not obstacles.intersection(line_cells(point, cell)) for cell in base.cells):
+            candidates.append(point)
+    anchor = ledger.robot_summon_anchor
+    clear_sides = first_day_clear_sides(turn, base, weapons.values())
+    # Keep a rear group together when it still has an open lane. A newly
+    # scouted rear or a newly closed lane may require a different deployment.
+    return min(candidates, key=lambda p: (
+        bool(anchor and distance(p, anchor) > FIRST_DAY_SUMMON_RADIUS),
+        distance(p, anchor) if anchor else 0,
+        not any(_on_entry_side(base, p, row) for row in clear_sides),
+        -min(distance(p, w.pos) for w in weapons.values()), p)) if candidates else None
+
+
 def choose_summon_position(turn, ledger, deadline=None):
     base = enemy_base(turn)
     if base is None:
         return None
     entry = open_assault_entry(turn, base, ledger.robot_assault_entry)
-    if turn.day == 1 and ledger.robot_summon_anchor is not None:
+    rear = scouted_rear_summon_position(turn, ledger, deadline)
+    if rear is not None:
+        ledger.robot_summon_mode = 'rear_direct'
+        return rear
+    # If the rear is now walled/blocked, release its grouping preference and
+    # return to the worker's gap. Already submitted positions stay reserved.
+    if (turn.day == 1 and ledger.robot_summon_anchor is not None
+            and ledger.robot_summon_mode != 'rear_direct'):
         return _summon_in_cluster(turn, ledger, base, entry, deadline)
     if entry is not None:
         position = _summon_at_gap(turn, ledger, base, entry, deadline)
         if position is not None:
+            ledger.robot_summon_mode = 'scout_gap'
             return position
     clear_sides = first_day_clear_sides(turn, base, ledger.robot_known_enemies) if base else set()
-    # An occupied gap stays authoritative. Without one, prefer the unarmed
-    # horizontal face over the old geometric rear; equal faces keep old ties.
+    # Without a direct rear shot or a usable gap, retain the old weak-entry
+    # fallback, preferring an unarmed horizontal face when one is known.
     plan = weakest_approach(turn, ledger, deadline, prefer_rear=True,
                             preferred_sides=clear_sides if len(clear_sides) == 1 else ())
+    ledger.robot_summon_mode = 'weakest_entry'
     return plan.position if plan else None
 
 
@@ -592,7 +645,8 @@ def _assault_reserved(turn, memory, ledger, robot):
     return reserved
 
 
-def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, attack_only=False):
+def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, attack_only=False,
+                       move_within=None):
     phase = "base" if target.kind == "station" else "breach" if target.kind == "wall" else "clear"
     facts = dict(phase=phase, target_id=target.id, target_kind=target.kind,
                  target_source="visible" if target in turn.enemies else "last_seen_building",
@@ -615,6 +669,10 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
     if attack_only:
         return False
     reserved = _assault_reserved(turn, memory, ledger, robot)
+    if move_within is not None:
+        # Block the boundary as well as filtering goals: a nearby endpoint
+        # must not authorize a route that exits and re-enters the inner ring.
+        reserved |= {p for cell in move_within for p in neighbours(cell)} - move_within
     blocked = (turn.blocked | reserved) - {robot.pos}
     goals = set()
     reach = robot.attack_range
@@ -626,7 +684,7 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
     for i, origin in enumerate(sorted(_attack_goals(turn, target.cells, reach))):
         if i % 16 == 0:
             check_time(nav.deadline)
-        if origin in blocked:
+        if origin in blocked or move_within is not None and origin not in move_within:
             continue
         if _firing_point(origin, robot, target, memory, occupied) is not None:
             goals.add(origin)
@@ -640,6 +698,34 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
         ledger.explain(robot.id, reason, route_steps=route[0],
                        occupied_avoidance_count=len(memory.occupied_steps), **facts)
         return True
+    return False
+
+
+def _act_inside_base(turn, memory, nav, ledger, robot, base, occupied):
+    """Keep an entered robot working inside before considering outer detours."""
+    if base_distance(base, robot.pos) != 1:
+        return False
+    inner = {p for cell in base.cells for p in neighbours(cell)
+             if turn.inside(p) and p not in base.cells}
+    if _act_toward_target(turn, memory, nav, ledger, robot, base, occupied, move_within=inner):
+        return True
+    # A public robot may block one ray while a known inner tower blocks the
+    # others. Clear that local obstacle instead of retreating to the shared
+    # outer wall. Do not invent targets or assume any occupant will move.
+    targets = {}
+    for point in _target_points(robot.pos, base):
+        hit = _first_hit(robot.pos, point, occupied, robot.id)
+        if hit and hit[1] and hit[2] in inner and hit[0].kind in (*CHARACTERS, *WEAPONS, 'wall'):
+            targets[hit[0].id] = hit[0]
+    for attack_only in (True, False):
+        for target in targets.values():
+            check_time(nav.deadline)
+            if _act_toward_target(turn, memory, nav, ledger, robot, target, occupied,
+                                  attack_only=attack_only, move_within=inner):
+                ledger.notes[robot.id]['conditions']['assault_choice'] = 'inner_clearance'
+                return True
+    # If neither an inner firing route nor an actionable inner blocker exists,
+    # retain the ordinary fallback; this is a preference, not an indefinite hold.
     return False
 
 
@@ -919,6 +1005,13 @@ def act_robots(turn, memory, nav, ledger):
         # it. This retains current legal base shots without moving closer.
         _act_toward_target(turn, memory, nav, ledger, robot, base, occupied, attack_only=True)
 
+    # Preserve observed ingress independently of a teammate's stalled approach.
+    # All current base shots were allocated first, so their lanes remain protected.
+    for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
+        check_time(nav.deadline)
+        if robot.id not in ledger.used:
+            _act_inside_base(turn, memory, nav, ledger, robot, base, occupied)
+
     # A found route is not evidence that repeatedly following it is useful.
     # After correlated failures/backtracking, jointly clear an observed enemy
     # on base-directed rays before allocating another speculative detour.
@@ -934,6 +1027,12 @@ def act_robots(turn, memory, nav, ledger):
                 for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
                     check_time(nav.deadline)
                     if robot.id not in ledger.used:
+                        # Immediate supporting shots remain useful, but another
+                        # robot's stall must not pull a progressing follower off
+                        # its own reachable base route to approach the shared wall.
+                        if (not attack_only and memory.approach_stalls.get(robot.id, 0) < ASSAULT_STALL_LIMIT
+                                and _act_toward_target(turn, memory, nav, ledger, robot, base, occupied)):
+                            continue
                         _act_toward_target(turn, memory, nav, ledger, robot, early_focus,
                                            occupied, attack_only=attack_only)
 

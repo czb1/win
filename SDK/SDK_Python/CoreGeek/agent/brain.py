@@ -27,7 +27,8 @@ from .mining import night_mine
 from .wall_watch import select_watch, prepare_watch, repair_watch
 from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
-from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position, enemy_base
+from .robot_assault import (FIRST_DAY_SUMMON_RADIUS, RobotAssaultMemory, act_robots,
+                           choose_summon_position, enemy_base, scouted_rear_summon_position)
 from .spending import (first_day_guns_built, first_day_purchase_reserve, plan_day_spending, robot_purchase_plan,
                        prepare_paid_upgrades, prepare_defense_purchase, FIRST_DAY_ROBOT_PURCHASE_LIMIT,
                        heal_station_with_pioneer, prepare_station_reserve,
@@ -76,6 +77,8 @@ def observe_robot_summons(turn, mem):
         for role in turn.raw.get('teamOur', {}).get('roles', []))))
     state.setdefault("station_pending", None)
     state.setdefault("anchor", None)
+    state.setdefault("mode", None)
+    state.setdefault("pending_plan", None)
     if mem.night_scout.cancelled:
         state["buyer"] = None
     if state["observed_round"] == turn.round:
@@ -102,9 +105,12 @@ def observe_robot_summons(turn, mem):
                 and results.get(str(actor), results.get(actor)) is False):
             state["count"] -= 1
             state["positions"].discard(position)
-            if not state["positions"]:
+            if state["pending_plan"] is not None:
+                state["anchor"], state["mode"] = state["pending_plan"]
+            elif not state["positions"]:
                 state["anchor"] = None
         state["pending"] = None
+        state["pending_plan"] = None
     state["observed_round"] = turn.round
     return state
 
@@ -130,6 +136,7 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     ledger.summon_pending_positions = state["positions"].copy()
     ledger.summon_daily_count = state["count"]
     ledger.robot_summon_anchor = state["anchor"] if turn.day == 1 else None
+    ledger.robot_summon_mode = state["mode"] if turn.day == 1 else None
     excluded = set(excluded)
     pioneer_plan = first_day_pioneer_plan_active(turn, mem)
     pioneer_summoning = (pioneer_plan and mem.first_day_pioneer.get('phase') == 'robots'
@@ -147,6 +154,8 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                                                        and not pioneer_summoning)), key=lambda row: row[:3])
     can_use = (turn.is_day and state["count"] < DAILY_SUMMON_LIMIT
                and not (state["pending"] and state["pending"][0] == turn.round))
+    rear = (scouted_rear_summon_position(turn, ledger, nav.deadline)
+            if carriers and can_use and turn.tick >= FIRST_DAY_SCOUT_TICK else None)
     if turn.day == 1 and not pioneer_summoning:
         scout = mem.night_scout
         base = enemy_base(turn)
@@ -155,11 +164,15 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
             entry = ledger.robot_assault_entry = scout.wall_entry
         occupying = any(w.id == scout.worker_id and w.pos == entry for w in turn.workers)
         if (turn.tick < FIRST_DAY_SCOUT_TICK or
-                (not occupying and turn.tick < DEFENCE_RETURN_TICK)):
+                (not occupying and rear is None and turn.tick < DEFENCE_RETURN_TICK)):
             can_use = False
             ledger.spending_plan['robot_use_blocked'] = 'first_day_wall_block_pending'
     if carriers and can_use:
-        position = choose_summon_position(turn, ledger, nav.deadline)
+        if rear is not None:
+            position = rear
+            ledger.robot_summon_mode = 'rear_direct'
+        else:
+            position = choose_summon_position(turn, ledger, nav.deadline)
         ledger.robot_summon_target = position
         if position is not None:
             for _, _, _, hero, name in carriers:
@@ -167,12 +180,16 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                     state["count"] += 1
                     state["positions"].add(position)
                     state["pending"] = turn.round, hero.id, position
+                    state["pending_plan"] = state["anchor"], state["mode"]
                     state["buyer"] = None
-                    if turn.day == 1 and state["anchor"] is None:
+                    if turn.day == 1 and (state["anchor"] is None
+                            or state["mode"] != ledger.robot_summon_mode
+                            or distance(position, state["anchor"]) > FIRST_DAY_SUMMON_RADIUS):
                         state["anchor"] = ledger.robot_summon_anchor = position
+                    state["mode"] = ledger.robot_summon_mode
                     ledger.explain(hero.id, "summon_highest_robot", item=name, summon_position=position,
                                    daily_reserved_uses=state["count"], daily_limit=DAILY_SUMMON_LIMIT,
-                                   summon_anchor=state["anchor"])
+                                   summon_anchor=state["anchor"], summon_mode=state["mode"])
                     return True
         elif ledger.robot_summon_anchor is not None:
             ledger.spending_plan['robot_use_blocked'] = 'first_day_summon_cluster_full'
@@ -430,6 +447,7 @@ class Agent:
         ledger.summon_pending_positions = summons["positions"].copy()
         ledger.summon_daily_count = summons["count"]
         ledger.robot_summon_anchor = summons["anchor"] if turn.day == 1 else None
+        ledger.robot_summon_mode = summons["mode"] if turn.day == 1 else None
         nav = Navigator(turn, started + self.cfg.decision_seconds, mem.movement)
         intel = Intelligence(turn, self.cfg, mem)
         prompt, execute = "", ""

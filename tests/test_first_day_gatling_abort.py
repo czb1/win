@@ -5,6 +5,7 @@ import unittest
 from test_agent import unit
 import test_first_day_offense as offense
 import test_first_day_pioneer_shopping as shopping
+import test_scouted_rear_summon as rear_summon
 from test_first_day_wall_block import ENTRY, memory_for
 from test_robot_assault import fortified_case, TOWERS, WALLS
 from agent.brain import Agent, observe_robot_summons, summon_best_robot
@@ -14,6 +15,7 @@ from agent.model import SUMMON_ORDERS
 from agent.scouting import (ScoutMemory, act_night_scout, prepare_first_day_wall_blocker,
                             prepare_night_scout, yield_wall_entry)
 from agent.spending import first_day_purchase_reserve
+from agent.robot_assault import scouted_rear_summon_position
 from agent.worker_jobs import resume_daytime_jobs
 
 
@@ -102,6 +104,20 @@ class FirstDayGatlingAbortTests(unittest.TestCase):
         self.assertFalse(ledger.commands)
         self.assertEqual(ledger.gold, turn.gold)
         self.assertIsNone(memory.robot_summon_state['buyer'])
+
+    def test_open_rear_summon_cannot_override_gatling_cancellation(self):
+        data = rear_summon.rear_case(46, held=False, stock=())
+        data['teamOur']['roles'][1]['backpack'] = [BOSS] * 3
+        gatling(data)
+        turn, config, nav, ledger = rear_summon.setup_case(data, llm_enabled=False)
+        self.assertIsNotNone(scouted_rear_summon_position(turn, ledger, nav.deadline))
+        agent = Agent(config)
+        response = agent.decide(data)['roleCommandMap']
+        self.assert_no_robot_orders(response)
+        memory = next(iter(agent.sessions.values()))
+        self.assertTrue(memory.night_scout.cancelled)
+        self.assertIsNone(memory.night_scout.worker_id)
+        self.assertEqual(memory.robot_summon_state['count'], 0)
 
     def test_pioneer_keeps_base_voucher_purchase_then_skips_robot_shop(self):
         data, memory = self.shopping_data(), Memory()

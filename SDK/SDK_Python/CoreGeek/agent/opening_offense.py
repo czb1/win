@@ -6,7 +6,7 @@ from .economy import build, build_options
 from .economy_plan import via
 from .logging_system import emit_event
 from .model import DEFENCE_RETURN_TICK, ORES, SUMMON_ORDERS
-from .robot_assault import enemy_base, enemy_entries
+from .robot_assault import enemy_base, enemy_entries, scouted_rear_summon_position
 from .scouting import FIRST_DAY_SCOUT_TICK, prepare_first_day_wall_blocker
 from .spending import (FIRST_DAY_ROBOT_PURCHASE_LIMIT, first_day_guns_built,
                        first_day_purchase_reserve, first_day_pioneer_plan_active)
@@ -266,8 +266,10 @@ def act_first_day_offense(turn, cfg, mem, nav, ledger, towers, walls):
         if scout.key != key or scout.worker_id != hero.id:
             scout.key, scout.worker_id, scout.post, scout.wall_entry = key, hero.id, None, None
         from .brain import summon_best_robot
-        # Leave the final daylight uses available even if the gap has closed.
-        if turn.tick >= DEFENCE_RETURN_TICK and summon_best_robot(
+        # An observed open rear needs no held gap. Leave the final daylight
+        # uses available even when neither route could be secured in time.
+        rear_open = scouted_rear_summon_position(turn, ledger, nav.deadline) is not None
+        if (turn.tick >= DEFENCE_RETURN_TICK or rear_open) and summon_best_robot(
                 turn, cfg, mem, nav, ledger, towers, walls,
                 excluded={h.id for h in turn.heroes if h.id != hero.id}, use_only=True):
             return hero

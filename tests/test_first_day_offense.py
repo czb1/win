@@ -11,7 +11,7 @@ from agent.intelligence import Memory
 from agent.mining import mine, spare_mine
 from agent.model import pos
 from agent.opening_offense import act_first_day_offense
-from agent.robot_assault import act_robots, RobotAssaultMemory
+from agent.robot_assault import act_robots, rear_approach, RobotAssaultMemory
 from agent.economy import first_day_front
 from agent.worker_jobs import resume_daytime_jobs
 
@@ -408,7 +408,7 @@ class FirstDayOffenseTests(unittest.TestCase):
         self.assertFalse(memory.first_day_offense)
         self.assertIsNone(ledger.first_day_offense_worker_id)
 
-    def test_unarmed_face_survives_mirrors_and_both_factions(self):
+    def test_scouted_open_rear_summons_survive_mirrors_and_both_factions(self):
         for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
             with self.subTest(flip_x=flip_x, flip_y=flip_y):
                 data = case(35, stock=[BOSS] * 3)
@@ -424,5 +424,9 @@ class FirstDayOffenseTests(unittest.TestCase):
                 memory = Memory()
                 worker, ledger = step(data, memory, walls=[])
                 self.assertEqual(worker.id, 10010 if flip_x else 10)
-                self.assertEqual(memory.night_scout.wall_entry[1], 24 if flip_y else 7)
-                self.assertEqual(ledger.commands[str(worker.id)]['action'], 'move')
+                action = ledger.commands[str(worker.id)]
+                self.assertEqual(action['action'], 'use')
+                self.assertEqual(memory.robot_summon_state['mode'], 'rear_direct')
+                spawn = pos(action['targetPos'][0])
+                self.assertTrue(rear_approach(ledger.turn, ledger.turn.enemies[0], spawn))
+                self.assertTrue(spawn[1] >= 24 if flip_y else spawn[1] <= 7)
