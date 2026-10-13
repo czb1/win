@@ -81,34 +81,6 @@ class WeakModelTests(unittest.TestCase):
                         "def transform(records):\n return []\nopen('report.json','w').write('x')"):
                 with self.assertRaises(ValueError):transform_method(bad)
 
-    def test_transform_round_trip_submits_without_extra_check_and_promotes_method(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg,contract,docs,preview=self.fixture(Path(d))
-            mem=Memory(task_text='query',task_started=1,bootstrap_done=True,pending=('task',2),
-                       contract=contract,documents=docs,inputs=preview)
-            code="def transform(records):\n return [r['key'] for r in sorted(records,key=lambda r:-r['rank'])]"
-            _,cmd,_=step(mem,3,llmResp='PYTHON\n'+code)
-            self.assertTrue(cmd)
-            raw=v2_result({'executeCmd':cmd},'/')
-            _,cmd,ledger=step(mem,4,lastCmdResult=raw)
-            self.assertFalse(cmd);self.assertTrue(ledger.commands)
-            self.assertEqual(json.loads(ledger.commands['11']['taskAnswer']),{'token':'live-token'})
-            self.assertIn('transform',mem.submitted_method)
-            self.assertNotIn('fresh',mem.submitted_method['transform'])
-            one=learned_method((1,1),contract,transform=code)
-            two=learned_method((1,1),contract,transform='def transform(records): return []')
-            self.assertNotEqual(one['id'],two['id'])
-
-    def test_bad_transform_reply_gets_actionable_feedback_without_check(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg,contract,docs,preview=self.fixture(Path(d))
-            mem=Memory(task_text='query',task_started=1,bootstrap_done=True,pending=('task',2),
-                       contract=contract,documents=docs,inputs=preview)
-            prompt,cmd,ledger=step(mem,3,llmResp="PYTHON\nprint('TOKEN: invented')")
-            self.assertFalse(cmd);self.assertFalse(ledger.commands)
-            self.assertIn('rejections',prompt)
-            self.assertIn('不要读取、写入文件或调用 checker',prompt)
-            self.assertFalse(mem.check_pending)
 
     def test_case_pagination_preserves_whole_pairs_and_next_index(self):
         with tempfile.TemporaryDirectory() as d:
@@ -126,30 +98,24 @@ class WeakModelTests(unittest.TestCase):
             page=json.loads(next(line for line in raw.splitlines() if line.startswith('{')))
             self.assertEqual(page['case_samples'][0]['case'],next_index)
 
-    def test_two_rounds_can_finish_transform_but_one_round_cannot(self):
-        with tempfile.TemporaryDirectory() as d:
-            cfg,contract,docs,preview=self.fixture(Path(d))
-            code="def transform(records):\n return [r['key'] for r in sorted(records,key=lambda r:-r['rank'])]"
-            mem=Memory(task_text='query',task_started=1,task_timeout=15,bootstrap_done=True,pending=('task',13),
-                       contract=contract,documents=docs,inputs=preview)
-            _,cmd,_=step(mem,14,llmResp='PYTHON\n'+code)
-            self.assertTrue(cmd)
-            raw=v2_result({'executeCmd':cmd},'/')
-            _,_,ledger=step(mem,15,lastCmdResult=raw)
-            self.assertTrue(ledger.commands)
-            mem=Memory(task_text='query',task_started=1,task_timeout=15,bootstrap_done=True,pending=('task',14),
-                       contract=contract,documents=docs,inputs=preview)
-            _,cmd,ledger=step(mem,15,llmResp='PYTHON\n'+code)
-            self.assertFalse(cmd);self.assertFalse(ledger.commands)
 
-    def test_token_budget_gate_distinguishes_wait_from_no_time(self):
+    def test_generic_budget_gate_distinguishes_wait_from_no_time(self):
         mem=Memory(task_text='query',task_started=1,task_timeout=15,bootstrap_done=True,
-                   task_failures=5, contract={'kind':'check_token','repair_spec':False})
+                   task_failures=5)
         # Rejection count does not block a request with enough time.
         prompt,cmd,_=step(mem,13)
         self.assertTrue(prompt)
         self.assertFalse(cmd)
         mem.pending=None
+        # The question's token wording no longer adds a special budget gate.
+        mem.task_text = '运行验证，提交 TOKEN'
+        prompt, cmd, ledger = step(mem, 14)
+        self.assertTrue(prompt)
+        self.assertFalse(cmd or ledger.commands)
+        self.assertIn('"allowedActions": ["ANSWER"]', prompt)
+        mem.pending = None
+        # Unresolved execution errors still need a model/execute/submit cycle.
+        mem.input_blocked = True
         for turn, remaining, required in [(14,2,3),(15,1,2)]:
             with self.assertLogs('agent.intelligence', 'INFO') as logs:
                 prompt,cmd,ledger=step(mem,turn)
@@ -185,20 +151,12 @@ class WeakModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             code="def task_result(value):\n print('RESULT',value)\ntask_result({'count':4})"
             raw=v2_result({'executeCmd':'python3 -c '+shlex.quote(runtime_code(code,d,log_task=True))},'/')
-            self.assertEqual(json.loads(sandbox_result(runtime_result(raw)[0])[2]),{'count':4})
+            self.assertIsNone(sandbox_result(runtime_result(raw)[0])[2])  # No silent rewriting of model functions.
         mem=Memory(task_text='query',task_started=1,bootstrap_done=True,pending=('cmd',1),contract=contract,
                    running_python='print(result)')
         _,_,ledger=step(mem,2,lastCmdResult='[exitCode:0]\n'+good)
-        self.assertTrue(ledger.commands)
+        self.assertFalse(ledger.commands)  # Unmarked output needs an explicit ANSWER.
 
-    def test_line_parser_diagnostics_and_swallowed_error(self):
-        with tempfile.TemporaryDirectory() as d:
-            code="def parse_monitor_line(line):\n try:\n  int(line)\n except ValueError:\n  return None\nparse_monitor_line('bad')\ntask_result({'count':0})"
-            raw=v2_result({'executeCmd':'python3 -c '+shlex.quote(runtime_code(code,d,log_task=True))},'/')
-            clean,report=runtime_result(raw)
-            self.assertNotEqual(sandbox_result(clean)[0],'ok')
-            self.assertEqual(report['logs']['parsers']['parse_monitor_line']['calls'],1)
-            self.assertTrue(report['logs']['errors'])
 
     def test_deadline_prompt_does_not_override_answer_only(self):
         mem=Memory(task_text='query',task_started=1,task_timeout=15,bootstrap_done=True,

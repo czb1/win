@@ -64,7 +64,7 @@ def document_code(path, start=0, base=None):
             "local = os.path.join(cfg['base'], requested) if cfg['base'] else requested\n"
             "if os.path.isfile(local):\n"
             "    matches.append(os.path.abspath(local))\n"
-            "root = '/tmp/selfEvolutionTask'\n"
+            "root = '/tmp'\n"
             "wanted = os.path.basename(requested)\n"
             "suffix = os.path.normpath(requested).replace('\\\\', '/').strip('/')\n"
             "if not matches and os.path.isdir(root):\n"
@@ -127,3 +127,14 @@ def file_code(kind, path, start=0):
             "    if f.read(1):\n"
             "        print('NEXT_READ', repr(cfg['path']), cfg['start'] + len(page))\n"
             + (preview_code("cfg['path']", 'page') if start == 0 else ''))
+
+
+
+def task_document_code(path, base=None):
+    """Keep the existing first-page observation and capture its exact full source."""
+    code = document_code(path, base=base)
+    source = "cfg['path']" if path.startswith('/') else 'resolved'
+    return code + (
+        "\nwith open(" + source + ", encoding='utf-8', newline='') as source_file:\n"
+        "    source_text = source_file.read()\n"
+        "print('TASK_SOURCE ' + json.dumps({'path': " + source + ", 'text': source_text}, ensure_ascii=False))\n")

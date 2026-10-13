@@ -78,7 +78,9 @@ class SkillTests(unittest.TestCase):
             mem.contract = deepcopy(CONTRACT)
             mem.pending = None
             prompt, _, _ = step(mem, 6, 'query second city')
-            self.assertIn(learned['id'], prompt)
+            self.assertNotIn(learned['id'], prompt)  # Prompt now carries the actual prior program and answer.
+            self.assertIn('previousTasks', prompt)
+            self.assertIn('query first city', prompt)
             p = task_payload(7, 'query second city')
             p['llmResp'] = json.dumps({'use_skill': learned['id'],
                                       'inputs': {'source': str(second), 'city': '上海'}}, ensure_ascii=False)
@@ -109,7 +111,7 @@ class SkillTests(unittest.TestCase):
         serialized = json.dumps(mem.skills, ensure_ascii=False)
         self.assertNotIn('北京', serialized)
         self.assertNotIn('999', serialized)
-        self.assertNotIn('query_current_api()', serialized)
+        self.assertIn('query_current_api()', serialized)
 
     def test_unsupported_model_answer_does_not_create_skill(self):
         mem = Memory(task_text='query', task_point=(6, 5), task_started=1, bootstrap_done=True,

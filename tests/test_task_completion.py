@@ -17,7 +17,7 @@ from agent.economy import pioneer
 from agent.intelligence import Intelligence, Memory, parse_task_reply
 from agent.model import Turn
 from agent.task_sop import answer_contract, answer_error, engineering_code
-from agent.task_tools import document_code, document_path
+from agent.task_tools import task_document_code, document_code, document_path
 from agent.task_skills import learned_method
 from agent.task_schedule import task_descriptor, task_signature
 
@@ -71,7 +71,7 @@ def run_sandbox(response, directory):
     # Only repository-authored deterministic tools or fixed test code runs here.
     args = shlex.split(response['executeCmd'])
     assert args[:2] == ['python3', '-c']
-    code = args[2].replace("root = '/tmp/selfEvolutionTask'",
+    code = args[2].replace("root = '/tmp'",
                            f"root = {str(Path(directory, 'selfEvolutionTask'))!r}")
     result = subprocess.run([sys.executable, '-c', code], cwd=directory,
                             capture_output=True, text=True, timeout=12)
@@ -135,7 +135,7 @@ class TaskCompletionTests(unittest.TestCase):
                      rejected_answers={answer_identity('{"count":0}')})
         t, cfg, _, ledger = setup_case(p)
         mem.observe(t, cfg)
-        self.assertIsNotNone(mem.answer)
+        self.assertIsNone(mem.answer)  # Rejected at observation, before the submit stage.
         Intelligence(t, cfg, mem).task(ledger)
         self.assertIsNone(mem.submitted)
         self.assertIsNone(mem.answer)
@@ -161,7 +161,8 @@ class TaskCompletionTests(unittest.TestCase):
         mem.bootstrap_done = True
         t, cfg, _, ledger = setup_case(p)
         prompt, _ = Intelligence(t, cfg, mem).task(ledger)
-        self.assertIn('Bearer', prompt)
+        self.assertNotIn('Bearer', prompt)  # Legacy method metadata is not raw completed-task history.
+        self.assertIn('previousTasks', prompt)
         self.assertNotIn('API_SCHEMA', prompt)
         self.assertIn('必须重新查询', prompt)
 
@@ -173,7 +174,7 @@ class TaskCompletionTests(unittest.TestCase):
                 self.assertIsNotNone(path)
                 response = Agent(Config(layout_mode='explicit')).decide(task_payload(2, question))
                 self.assertFalse(response['prompt'])
-                self.assertEqual(shlex.split(response['executeCmd'])[-1], document_code(path))
+                self.assertEqual(shlex.split(response['executeCmd'])[-1], task_document_code(path))
         self.assertIsNone(document_path('请阅读https://example.com/spec.md'))
         self.assertIsNone(document_path('请阅读../old/spec.md'))
         self.assertEqual(parse_task_reply('读取文件：READ task_1_alpha.md'),
@@ -245,23 +246,6 @@ class TaskCompletionTests(unittest.TestCase):
         self.assertIn('task_outcome=', '\n'.join(captured.output))
         return workspace
 
-    def test_accept_repair_check_submit_in_four_rounds_without_llm_and_rebind(self):
-        with tempfile.TemporaryDirectory() as directory:
-            agent = Agent(Config(layout_mode='explicit'))
-            first = self.complete_deployment(agent, directory, 'alpha', 1)
-            self.complete_deployment(agent, directory, 'gamma', 36, port=9091)
-            mem = next(iter(agent.sessions.values()))
-            self.assertEqual(len(mem.skills), 1)
-            self.assertEqual(mem.skills[0]['successes'], 2)
-            self.assertEqual(mem.skills[-1]['workflow'], 'check_token')
-            self.assertNotIn(str(first), json.dumps(mem.skills[-1]))
-            self.assertFalse(mem.skills[-1]['verified'])
-            for outcome in mem.task_outcomes:
-                self.assertTrue(outcome['completionObserved'])
-                self.assertEqual(outcome['llmCalls'], 0)
-                self.assertEqual(outcome['sandboxCalls'], 2)
-                self.assertEqual(outcome['submissions'], 1)
-                self.assertEqual(outcome['teamGoldDelta'], 10)
 
     def test_unsupported_spec_is_not_partially_repaired_or_fabricated(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -286,21 +270,20 @@ class TaskCompletionTests(unittest.TestCase):
                 self.assertTrue(result.startswith('[exitCode:1]'))
                 self.assertNotIn('\nFINAL_ANSWER\n', result)
 
-    def test_model_token_and_printed_token_require_independent_check(self):
-        for purpose, reply in (('task', 'ANSWER\n{"token":"invented"}'),
-                               ('cmd', '[exitCode:0]\nFINAL_ANSWER\n{"token":"invented"}')):
+    def test_model_and_program_token_answers_use_generic_submission(self):
+        for purpose in ('task', 'cmd'):
             with self.subTest(purpose=purpose):
-                p = task_payload(4, 'query')
-                p['llmResp' if purpose == 'task' else 'lastCmdResult'] = reply
-                mem = Memory(task_text='query', task_started=1, bootstrap_done=True, sop_attempted=True,
-                             pending=(purpose, 3), contract={'kind': 'check_token', 'workspace': '/tmp/current/ws',
-                                                           'example': {'token': 'xxx'}})
+                p = task_payload(3, 'submit the requested text')
+                answer = '{"token":"fixture-answer"}'
+                p['llmResp' if purpose == 'task' else 'lastCmdResult'] = ('ANSWER\n' if purpose == 'task' else '[exitCode:0]\nFINAL_ANSWER\n') + answer
+                mem = Memory(task_text=p['phaseTask'], task_started=1, bootstrap_done=True,
+                             pending=(purpose, 2), contract={'format': 'json'})
                 t, cfg, _, ledger = setup_case(p)
                 mem.observe(t, cfg)
-                self.assertIsNone(mem.answer)
-                _, cmd = Intelligence(t, cfg, mem).task(ledger)
-                self.assertIn('REPAIR = False', shlex.split(cmd)[2])
-                self.assertNotIn('11', ledger.commands)
+                self.assertEqual(mem.answer, answer)
+                prompt, cmd = Intelligence(t, cfg, mem).task(ledger)
+                self.assertFalse(prompt or cmd)
+                self.assertEqual(ledger.commands['11']['taskAnswer'], answer)
 
     def test_submission_shape_rejects_document_or_extra_keys_and_allows_partial_credit(self):
         docs = [{'kind': 'read', 'path': 'task.md', 'output': '''## API 返回示例
@@ -314,9 +297,10 @@ class TaskCompletionTests(unittest.TestCase):
 '''}]
         contract = answer_contract(docs)
         self.assertEqual(contract['example'], {'city': '北京', 'temperature': 21})
-        for answer in ('# 任务规范正文', '{"task":"wrong wrapper"}', '{"city": 123}',
-                       '{"city":"北京","temperature":true}', '{}'):
-            self.assertTrue(answer_error(answer, contract), answer)
+        self.assertTrue(answer_error('# 任务规范正文', contract))
+        # An example does not prove a closed schema or constrain dynamic keys.
+        for answer in ('{"other":2}', '{"city":null}', '{}'):
+            self.assertFalse(answer_error(answer, contract), answer)
         self.assertFalse(answer_error('{"city":"北京"}', contract))
         self.assertFalse(answer_error('{"city":"北京","temperature":22.5}', contract))
 
@@ -342,43 +326,6 @@ class TaskCompletionTests(unittest.TestCase):
         answer = agent.decide(p)['roleCommandMap']['11']['taskAnswer']
         self.assertEqual(json.loads(answer), {'city': '北京', 'temperature': 23})
 
-    def test_unknown_spec_can_recover_with_model_repair_and_fixed_checker(self):
-        with tempfile.TemporaryDirectory() as directory:
-            workspace, document, token = deployment(directory, 'alpha')
-            with (workspace / 'spec.md').open('a') as target:
-                target.write('- release.txt 内容必须为 ready\n')
-            checker = (workspace / 'check').read_text().replace(
-                'if not ok:', "ok = ok and Path('release.txt').is_file() and Path('release.txt').read_text() == 'ready'\nif not ok:")
-            (workspace / 'check').write_text(checker)
-            agent = Agent(Config(layout_mode='explicit'))
-            p = task_payload(1, f'请阅读{document.name}，获取任务信息')
-            response = agent.decide(p)
-            p.update(roundNo=2, lastCmdResult=run_sandbox(response, directory))
-            response = agent.decide(p)
-            p.update(roundNo=3, lastCmdResult=run_sandbox(response, directory))
-            prompt = agent.decide(p)['prompt']
-            self.assertIn('release.txt', prompt)
-            self.assertIn('提交规则', prompt)
-            # A fixed authored stand-in for an LLM repair; never live model code.
-            repair = f'''from pathlib import Path
-base = Path({str(workspace)!r})
-folder = base / 'logs/alpha'
-folder.mkdir(parents=True)
-folder.chmod(0o755)
-(base / 'config/alpha.conf').write_text('keep1\\nkeep2\\nport 8080\\nkeep4\\nkeep5\\nname alpha-app\\n')
-(base / 'bin/start.sh').chmod(0o755)
-(base / 'release.txt').write_text('ready')
-print('repair done')
-'''
-            p.update(roundNo=4, lastCmdResult='', llmResp='PYTHON\n' + repair)
-            response = agent.decide(p)
-            p.update(roundNo=5, llmResp='', lastCmdResult=run_sandbox(response, directory))
-            response = agent.decide(p)
-            self.assertIn('REPAIR = False', response['executeCmd'])
-            self.assertNotIn('11', response['roleCommandMap'])
-            p.update(roundNo=6, lastCmdResult=run_sandbox(response, directory))
-            answer = agent.decide(p)['roleCommandMap']['11']['taskAnswer']
-            self.assertEqual(json.loads(answer), {'token': token})
 
     def test_observed_fast_sop_changes_task_ranking_without_shortening_timeout(self):
         p = task_payload()
@@ -407,13 +354,13 @@ print('repair done')
         mem.observe(Turn(p, Config()), Config())
         self.assertEqual(mem.contract['example'], {'city': '北京'})
 
-    def test_checker_workspace_must_be_explicit_and_within_current_task(self):
+    def test_task_workspace_must_be_explicit_and_within_current_task(self):
         with tempfile.TemporaryDirectory() as directory:
             _, document, _ = deployment(directory, 'alpha')
             text = document.read_text().replace(str(document.parent), '/unrelated')
             contract = answer_contract([{'kind': 'read', 'path': str(document),
                                          'resolved_path': str(document), 'output': text}])
-            self.assertEqual(contract['kind'], 'check_token')
+            self.assertNotIn('kind', contract)
             self.assertNotIn('workspace', contract)
 
     def test_unrelated_successful_code_is_not_saved_as_submitted_solution(self):

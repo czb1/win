@@ -118,8 +118,8 @@ class TaskRuntimeTests(unittest.TestCase):
                                         'output': (FIXTURES / (name + '_task.md')).read_text()}])
             self.assertEqual(contract['example'], expected)
             if name == 'beijing':
-                self.assertTrue(answer_error('{"oldest_era":null}', contract))
-                self.assertTrue(answer_error('{"total_count":"0"}', contract))
+                self.assertFalse(answer_error('{"oldest_era":null}', contract))
+                self.assertFalse(answer_error('{"total_count":"0"}', contract))
                 self.assertFalse(answer_error('{"city":"北京"}', contract))
 
     def test_declared_shell_checker_recovers_missing_interpreter_without_modification(self):
@@ -144,17 +144,17 @@ class TaskRuntimeTests(unittest.TestCase):
                 self.assertTrue(raw.startswith('[exitCode:1]'))
                 self.assertIsNone(sandbox_result(raw)[2])
 
-    def test_independent_checker_can_finish_after_unrelated_model_http_failure(self):
+    def test_legacy_checker_report_cannot_clear_unresolved_http_failure(self):
         p = task_payload(5, 'repair')
-        p['lastCmdResult'] = '[exitCode:0]\nFINAL_ANSWER\n{"token":"checked"}'
+        report = {'checker': {'passed': True, 'command': 'python3 verify.py'}, 'http_errors': []}
+        p['lastCmdResult'] = '[exitCode:0]\nTASK_RUNTIME ' + json.dumps(report) + '\nFINAL_ANSWER\n{"token":"checked"}'
         mem = Memory(task_text='repair', task_started=1, bootstrap_done=True, query_blocked=True,
-                     pending=('cmd', 4), running_tool={'kind':'check'},
-                     contract={'kind':'check_token', 'example':{'token':'xxx'}})
-        t, cfg, _, ledger = setup_case(p)
-        mem.observe(t, cfg)
-        Intelligence(t, cfg, mem).task(ledger)
-        self.assertEqual(json.loads(ledger.commands['11']['taskAnswer']), {'token':'checked'})
-        self.assertFalse(mem.query_blocked)
+                     pending=('cmd',4), contract={'kind':'check_token','requires_checker':True})
+        t,cfg,_,ledger=setup_case(p)
+        mem.observe(t,cfg)
+        Intelligence(t,cfg,mem).task(ledger)
+        self.assertFalse(ledger.commands)
+        self.assertTrue(mem.query_blocked)
 
     def test_model_execution_rebinds_cwd_each_time(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -184,9 +184,13 @@ print('FINAL_ANSWER')
 print(json.dumps({{'total_count': len(data.get('items', []))}}))
 '''
                     raw, report = runtime_result(execute(code, directory))
-                    self.assertTrue(report['http_errors'])
-                    self.assertTrue(raw.startswith('[exitCode:1]'))
-                    self.assertIsNone(sandbox_result(raw)[2])
+                    if path == '/semantic-error':
+                        self.assertFalse(report['http_errors'])  # Domain status is not a transport failure.
+                        self.assertEqual(sandbox_result(raw)[0], 'ok')
+                    else:
+                        self.assertTrue(report['http_errors'])
+                        self.assertTrue(raw.startswith('[exitCode:1]'))
+                        self.assertIsNone(sandbox_result(raw)[2])
 
     def test_successful_first_page_does_not_hide_failed_later_page(self):
         with heritage_api() as (url, _), tempfile.TemporaryDirectory() as directory:

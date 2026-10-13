@@ -19,35 +19,6 @@ def input_context(body):
     return value if isinstance(value, dict) else {}
 
 
-def zero_without_coverage(answer, contract, report):
-    """Zero is valid only after the current log records were actually parsed."""
-    if contract.get('input_kind') != 'logs':
-        return False
-    try:
-        value = json.loads(answer)
-    except (ValueError, TypeError):
-        return False
-    numbers = []
-
-    def visit(item):
-        if type(item) in (int, float):
-            numbers.append(item)
-        elif isinstance(item, dict):
-            for child in item.values():
-                visit(child)
-        elif isinstance(item, list):
-            for child in item:
-                visit(child)
-
-    visit(value)
-    coverage = report.get('parse_lines', {})
-    logs = report.get('logs', {})
-    files = logs.get('files', {})
-    # Exhausted empty/normal files with an invoked file parser are valid zero inputs.
-    file_evidence = bool(files) and bool(logs.get('parsers')) and not logs.get('errors') and all(f.get('complete') for f in files.values())
-    return bool(numbers) and not any(numbers) and not coverage.get('matched', 0) and not file_evidence
-
-
 _PREVIEW = r'''
 import json
 import os
@@ -56,7 +27,8 @@ import re
 
 def preview_inputs():
     base = Path(PREVIEW_DOCUMENT).resolve().parent
-    context = {'directory': str(base), 'entries': [], 'files': []}
+    context = {'directory': str(base), 'entries': [], 'files': [], 'preview_only': True,
+               'scope': '预览有数量和长度上限，不是完整输入清单；按题目在代码中取全。'}
     with os.scandir(base) as entries:
         for index, entry in enumerate(entries):
             if index >= 60:
