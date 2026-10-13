@@ -52,6 +52,7 @@ class RobotAssaultMemory:
     buildings: dict = field(default_factory=dict)
     rejected_buildings: set = field(default_factory=set)
     pending: dict = field(default_factory=dict)
+    yield_waiters: dict = field(default_factory=dict)
     failed_shots: set = field(default_factory=set)
     shot_contexts: dict = field(default_factory=dict)
     accepted_shots: dict = field(default_factory=dict)
@@ -81,6 +82,7 @@ class RobotAssaultMemory:
             self.focus_target_id = None
             self.objectives.clear()
             self.pending.clear()
+            self.yield_waiters.clear()
             self.failed_shots.clear()
             self.shot_contexts.clear()
             self.accepted_shots.clear()
@@ -189,12 +191,23 @@ class RobotAssaultMemory:
                     self.step_failures.pop(key, None)
                     self.failed_steps.pop(key, None)
                     self._clear_occupied_step(point)
+                    # A confirmed cooperative yield changes the approach that
+                    # stalled followers were waiting on. Rebase their progress
+                    # only after observing the mover at its destination and its
+                    # old cell empty; command legality alone proves neither.
+                    if base is not None and origin not in turn.blocked:
+                        for follower in self.yield_waiters.get(uid, ()):
+                            if follower in robots:
+                                self.approach_stalls.pop(follower, None)
+                                self.approach_best[follower] = base_distance(base, robots[follower].pos)
         if base is not None:
             for robot in turn.summon_robots:
                 current = base_distance(base, robot.pos)
                 self.approach_best[robot.id] = min(self.approach_best.get(robot.id, current), current)
         self.pending = {uid: value for uid, value in self.pending.items()
                         if uid in alive and value[0] == turn.round}
+        self.yield_waiters = {uid: waiters & alive for uid, waiters in self.yield_waiters.items()
+                             if uid in self.pending and waiters & alive}
         # Weapons do not move. Losing sight alone does not prove destruction;
         # a reported death or absence inside ordinary shared vision does.
         reported = {int(r["id"]) for r in turn.raw.get("teamEnemy", {}).get("roles", [])}
@@ -234,6 +247,7 @@ class RobotAssaultMemory:
         return set(self.occupied_steps) | {p for robot_id, p in self.failed_steps if robot_id == uid}
 
     def remember(self, turn, robot, action, point, target_id=None, occupied=None):
+        self.yield_waiters.pop(robot.id, None)
         context = (_shot_context(robot.pos, point, occupied if occupied is not None else _occupants(turn, self),
                                  robot.id, target_id)
                    if action == "attack" else None)
@@ -832,6 +846,7 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
                 if follower.id not in ledger.used:
                     ledger.used.add(follower.id)
                     ledger.reserved.add(follower.pos)
+                    memory.yield_waiters.setdefault(robot.id, set()).add(follower.id)
                     ledger.explain(follower.id, 'robot_wait_assault_lane',
                                    target_id=base.id, yielding_robot=robot.id,
                                    occupied_pos=robot.pos, next_pos=step)
