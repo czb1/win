@@ -177,6 +177,13 @@ def mining_yield(turn, mem, nav, ledger, hero, target, steps, capacity):
     return amount, claimants
 
 
+def first_day_ore_only(turn, cfg, mem, hero):
+    # Import lazily: opening offense also uses economy's mining helpers.
+    from .opening_offense import first_day_offense_worker
+    worker = first_day_offense_worker(turn, cfg, mem)
+    return worker is not None and worker.id == hero.id
+
+
 def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
                reserved=(), max_steps=2, allow_blocked_home=False, target_only=None):
     """Use otherwise idle daylight near ore; carry it to a later day's sale."""
@@ -199,8 +206,11 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
         return False
     reserved = set(ledger.reserved) | set(reserved) | danger
     options = []
+    ore_only = first_day_ore_only(turn, cfg, mem, hero)
     for target, kind in turn.zones.items():
         if target_only is not None and target != target_only:
+            continue
+        if ore_only and kind == 'stone':
             continue
         if turn.mine_remain.get(target) is not None and turn.mine_remain[target] <= 0:
             continue
@@ -375,8 +385,12 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
     end = min(70 - cfg.return_margin - vendor_home,
               deadline if deadline is not None and turn.tick < deadline else 70)
     options, skipped = [], Counter()
+    ore_only = first_day_ore_only(turn, cfg, mem, hero)
     for p, kind in turn.zones.items():
         if target_only is not None and p != target_only:
+            continue
+        if ore_only and kind == 'stone':
+            skipped['first_day_offense_ore_only'] += 1
             continue
         if turn.mine_remain.get(p) is not None and turn.mine_remain[p] <= 0:
             skipped['mine_exhausted'] += 1

@@ -14,6 +14,20 @@ FIRST_DAY_OFFENSE_TICK = FIRST_DAY_SCOUT_TICK
 BOSS_ORDER = 'BossRobotSummonOrder'
 
 
+def first_day_offense_worker(turn, cfg, mem):
+    """Identify the future wall blocker before its tick-25 task chain starts."""
+    base = enemy_base(turn)
+    if not turn.is_day or turn.day != 1 or base is None:
+        return None
+    if len(turn.workers) < 2 and not first_day_guns_built(turn, cfg):
+        return None
+    state = mem.first_day_offense
+    worker_id = (state.get('worker_id')
+                 if state.get('key') == (turn.day, base.id, base.pos) else None)
+    return (next((w for w in turn.workers if w.id == worker_id), None)
+            or min(turn.workers, key=lambda w: w.id, default=None))
+
+
 def _entries(turn, base):
     ys = [p[1] for p in base.cells]
     return {p for p in enemy_entries(turn, base)
@@ -175,11 +189,10 @@ def act_first_day_offense(turn, cfg, mem, nav, ledger, towers, walls):
     if state.get('key') != key:
         state.clear()
         state.update(key=key, worker_id=None, phase='walls')
-    hero = next((w for w in turn.workers if w.id == state['worker_id']), None)
+    hero = first_day_offense_worker(turn, cfg, mem)
     if hero is None:
-        hero = min(turn.workers, key=lambda w: w.id, default=None)
-        if hero is None:
-            return None
+        return None
+    if hero.id != state['worker_id']:
         state.update(worker_id=hero.id, phase='walls')
         mem.mine_targets.pop(hero.id, None)
         mem.build_targets.pop(hero.id, None)
