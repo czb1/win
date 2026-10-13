@@ -375,9 +375,18 @@ class FirstDayOffenseTests(unittest.TestCase):
         self.assertEqual(memory.first_day_offense['phase'], 'block')
         self.assertEqual(memory.first_day_offense['worker_id'], 10)
 
-    def test_late_purchase_accounts_for_travel_to_the_wall(self):
+    def test_late_worker_purchase_yields_to_the_pioneer(self):
         data = case(60)
         data['teamOur']['roles'][1]['pos'] = {'x': 14, 'y': 20}
+        memory = Memory()
+        _, ledger = step(data, memory, walls=[])
+        self.assertFalse(any(c['action'] == 'buy' for c in ledger.commands.values()))
+        self.assertEqual(memory.first_day_offense['phase'], 'block')
+        self.assertEqual(memory.first_day_offense['transition'], 'pioneer_owns_post_task_purchase')
+
+    def test_purchase_before_51_still_accounts_for_travel_to_the_wall(self):
+        data = case(50)
+        data['teamOur']['roles'][1]['pos'] = {'x': 0, 'y': 0}
         memory = Memory()
         _, ledger = step(data, memory, walls=[])
         self.assertFalse(any(c['action'] == 'buy' for c in ledger.commands.values()))

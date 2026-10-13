@@ -4,7 +4,7 @@ No task content is available before acceptTask. Learned budgets are explicitly
 estimates for a stable task stream, never proof that the next question is equal.
 """
 from collections import Counter
-from .model import pos, neighbours, DEFENCE_RETURN_TICK
+from .model import pos, neighbours, FIRST_DAY_PIONEER_SHOP_TICK
 from .mining import return_destination
 from .task_skills import shape
 from .treasure_clues import treasure_active
@@ -75,6 +75,8 @@ def wait_cell_safe(turn, nav, ledger, hero, cell, forbidden):
 
 def task_options(turn, cfg, mem, nav, ledger, hero, *, switching=False):
     if not turn.is_day or (turn.phase_task and not switching) or hero.id in mem.return_targets:
+        return []
+    if turn.day == 1 and (turn.tick >= FIRST_DAY_PIONEER_SHOP_TICK or mem.first_day_pioneer):
         return []
     danger = set()
     for robot in turn.robots:

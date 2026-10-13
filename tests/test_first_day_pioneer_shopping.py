@@ -8,8 +8,9 @@ from test_robot_assault import fortified_case, TOWERS, WALLS
 from test_agent import payload, setup_case, unit
 from agent.brain import Agent, summon_best_robot
 from agent.commands import command
-from agent.intelligence import Memory
+from agent.intelligence import Memory, Intelligence
 from agent.model import pos
+from agent.task_schedule import task_options
 from agent.spending import (first_day_tasks_finished, first_day_purchase_reserve,
                             prepare_first_day_pioneer, prepare_station_reserve)
 
@@ -82,6 +83,100 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
                 response = agent.decide(data)['roleCommandMap']
                 self.assertFalse(any(c['action'] == 'buy' for c in response.values()))
                 self.assertFalse(next(iter(agent.sessions.values())).first_day_pioneer)
+
+    def test_tick_51_starts_shopping_without_waiting_for_task_refresh(self):
+        for origin in (0, 1):
+            for condition in ('ready', 'cooling', 'exhausted', 'missing'):
+                with self.subTest(origin=origin, condition=condition):
+                    data, mem = self.data(round_no=51 + origin), Memory()
+                    if condition == 'ready':
+                        data['teamOur']['playerTasks'][0]['isValid'] = True
+                    elif condition == 'cooling':
+                        data['teamOur']['playerTasks'][0]['coldDownRounds'] = 30
+                    elif condition == 'missing':
+                        data['teamOur']['playerTasks'] = []
+                    _, cfg, _, _ = fortified_case(data)
+                    cfg.round_origin = origin
+                    turn, cfg, nav, ledger = setup_case(data, **vars(cfg))
+                    ledger.return_pairs = [(turn.pioneer, turn.weapons[0])]
+                    ledger.operator_posts = {2: (1, 9)}
+                    self.assertTrue(prepare_first_day_pioneer(turn, cfg, mem, nav, ledger))
+                    self.assertEqual(ledger.commands['2'], command('buy', name=BASE, num=1))
+
+    def test_task_selection_stops_at_51_and_after_shopping_has_started(self):
+        for day, tick, started, allowed in ((1, 50, False, True), (1, 51, False, False),
+                                           (1, 52, False, False), (1, 50, True, False),
+                                           (2, 51, True, True)):
+            with self.subTest(day=day, tick=tick, started=started):
+                data = self.data(round_no=(day - 1) * 130 + tick)
+                data['teamOur']['playerTasks'][0].update(isValid=True, timeoutRounds=1)
+                turn, cfg, nav, ledger = fortified_case(data)
+                mem = Memory(first_day_pioneer={'phase': 'shop'} if started else {})
+                self.assertEqual(bool(task_options(turn, cfg, mem, nav, ledger, turn.pioneer)), allowed)
+
+    def test_shopping_continues_when_a_task_point_refreshes(self):
+        data, mem = self.data(round_no=51), Memory()
+        self.prepare(data, mem)
+        self.next_turn(data, [BASE], gold=568)
+        data['teamOur']['playerTasks'][0].update(isValid=True, coldDownRounds=0)
+        accepted, _, ledger = self.prepare(data, mem)
+        self.assertTrue(accepted)
+        self.assertEqual(ledger.commands['2'], command('buy', name=BOSS, num=3))
+
+    def test_active_task_at_51_finishes_before_shopping_even_past_67(self):
+        data = self.data(round_no=51)
+        data['phaseTask'] = 'active task'
+        data['teamOur']['playerTasks'][0].update(coldDownRounds=30, timeoutRounds=40)
+        _, cfg, _, _ = fortified_case(data)
+        agent = Agent(cfg)
+        with patch.object(Intelligence, 'task', return_value=('', '')) as task:
+            for tick in (51, 67, 70):
+                data['roundNo'] = tick
+                response = agent.decide(copy.deepcopy(data))['roleCommandMap']
+                mem = next(iter(agent.sessions.values()))
+                self.assertNotIn('2', response)
+                self.assertFalse(mem.first_day_pioneer)
+                self.assertNotIn(2, mem.return_targets)
+                self.assertFalse(mem.stop_reason)
+                self.assertGreater(task.call_args.kwargs['available_rounds'], 0)
+        # A separate daylight completion can still buy while the point cools.
+        agent = Agent(cfg)
+        data['roundNo'] = 51
+        with patch.object(Intelligence, 'task', return_value=('', '')):
+            agent.decide(copy.deepcopy(data))
+        data.update(roundNo=52, phaseTask='')
+        response = agent.decide(copy.deepcopy(data))['roleCommandMap']
+        self.assertEqual(response['2'], command('buy', name=BASE, num=1))
+
+    def test_short_daylight_allows_a_return_that_extends_into_night(self):
+        data, mem = self.data(round_no=64), Memory()
+        turn, cfg, nav, ledger = fortified_case(data)
+        ledger.return_pairs = [(turn.pioneer, turn.weapons[0])]
+        ledger.operator_posts = {2: (0, 0)}
+        self.assertGreater(nav.search(turn.pioneer, {(0, 0)})[0], turn.day_left)
+        self.assertTrue(prepare_first_day_pioneer(turn, cfg, mem, nav, ledger))
+        self.assertEqual(ledger.commands['2'], command('buy', name=BASE, num=1))
+
+    def test_return_continues_at_night_and_attacks_after_arrival(self):
+        data = self.data(round_no=69)
+        _, cfg, _, _ = fortified_case(data)
+        cfg.loadout = ['rocket'] * 3
+        for role in data['teamOur']['roles']:
+            if role['roleType'] == 'gatling':
+                role['roleType'] = 'rocket'
+        agent = Agent(cfg)
+        agent.decide(copy.deepcopy(data))
+        mem = next(iter(agent.sessions.values()))
+        mem.first_day_pioneer = dict(phase='return', station_item=BASE, pending_buy=None)
+        data['roundNo'] = 70
+        response = agent.decide(copy.deepcopy(data))['roleCommandMap']
+        self.assertEqual(response['2']['action'], 'move')
+        data['teamOur']['roles'][2]['pos'] = {'x': mem.gunner_post[0], 'y': mem.gunner_post[1]}
+        data['roundNo'] = 71
+        data['robot']['roles'] = [unit(90, 'smallRobot', 7, 8, targetTeam='challenger')]
+        response = agent.decide(copy.deepcopy(data))['roleCommandMap']
+        attacks = [c for c in response.values() if c['action'] == 'attack']
+        self.assertTrue(any(c['controllerId'] == '2' for c in attacks))
 
     def test_pioneer_buys_both_types_before_using_either(self):
         data, mem = self.data(), Memory()
@@ -282,8 +377,8 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
                 _, _, ledger = self.prepare(data, Memory())
                 self.assertFalse(any(c['action'] == 'buy' for c in ledger.commands.values()))
 
-    def test_remaining_daylight_reduces_batch_to_include_uses_and_return(self):
-        data, mem = self.data(round_no=59), Memory()
+    def test_remaining_daylight_reduces_batch_to_include_each_use(self):
+        data, mem = self.data(round_no=64), Memory()
         self.prepare(data, mem)
         self.next_turn(data, [BASE], gold=568)
         _, _, ledger = self.prepare(data, mem)
@@ -291,6 +386,25 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
         self.assertEqual(ledger.commands['2']['name'], BOSS)
         self.assertGreater(ledger.commands['2']['num'], 0)
         self.assertLess(ledger.commands['2']['num'], 3)
+
+    def test_tick_67_does_not_preempt_a_feasible_robot_purchase(self):
+        data = self.data(round_no=67)
+        data['teamOur']['roles'][0].update(level=3, health=4500)
+        _, cfg, _, _ = fortified_case(data)
+        agent = Agent(cfg)
+        response = agent.decide(copy.deepcopy(data))['roleCommandMap']
+        self.assertEqual(response['2'], command('buy', name=BOSS, num=2))
+        for tick, held in ((68, 2), (69, 1)):
+            data['roundNo'] = tick
+            data['teamOur']['roles'][2]['backpack'] = [BOSS] * held
+            data['teamOur']['goldNum'] = 428
+            data['lastRoundRoleActionResults'] = {'2': True}
+            response = agent.decide(copy.deepcopy(data))['roleCommandMap']
+            self.assertEqual((response['2']['action'], response['2']['name']), ('use', BOSS))
+        data['roundNo'] = 70
+        data['teamOur']['roles'][2]['backpack'] = []
+        response = agent.decide(copy.deepcopy(data))['roleCommandMap']
+        self.assertEqual(response['2']['action'], 'move')
 
     def test_temporarily_blocked_shop_retries_without_finishing_the_chain(self):
         data, mem = self.data(), Memory()
