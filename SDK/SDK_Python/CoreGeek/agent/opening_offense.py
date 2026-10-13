@@ -6,7 +6,7 @@ from .economy import build, build_options
 from .economy_plan import via
 from .logging_system import emit_event
 from .model import DEFENCE_RETURN_TICK, ORES, SUMMON_ORDERS
-from .robot_assault import enemy_base, enemy_entries, scouted_rear_summon_position
+from .robot_assault import enemy_base, first_day_wall_entries, scouted_rear_summon_position
 from .scouting import FIRST_DAY_SCOUT_TICK, prepare_first_day_wall_blocker
 from .spending import (FIRST_DAY_ROBOT_PURCHASE_LIMIT, first_day_guns_built,
                        first_day_purchase_reserve, first_day_pioneer_plan_active)
@@ -59,10 +59,8 @@ def first_day_offense_worker(turn, cfg, mem):
 
 
 def _entries(turn, base):
-    ys = [p[1] for p in base.cells]
-    return {p for p in enemy_entries(turn, base)
-            if p[1] in (min(ys) - 2, max(ys) + 2)
-            and p not in turn.blocked and turn.zones.get(p, 'land') == 'land'}
+    return {p for p in first_day_wall_entries(turn, base)
+            if p not in turn.blocked and turn.zones.get(p, 'land') == 'land'}
 
 
 def _tail_steps(turn, mem, nav, ledger, hero, point, base, sell=True, buy=True):
