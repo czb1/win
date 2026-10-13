@@ -4,6 +4,7 @@ from dataclasses import replace
 from .commands import command
 from .economy import build, build_options
 from .economy_plan import via
+from .logging_system import emit_event
 from .model import DEFENCE_RETURN_TICK, ORES, SUMMON_ORDERS
 from .robot_assault import enemy_base, enemy_entries
 from .scouting import FIRST_DAY_SCOUT_TICK, prepare_first_day_wall_blocker
@@ -15,10 +16,38 @@ FIRST_DAY_OFFENSE_TICK = FIRST_DAY_SCOUT_TICK
 BOSS_ORDER = 'BossRobotSummonOrder'
 
 
+def observe_first_day_gatling(turn, mem):
+    """Cancel from shared, live enemy sight before reserving any new actions."""
+    scout = mem.night_scout
+    if scout.cancelled or turn.day != 1 or not turn.is_day:
+        return
+    gatling = next((unit for unit in turn.enemies if unit.kind == 'gatling'), None)
+    if gatling is None:
+        return
+    worker_id = mem.first_day_offense.get('worker_id') or scout.worker_id
+    scout.cancelled = True
+    scout.key, scout.worker_id, scout.post, scout.wall_entry = None, None, None, None
+    mem.first_day_offense.clear()
+    mem.first_day_offense.update(worker_id=worker_id, phase='mining',
+                                 transition='enemy_gatling_spotted')
+    # Release both the worker's old task chain and any other robot buyer.
+    mem.daytime_jobs = {uid: job for uid, job in mem.daytime_jobs.items()
+                       if uid != worker_id and job.get('kind') != 'robot_buy'}
+    for targets in (mem.build_targets, mem.wall_batches, mem.sale_targets,
+                    mem.return_targets, mem.return_posts):
+        targets.pop(worker_id, None)
+    for workers in (mem.preparation_workers, mem.sold_workers, mem.sale_workers):
+        workers.discard(worker_id)
+    if mem.supply_worker == worker_id:
+        mem.supply_worker = None
+    emit_event('first_day_offense_cancelled', dict(reason='enemy_gatling_spotted',
+               worker=worker_id, enemy=gatling.id, position=gatling.pos), 'decision')
+
+
 def first_day_offense_worker(turn, cfg, mem):
     """Identify the future wall blocker before its tick-25 task chain starts."""
     base = enemy_base(turn)
-    if not turn.is_day or turn.day != 1 or base is None:
+    if mem.night_scout.cancelled or not turn.is_day or turn.day != 1 or base is None:
         return None
     if len(turn.workers) < 2 and not first_day_guns_built(turn, cfg):
         return None
@@ -189,6 +218,14 @@ def act_first_day_offense(turn, cfg, mem, nav, ledger, towers, walls):
     from .brain import observe_robot_summons
     observe_robot_summons(turn, mem)
     state = mem.first_day_offense
+    if mem.night_scout.cancelled:
+        hero = next((w for w in turn.workers if w.id == state.get('worker_id')), None)
+        if hero and hero.health > 165 and turn.tick < DEFENCE_RETURN_TICK:
+            from .mining import earn
+            earn(turn, cfg, mem, nav, ledger, hero, deadline=DEFENCE_RETURN_TICK)
+        # Mining can take an action, but must not retain the scout role or an
+        # idle reservation. Normal recovery/defense handles unavailable work.
+        return None
     key = (turn.day, base.id, base.pos)
     if state.get('key') != key:
         state.clear()

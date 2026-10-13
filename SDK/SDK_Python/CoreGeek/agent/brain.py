@@ -36,7 +36,7 @@ from .spending import (first_day_guns_built, first_day_purchase_reserve, plan_da
 from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scout,
                        yield_wall_entry)
 from .task_schedule import task_options
-from .opening_offense import act_first_day_offense
+from .opening_offense import act_first_day_offense, observe_first_day_gatling
 
 LOG = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ def defenses_maxed(turn, cfg, towers, walls):
 
 def observe_robot_summons(turn, mem):
     """Reserve submitted uses until explicit rejection; never invent success."""
+    observe_first_day_gatling(turn, mem)
     state = getattr(mem, "robot_summon_state", None)
     if state is None or state["day"] != turn.day:
         state = {"day": turn.day, "count": 0, "positions": set(),
@@ -75,6 +76,8 @@ def observe_robot_summons(turn, mem):
         for role in turn.raw.get('teamOur', {}).get('roles', []))))
     state.setdefault("station_pending", None)
     state.setdefault("anchor", None)
+    if mem.night_scout.cancelled:
+        state["buyer"] = None
     if state["observed_round"] == turn.round:
         return state
     results = turn.raw.get("lastRoundRoleActionResults") or {}
@@ -111,6 +114,10 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                       use_only=False):
     """Use carried orders or prepare the strongest affordable surplus order."""
     state = observe_robot_summons(turn, mem)
+    if mem.night_scout.cancelled:
+        ledger.spending_plan['robot_blocked'] = 'enemy_gatling_spotted'
+        ledger.spending_plan['robot_use_blocked'] = 'enemy_gatling_spotted'
+        return False
     # Enemy stations are globally visible; no live base means no assault budget.
     if enemy_base(turn) is None:
         state["buyer"] = None
