@@ -109,7 +109,7 @@ class SkillTests(unittest.TestCase):
         serialized = json.dumps(mem.skills, ensure_ascii=False)
         self.assertNotIn('北京', serialized)
         self.assertNotIn('999', serialized)
-        self.assertNotIn('query_current_api()', serialized)
+        self.assertIn('query_current_api()', serialized)
 
     def test_unsupported_model_answer_does_not_create_skill(self):
         mem = Memory(task_text='query', task_point=(6, 5), task_started=1, bootstrap_done=True,

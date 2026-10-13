@@ -102,3 +102,58 @@ def references(documents, archive):
     result += unresolved
     result += [{'source': p, 'status': 'not_read', 'next_read': 'READ ' + shlex.quote(p) + ' 0'} for p in missing]
     return result, missing
+
+
+def redact(text):
+    """Remove explicit credential literals from historical prompt material."""
+    text = re.sub(r'(?i)(Bearer\s+)[^\s\x22\x27`]+', r'\1<读取当前凭据>', str(text))
+    return re.sub(r'''(?i)((?:api[_-]?key|access[_-]?token|password|secret)\s*[\x22\x27]?\s*[:=]\s*[\x22\x27]?)[^\s\x22\x27`,}]+''',
+                  r'\1<读取当前凭据>', text)
+
+
+def solution_record(mem):
+    """A source/code pair, promoted only after the existing completion signal."""
+    import hashlib
+    from .task_skills import shape
+    pages = [{k: redact(v) if k == 'output' else v for k, v in d.items()}
+             for d in mem.documents if d.get('kind') != 'list']
+    code = redact(mem.answer_python)
+    record = {'id': hashlib.sha256((mem.task_text + code).encode()).hexdigest()[:16],
+            'point': mem.task_point, 'shape': shape(mem.contract.get('example')),
+            'family': mem.contract.get('family'), 'source': mem.contract.get('source'),
+            'question': redact(mem.task_text), 'documents': pages,
+            'python': code, 'evidence': 'legal_submission_then_task_disappeared',
+            'verification': mem.last_attempt.get('http', {}).get('checker', {}).get('passed', False),
+            'successes': 1, 'failures': 0, 'disabled': False,
+            'interfaces': list(mem.method_calls),
+            'scope': '旧题提交后观察到任务完成，不证明当前题算法正确。重新读取当前参数和凭据；必须重新查询，不要直接执行旧代码。'}
+    if mem.recipe_candidate:
+        from .task_skills import learned_method
+        legacy = learned_method(mem.task_point, mem.contract, mem.recipe_candidate, mem.method_calls)
+        record.update(id=legacy['id'], recipe=legacy['recipe'], python=legacy['recipe']['python'])
+    return record
+
+
+def solution_hints(mem, referenced):
+    sources = {r.get('source') for r in referenced}
+    candidates = []
+    for item in mem.skills:
+        if item.get('disabled'):
+            continue
+        explicit = item.get('source') in sources
+        same_stream = item.get('point') == mem.task_point
+        if explicit or same_stream:
+            candidates.append((explicit, same_stream, item))
+    candidates.sort(key=lambda x: x[:2], reverse=True)
+    result, budget = [], 16000
+    for _, _, item in candidates[:3]:
+        value = {k: item[k] for k in ('id', 'question', 'documents', 'python', 'recipe', 'interfaces', 'evidence', 'verification', 'scope') if k in item}
+        import json
+        encoded = json.dumps(value, ensure_ascii=False)
+        if len(encoded) <= budget:
+            result.append(value)
+            budget -= len(encoded)
+        else:
+            result.append({'id': item['id'], 'source': item.get('source'),
+                           'omitted': '历史方法超过上下文预算；先补读被引用题面，不使用残缺程序。'})
+    return result

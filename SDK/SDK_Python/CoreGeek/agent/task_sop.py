@@ -1,7 +1,6 @@
-"""Task contracts and a narrow deployment SOP for the official offline sandbox.
+"""Source-backed submission hints; legacy deployment utility is not auto-routed.
 
-The host only inspects text and builds commands. Even the deterministic repair
-and checker run in executeCmd, never in the HTTP process.
+The host only inspects text and builds commands; execution stays in executeCmd.
 """
 import json
 from pathlib import PurePosixPath
@@ -9,78 +8,87 @@ import re
 
 
 def answer_contract(documents):
-    """Only submission examples, never API response examples, define the shape."""
+    """Extract source-backed submission hints, never a business task category.
+
+    Examples describe examples, not a closed schema. Ambiguous checker commands
+    stay unresolved and can be selected explicitly through task_check.
+    """
+    import shlex
     for document in documents:
-        if document.get("kind") not in ("read", "discover"):
+        if document.get('kind') not in ('read', 'discover'):
             continue
-        text = document.get("output", "").partition('\nTASK_INPUTS ')[0]
-        section = re.search(r"(?:^|\n)#{1,4}\s*(?:提交规则|提交格式|提交形式|答案格式|答案输出格式)[^\n]*\n"
-                            r"(.*?)(?=\n#{1,4} |\Z)", text, re.S)
-        if not section:
+        text = document.get('output', '').partition('\nTASK_INPUTS ')[0]
+        section = re.search(r'(?:^|\n)#{1,4}\s*(?:提交规则|提交格式|提交形式|答案格式|答案输出格式)[^\n]*\n'
+                            r'(.*?)(?=\n#{1,4} |\Z)', text, re.S)
+        if not section and not re.search(r'checker|TOKEN|提交', text, re.I):
             continue
-        # Real tasks put fenced JSON inside Markdown list items (two spaces).
-        samples = re.findall(r"^[ \t]*```(?:json)?[ \t]*\r?\n(.*?)^[ \t]*```[ \t]*\r?$",
-                             section[1], re.S | re.M | re.I)
-        for sample in samples:
+        source = document.get('resolved_path') or document.get('path', '')
+        contract = {'source': source, 'submission_text': section[1] if section else text, 'example_only': True}
+        for sample in re.findall(r'^[ \t]*```(?:json)?[ \t]*\r?\n(.*?)^[ \t]*```[ \t]*\r?$', section[1] if section else text, re.S | re.M | re.I):
             try:
-                example = json.loads(sample)
+                contract['example'] = json.loads(sample)
+                contract['format'] = 'json'
+                break
             except ValueError:
                 continue
-            if not isinstance(example, dict) or not example:
+        if source.startswith('/'):
+            name = PurePosixPath(source)
+            contract['family'] = name.parent.name + '/' + re.sub(r'\d+', '#', name.name)
+            contract['workspace'] = str(name.parent)
+        tokens = (isinstance(contract.get('example'), dict) and set(contract['example']) == {'token'}) or bool(re.search(r'提交[^。\n]*TOKEN', text, re.I))
+        candidates = []
+        for line in text.splitlines():
+            if not re.search(r'checker|验证|校验|检查|TOKEN', line, re.I):
                 continue
-            source = document.get("resolved_path") or document.get("path") or ''
-            contract = {"example": example, "source": source}
-            if source.startswith('/'):
-                name = PurePosixPath(source)
-                contract['family'] = name.parent.name + '/' + re.sub(r'\d+', '#', name.name)
-            if '日志' in text and ('日志文件' in text or '解析脚本' in text):
-                contract['input_kind'] = 'logs'
-            if '四舍五入' in text:
-                contract['rounding'] = 'half_up'
-            checkers = set(re.findall(r'\./(check(?:_[A-Za-z0-9_-]+)?)(?![A-Za-z0-9_./-])', text))
-            if set(example) == {"token"} and checkers:
-                contract["kind"] = "check_token"
-                if len(checkers) != 1:
-                    return contract  # Ambiguous checker: do not choose or invent one.
-                contract['checker'] = next(iter(checkers))
-                contract['repair_spec'] = contract['checker'] == 'check' and 'spec.md' in text
-                cd = re.search(r"`cd\s+([^`\n]+)`", text)
-                source = document.get("resolved_path") or ''
-                if source.startswith("/"):
-                    parent = PurePosixPath(source).parent
-                    workspace = PurePosixPath(cd[1].strip()) if cd else parent
-                    if not workspace.is_absolute():
-                        workspace = parent / workspace
-                    if ".." not in workspace.parts and workspace.is_relative_to(parent):
-                        contract["workspace"] = str(workspace)
-            return contract
+            for command in re.findall(r'`([^`\n]+)`', line):
+                try:
+                    words = shlex.split(command)
+                except ValueError:
+                    continue
+                if words and (words[0].startswith(('./', '/')) or words[0] in ('python', 'python3', 'bash', 'sh')):
+                    # A bare input/output path is not an executable instruction.
+                    if len(words) == 1 and words[0].endswith(('.json', '.log', '.md', '.txt', '.csv')):
+                        continue
+                    if command not in candidates:
+                        candidates.append(command)
+        contract['requires_checker'] = tokens or bool(re.search(r'checker', text, re.I)) or bool(candidates)
+        if tokens:
+            contract['kind'] = 'check_token'
+        if len(candidates) == 1:
+            contract['checker_command'] = candidates[0]
+        contract['checker_candidates'] = candidates
+        contract['validation_source'] = '\n'.join(d.get('output', '') for d in documents)
+        cd = re.search(r'`cd\s+([^`\n]+)`', text)
+        if cd and contract.get('workspace'):
+            workspace = PurePosixPath(cd[1].strip())
+            if not workspace.is_absolute():
+                workspace = PurePosixPath(contract['workspace']) / workspace
+            if '..' not in workspace.parts and workspace.is_relative_to(PurePosixPath(source).parent):
+                contract['workspace'] = str(workspace)
+            else:
+                contract.pop('workspace', None)
+                contract.pop('checker_command', None)
+        return contract
     return {}
 
 
 def answer_error(answer, contract):
-    """Permit partial field sets for credit, but reject extras and wrong shapes."""
-    if not contract:
-        return ""
+    if not contract or contract.get('format') != 'json':
+        return ''
     try:
-        value = json.loads(answer)
-    except ValueError:
-        return "提交规则要求 JSON 对象；文档正文、解释和代码都不是答案。"
-
-    def compatible(actual, example):
-        if isinstance(example, dict):
-            return (isinstance(actual, dict) and bool(actual) and not actual.keys() - example.keys()
-                    and all(compatible(v, example[k]) for k, v in actual.items()))
-        if isinstance(example, list):
-            return isinstance(actual, list)  # An example does not specify list length/items.
-        if example is None:
-            return True
-        if type(example) in (int, float):
-            return type(actual) in (int, float)
-        return type(actual) is type(example)
-
-    if not compatible(value, contract["example"]):
-        return "答案的键或类型不符合提交格式；仅提交已求得的规定字段，禁止额外包装 task/result。"
-    return ""
+        def object_pairs(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError('duplicate key')
+                result[key] = value
+            return result
+        value = json.loads(answer, object_pairs_hook=object_pairs,
+                   parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+        json.dumps(value, allow_nan=False)
+    except (ValueError, TypeError):
+        return '提交要求 JSON；请提供合法 JSON，不能包含解释、重复键或非有限数值。'
+    return ''
 
 
 def engineering_code(workspace, repair=True, checker='check', spec_required=True):

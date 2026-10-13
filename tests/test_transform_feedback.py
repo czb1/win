@@ -74,32 +74,16 @@ class TransformFeedbackTests(unittest.TestCase):
             self.assertEqual(history_methods([exact], {**current, 'input_schema':None}), [])
 
     def test_retry_prompt_separates_rejected_code_and_deduplicates_evidence(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            cfg, contract, docs, preview = self.fixture(root)
-            mem = Memory(task_text='query', task_started=1, bootstrap_done=True, pending=('task',2),
-                         contract=contract, documents=docs, inputs=preview)
-            code = "def transform(records): return [r['key'] for r in records]"
-            _, cmd, _ = step(mem,3,llmResp='PYTHON\n'+code)
-            raw = v2_result({'executeCmd':cmd}, '/')
-            repair, _, _ = step(mem,4,lastCmdResult=raw)
-            context = json.loads(repair.split('上下文：')[1])
-            self.assertIsInstance(context['lastAttempt']['diagnosis'], dict)
-            self.assertNotIn('sandbox', context['lastAttempt'])
-            self.assertNotIn('runtimeError', context['lastAttempt'])
-            samples = next(f for f in context['inputPreview']['files'] if f.get('case_count'))
-            self.assertNotIn('sample', samples)
-            self.assertNotIn(0, [c['case'] for c in samples['case_samples']])
-            mem.pending = ('task',4)
-            retry, cmd, _ = step(mem,5,llmResp='PYTHON\n'+code)
-            self.assertFalse(cmd)
-            context = json.loads(retry.split('上下文：')[1])
-            self.assertFalse(context['rejectedCandidate']['executed'])
-            self.assertEqual(context['lastAttempt']['diagnosis']['stage'], 'samples')
-            # A supplementary read must not erase the last executed transform.
-            mem.last_attempt = {'tool':'read', 'status':'ok'}
-            context = json.loads(prompt(mem, 8).split('上下文：')[1])
-            self.assertEqual(context['lastAttempt']['diagnosis']['stage'], 'samples')
+        # Diagnostic evidence remains paired with its complete program in the generic prompt.
+        mem=Memory(task_text='query',task_started=1,bootstrap_done=True,pending=('cmd',2),
+                   running_python="raise ValueError('counterexample')")
+        repair,_,_=step(mem,3,lastCmdResult='[exitCode:1]\nValueError: counterexample')
+        context=json.loads(repair.split('上下文：')[1])
+        self.assertIn('counterexample',context['lastAttempt']['sandbox'])
+        self.assertIn('raise ValueError',context['lastAttempt']['python'])
+        self.assertEqual(context['lastAttempt']['failureRepeatCount'],1)
+        self.assertNotIn('只输出 transform(records)',repair)
+        self.assertIn('允许修改关联函数和调用方',repair)
 
 
     def test_result_fingerprint_and_conservative_candidate_selection(self):

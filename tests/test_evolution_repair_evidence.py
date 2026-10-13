@@ -14,29 +14,6 @@ from agent.task_transform_feedback import observe, prompt
 
 
 class RepairEvidenceTests(unittest.TestCase):
-    def test_line_evidence_preserves_spaces_and_classification_without_zero_gate(self):
-        with tempfile.TemporaryDirectory() as directory:
-            Path(directory, 'sensor.log').write_text('1  link-down\n2  okay\n' * 30)
-            code = """def parse_sensor_line(line):
-    stamp, signal = line.split()
-    return {'system':'sensor','timestamp':int(stamp),'signal':signal,'is_fault':False}
-with open('sensor.log') as source:
-    rows = [parse_sensor_line(line) for line in source]
-task_result({'count':sum(row['is_fault'] for row in rows)})
-"""
-            raw, result, report = execute(code, directory)
-            self.assertEqual(result[0], 'ok', raw)
-            evidence = report['logs']['parsers']['parse_sensor_line']['samples']['normal']
-            self.assertEqual(len(evidence), 2)
-            self.assertEqual(evidence[0]['line'], '1  link-down\n')
-            self.assertEqual(evidence[0]['parsed']['signal'], 'link-down')
-            self.assertFalse(evidence[0]['parsed']['is_fault'])
-            mem = Memory(task_text='query', task_started=1, bootstrap_done=True,
-                         pending=('cmd', 1), running_python=code,
-                         contract={'input_kind':'logs','example':{'count':0}},
-                         inputs={'directory':directory,'files':[{'path':'sensor.log'}]})
-            _, _, ledger = step(mem, 2, lastCmdResult=raw)
-            self.assertEqual(json.loads(ledger.commands['11']['taskAnswer']), {'count':0})
 
     def test_related_parser_can_be_fixed_and_signature_requests_full_mode(self):
         code = """def parse_worker_line(line):
@@ -56,11 +33,10 @@ task_result({'count':sum(row['is_fault'] for row in rows)})
         with self.assertRaises(FullRepairRequired):
             merge_repair(code, patch.replace('(line)', '(line, extra)'), context)
         mem = Memory(task_text='query', task_started=1, bootstrap_done=True,
-                     pending=('task',2), repair_python=code,
-                     log_diagnostics={'logs':{'parsers':{'parse_line':{'unmatched_count':1}}}},
+                     pending=('task',2),
                      contract={'input_kind':'logs','example':{'count':0}})
         step(mem,3,llmResp='PYTHON\n'+patch.replace('(line)', '(line, extra)'))
-        self.assertEqual(mem.repair_mode,'full')
+        self.assertIsNotNone(mem.running_python)  # Signature changes no longer require an extra repair turn.
 
     def checker_example(self, records, message):
         helper = transform_fixture.WeakModelTests()

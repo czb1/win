@@ -64,7 +64,7 @@ def document_code(path, start=0, base=None):
             "local = os.path.join(cfg['base'], requested) if cfg['base'] else requested\n"
             "if os.path.isfile(local):\n"
             "    matches.append(os.path.abspath(local))\n"
-            "root = '/tmp/selfEvolutionTask'\n"
+            "root = '/tmp'\n"
             "wanted = os.path.basename(requested)\n"
             "suffix = os.path.normpath(requested).replace('\\\\', '/').strip('/')\n"
             "if not matches and os.path.isdir(root):\n"

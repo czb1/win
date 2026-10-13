@@ -1,7 +1,6 @@
 """Build model execution wrappers; execution stays in the official sandbox."""
 import json
 import re
-from .task_evidence import LOG_AUDIT
 
 
 def command_output(raw):
@@ -13,10 +12,10 @@ def command_output(raw):
     return header + sep + body
 
 
-def runtime_code(code, directory=None, rounding=None, log_task=False, parser=None):
+def runtime_code(code, directory=None, rounding=None, log_task=False, parser=None, contract=None):
     return (f"TASK_CODE = {code!r}\nTASK_DIRECTORY = {directory!r}\n"
-            f"TASK_ROUNDING = {rounding!r}\nTASK_LOG = {log_task!r}\nLEARNED_PARSER = {parser!r}\n"
-            + _RUNTIME.replace("# LOG_AUDIT_SETUP", LOG_AUDIT if log_task else ""))
+            + f"TASK_CONTRACT = {contract or {}!r}\n"
+            + _RUNTIME)
 
 
 def runtime_result(raw):
@@ -38,41 +37,19 @@ def runtime_result(raw):
 
 
 _RUNTIME = r'''
-import ast
 import contextlib
-from decimal import Decimal, ROUND_HALF_UP
 import json
 import os
 import sys
 import tempfile
 import traceback
+import re
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, urlencode
 
 report = {'http_successes': 0, 'http_errors': [], 'http_calls': [], 'json_shapes': []}
-
-def task_round(value, ndigits=None):
-    places = 0 if ndigits is None else ndigits
-    rounded = Decimal(str(value)).quantize(Decimal('1').scaleb(-places), rounding=ROUND_HALF_UP)
-    return int(rounded) if ndigits is None else float(rounded)
-
-def track_parser(function):
-    # Observe the proposed parser, without supplying guessed formats or records.
-    def observed(*args, **kwargs):
-        if TASK_LOG:
-            return function(*args, **kwargs)  # LOG_AUDIT owns structural coverage.
-        coverage = report.setdefault('parse_lines', {'total': 0, 'matched': 0, 'unmatched': []})
-        coverage['total'] += 1
-        value = function(*args, **kwargs)
-        if value is not None and value is not False:
-            coverage['matched'] += 1
-        elif len(coverage['unmatched']) < 3:
-            line = kwargs.get('line') or next((x for x in reversed(args) if isinstance(x, str)), '')
-            coverage['unmatched'].append(line[:240])
-        return value
-    observed.__wrapped__ = function
-    return observed
+request_errors = {}
 
 def remember_call(method, url, headers=None, params=None):
     address = urlsplit(str(url))
@@ -97,15 +74,16 @@ def remember_call(method, url, headers=None, params=None):
 
 
 def failure(url, detail):
-    # Do not repeat headers, credentials, or query strings in diagnostics.
-    path = urlsplit(str(url)).path
-    if len(report['http_errors']) < 4:
-        report['http_errors'].append({'path': path[:240], 'error': str(detail)[:1200]})
+    # Full URL is used only as an internal retry identity, never emitted.
+    request_errors[str(url)] = {'path': urlsplit(str(url)).path[:240], 'error': str(detail)[:1200]}
+
+def recovered(url):
+    request_errors.pop(str(url), None)
 
 def payload_error(url, value):
-    if isinstance(value, dict) and (value.get('status') in ('error', 'failed')
-                                   or value.get('success') is False):
-        failure(url, json.dumps(value, ensure_ascii=False))
+    # Business payloads can legitimately contain success=false/status=failed.
+    # Keep structure as evidence; do not turn domain data into transport errors.
+    return
 
 def json_shape(value, depth=0):
     """Return bounded structural metadata without scalar response values."""
@@ -159,6 +137,7 @@ def checked_urlopen(url, *args, **kwargs):
         raise
     if str(address).startswith(('http://', 'https://')):
         report['http_successes'] += 1
+        recovered(address)
         remember_call(getattr(url, 'get_method', lambda: 'GET')(), address,
                       dict(url.header_items()) if hasattr(url, 'header_items') else {})
     return response
@@ -179,24 +158,30 @@ else:
             timeout = 8
         kwargs['timeout'] = (tuple(min(float(x), 8) for x in timeout)
                              if isinstance(timeout, tuple) else min(float(timeout), 8))
+        identity_url = str(url)
+        params = kwargs.get('params')
+        if params:
+            identity_url += ('&' if '?' in identity_url else '?') + (urlencode(params, doseq=True) if not isinstance(params, str) else params)
         try:
             response = original_request(session, method, url, *args, **kwargs)
         except requests.exceptions.RequestException as error:
-            failure(url, type(error).__name__)
+            failure(identity_url, type(error).__name__)
             raise
         if not 200 <= response.status_code < 300:
-            failure(url, 'HTTP %s: %s' % (response.status_code, response.text[:1000]))
+            failure(identity_url, 'HTTP %s: %s' % (response.status_code, response.text[:1000]))
         else:
             report['http_successes'] += 1
+            recovered(identity_url)
             remember_call(method, url, kwargs.get('headers') or getattr(session, 'headers', {}),
                           kwargs.get('params'))
+        response._task_identity_url = identity_url
         return response
 
     def checked_json(response, *args, **kwargs):
         try:
             value = original_json(response, *args, **kwargs)
         except ValueError:
-            failure(response.url, 'invalid JSON response')
+            failure(getattr(response, '_task_identity_url', response.url), 'invalid JSON response')
             raise
         remember_json_shape(response.url, value)
         payload_error(response.url, value)
@@ -205,33 +190,44 @@ else:
     requests.sessions.Session.request = checked_request
     requests.models.Response.json = checked_json
 
-# LOG_AUDIT_SETUP
 
-def parser_exception(name):
-    error = sys.exc_info()[1]
-    if isinstance(error, Exception):
-        detail = type(error).__name__ + ": " + str(error)
-        log_report['parsers'].setdefault(name, {})['error'] = detail[:240]
-        trace = traceback.format_exc()
-        log_report['parsers'][name]['exception_location'] = (
-            '[traceback head omitted]\n' + trace[-2000:] if len(trace) > 2000 else trace)
-        log_error("caught_parser_error", name + ": " + detail)
+# Checker runs after model code, with captured output and a shared time budget.
+import subprocess
+import time
+import shlex
+import hashlib
+from pathlib import Path
+started = time.monotonic()
+checker_selection = TASK_CONTRACT.get('checker_command')
+# Record documented checker file identities before model code can write anything.
+checker_files = dict(TASK_CONTRACT.get('checker_files', {}))
+for documented in TASK_CONTRACT.get('checker_candidates', []):
+    try:
+        words = shlex.split(documented)
+    except ValueError:
+        continue
+    for word in words:
+        path = Path(word)
+        path = path if path.is_absolute() else Path(TASK_DIRECTORY or os.getcwd()) / path
+        if path.is_file() and path.stat().st_size <= 1048576:
+            checker_files.setdefault(str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest())
 
-def instrument(tree):
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            is_parser = node.name == "parse_line" or (node.name.startswith("parse_") and node.name.endswith(("_log", "_line")))
-            if node.name == "parse_line" or TASK_LOG and node.name.startswith("parse_") and node.name.endswith("_line"):
-                node.decorator_list.append(ast.Name(id="_task_track_parser", ctx=ast.Load()))
-            if TASK_LOG and is_parser:
-                node.decorator_list.append(ast.Name(id="_task_audit_parser", ctx=ast.Load()))
-                for handler in ast.walk(node):
-                    if isinstance(handler, ast.ExceptHandler):
-                        handler.body.insert(0, ast.Expr(value=ast.Call(func=ast.Name(id="_task_parser_exception", ctx=ast.Load()), args=[ast.Constant(value=node.name)], keywords=[])))
-            if TASK_LOG and node.name.startswith("merge_") and "event" in node.name:
-                node.decorator_list.append(ast.Name(id="_task_audit_merge", ctx=ast.Load()))
-    ast.fix_missing_locations(tree)
-    return tree
+def task_check(command):
+    global checker_selection
+    if not isinstance(command, str) or not command or len(command) > 2000:
+        raise ValueError('checker command must be a documented string')
+    if command not in re.findall(r'`([^`\n]+)`', TASK_CONTRACT.get('validation_source', '')):
+        raise ValueError('checker command not observed in current documentation; READ its source first')
+    checker_selection = command
+    # Actual check is deliberately deferred until all current file writes finish.
+
+if checker_files:
+    report['checker_files'] = checker_files
+
+answer_value = []
+def task_result(value):
+    json.dumps(value, ensure_ascii=False, allow_nan=False)
+    answer_value[:] = [value]
 
 exit_code = 0
 with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
@@ -239,38 +235,8 @@ with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
         try:
             if TASK_DIRECTORY:
                 os.chdir(TASK_DIRECTORY)
-            scope = {'__name__': '__main__', '_task_track_parser': track_parser,
-                     'task_result': lambda value: print('FINAL_ANSWER\n' + json.dumps(value, ensure_ascii=False))}
-            learned_scope = {}
-            if TASK_LOG:
-                scope.update(_task_audit_parser=audited_function, _task_parser_exception=parser_exception,
-                             _task_audit_merge=audit_merge, task_events=task_events, task_parse=task_parse)
-                if LEARNED_PARSER:
-                    learned_scope = scope
-                    exec(compile(instrument(ast.parse(LEARNED_PARSER)), '<learned-parser>', 'exec'), learned_scope)
-            if TASK_ROUNDING == 'half_up':
-                scope['round'] = task_round
-            tree = ast.parse(TASK_CODE, '<task>', 'exec')
-            if TASK_LOG and LEARNED_PARSER:
-                names = [n.name for n in ast.parse(LEARNED_PARSER).body if isinstance(n, ast.FunctionDef)]
-                # Current definitions override defaults in the SAME globals mapping,
-                # including calls made from retained functions and task_parse.
-                overrides = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
-                report['reused_parsers'] = [name for name in names if name not in overrides]
-                report['overridden_parsers'] = [name for name in names if name in overrides]
-            if TASK_LOG:
-                # Reserve the helper: weak models often redefine it as print('RESULT', value).
-                tree.body = [n for n in tree.body if not (isinstance(n, ast.FunctionDef) and n.name == 'task_result')]
-                class ResultCalls(ast.NodeTransformer):
-                    def visit_Call(self, node):
-                        self.generic_visit(node)
-                        if isinstance(node.func, ast.Name) and node.func.id == 'task_result':
-                            node.func.id = '_task_emit_result'
-                        return node
-                scope['_task_emit_result'] = scope['task_result']
-                tree = ResultCalls().visit(tree)
-            tree = instrument(tree)
-            exec(compile(tree, '<task>', 'exec'), scope)
+            scope = {'__name__': '__main__', 'task_result': task_result, 'task_check': task_check}
+            exec(compile(TASK_CODE, '<task>', 'exec'), scope)
         except SystemExit as error:
             exit_code = error.code if isinstance(error.code, int) else (1 if error.code else 0)
         except BaseException:
@@ -278,13 +244,50 @@ with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
             exit_code = 1
     output.seek(0)
     body = output.read(60001)
+report['http_errors'] = list(request_errors.values())[:4]
+if not exit_code and not report['http_errors'] and TASK_CONTRACT.get('requires_checker'):
+    report['checker'] = {'passed': False}
+    if checker_selection:
+        try:
+            for filename, fingerprint in checker_files.items():
+                if hashlib.sha256(Path(filename).read_bytes()).hexdigest() != fingerprint:
+                    raise ValueError('checker source changed; cannot authorize a token')
+            timeout = min(8, 14 - (time.monotonic() - started))
+            if timeout <= 0:
+                raise TimeoutError('no checker time left')
+            with tempfile.TemporaryFile() as check_output:
+                # Command is from current documentation; execution stays in the official sandbox.
+                checked = subprocess.run(checker_selection, shell=True, stdout=check_output,
+                                         stderr=subprocess.STDOUT, timeout=timeout)
+                check_output.seek(0)
+                raw_check = check_output.read(16001)
+            feedback = raw_check.decode('utf-8', errors='replace')
+            passed = checked.returncode == 0 and len(raw_check) <= 16000
+            tokens = re.findall(r'^TOKEN:[ \t]*(\S+)[ \t]*$', feedback, re.M)
+            if TASK_CONTRACT.get('kind') == 'check_token':
+                passed = passed and len(tokens) == 1
+                if passed:
+                    answer_value[:] = [{'token': tokens[0]}]
+            report['checker'] = {'passed': passed, 'command': checker_selection,
+                                 'exitCode': checked.returncode, 'feedback': feedback[:16000]}
+            if not passed:
+                exit_code = 1
+        except Exception as error:
+            report['checker']['feedback'] = str(error)
+            exit_code = 1
+    else:
+        report['checker']['feedback'] = '未确认验证命令；READ 说明后用 task_check 选择题面原命令。'
+        exit_code = 1
+if answer_value:
+    report['stdout'] = body[:6000]
 print('TASK_RUNTIME ' + json.dumps(report, ensure_ascii=False))
-print(body[:60000], end='')
+if answer_value and not exit_code and not report['http_errors'] and len(body) <= 60000:
+    print('FINAL_ANSWER')
+    print(json.dumps(answer_value[0], ensure_ascii=False, allow_nan=False))
+else:
+    print(body[:60000], end='')
 if len(body) > 60000:
     print('\n[TRUNCATED]')
-if TASK_LOG and (log_report['errors'] or any(not f['complete'] for f in log_report['files'].values())):
-    print('\nTASK_INPUT_FAILED: missing/incomplete input or caught parsing error; repair before submitting.')
-    exit_code = 1
 if report['http_errors']:
     # Caught HTTP/JSON errors must not turn into successful empty statistics.
     print('\nTASK_QUERY_FAILED: fix the request; no aggregate answer is valid from this run.')
