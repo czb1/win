@@ -22,6 +22,7 @@ class Navigator:
         self._distances = {}
         self.diagnostics = {}
         self.gate_guard = None
+        self.traffic_forbidden = {}
 
     def record_search(self, uid, outcome, **facts):
         record = self.diagnostics.setdefault(uid, {"outcomes": {}, "last_failure": None})
@@ -51,6 +52,21 @@ class Navigator:
                        is_driving=hero.is_driving, target=selected[1], accepted=accepted), 'economy')
         return accepted
 
+    def vacated_cells(self, hero):
+        """The actor's real cell, unless a simulated structure now occupies it."""
+        actual = self.turn.units.get(hero.id)
+        origin = actual.pos if actual is not None else hero.pos
+        replaced = (self.turn.zones.get(origin, "land") != "land"
+                    or any(u.id != hero.id and origin in u.cells
+                           for u in (*self.turn.ours, *self.turn.enemies, *self.turn.robots,
+                                     *self.turn.summon_robots)))
+        return set() if replaced else {origin}
+
+    def actor_distances_to(self, hero, targets, reserved=(), exact=False):
+        """Reverse forecasts use the same identity and traffic rules as search."""
+        return self.distances_to(targets, self.vacated_cells(hero),
+                                 set(reserved) | set(self.traffic_forbidden.get(hero.id, ())), exact)
+
     def distances_to(self, targets, vacated=(), reserved=(), exact=False):
         """One reverse BFS serves every mine; no BFS per deposit endpoint."""
         check_time(self.deadline)
@@ -79,14 +95,23 @@ class Navigator:
     def search(self, hero, goals, reserved=(), *, with_endpoint=False):
         goals, reserved = set(goals), set(reserved)
         route = self._search(hero, goals, reserved, with_endpoint=with_endpoint)
-        if self.gate_guard is not None:
+        actual = self.turn.units.get(hero.id)
+        if self.gate_guard is not None and (actual is None or actual.pos == hero.pos):
             self.gate_guard.observe_search(hero, goals, reserved, route[:2] if route else None)
         return route
 
     def _search(self, hero, goals, reserved=(), *, with_endpoint=False):
         check_time(self.deadline)
         avoided = self.memory.blocked(hero.id) if self.memory else set()
-        occupied = (self.turn.blocked | set(reserved)) - {hero.pos}
+        # Identity, not the proxy's position, determines which occupancy is ours.
+        # Keep reservations and any structure constructed on the vacated square.
+        actual = self.turn.units.get(hero.id)
+        origin = actual.pos if actual is not None else hero.pos
+        occupied = self.turn.blocked - self.vacated_cells(hero)
+        occupied.update(reserved)
+        occupied.update(self.traffic_forbidden.get(hero.id, ()))
+        if origin == hero.pos:
+            occupied.discard(hero.pos)
         blocked = frozenset(occupied | avoided)
         valid = {g for g in goals if self.turn.inside(g)}
         open_goals = valid - blocked

@@ -8,7 +8,7 @@ from .model import ORES, WEAPONS, HEROES, CHARACTERS, DEFENCE_RETURN_TICK, pos, 
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, spare_mine, sale_inventory, return_destination
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit, delivery_destination, development_pending, reserve_income_worker
-from .economy_plan import maxed_weapon_mining_phase
+from .economy_plan import maxed_weapon_mining_phase, late_economy_allowed
 from .treasure_clues import treasure_active
 from .wall_health import needs_night_repair
 
@@ -32,7 +32,7 @@ def dusk_stop(turn, nav, ledger, hero, destinations, actions=1, require_home=Tru
     # All delivery endpoints share one reverse return search. Forward BFS
     # from every adjacent wall tile made early large batches exceed deadlines.
     return_reserved = (set(ledger.reserved) | (nav.memory.blocked(hero.id) if nav.memory else set())) - {hero.pos}
-    back_distances = (nav.distances_to(home, vacated={hero.pos}, reserved=return_reserved, exact=exact)
+    back_distances = (nav.actor_distances_to(hero, home, reserved=return_reserved, exact=exact)
                       if require_home and home else {})
     options = []
     cells = {p for target in destinations for p in neighbours(target)} - set(destinations)
@@ -1113,7 +1113,7 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
         max_steps = 0 if turn.tick >= cfg.economy_rounds and sale_inventory(turn, mem, hero) else 2
         if spare_mine(turn, cfg, mem, nav, ledger, hero, max_steps=max_steps):
             return
-    if turn.station:
+    if turn.station and not late_economy_allowed(turn, cfg, mem, ledger, hero):
         walk(nav, ledger, hero, turn.station.cells)
 
 
