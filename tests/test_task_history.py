@@ -70,11 +70,12 @@ class TaskHistoryTests(unittest.TestCase):
 
     def test_history_read_does_not_replace_current_contract_or_inputs(self):
         mem = Memory(task_text='query', task_started=1, bootstrap_done=True,
+                     task_descriptor={'taskType': '自进化类1'},
                      pending=('cmd', 1), running_tool={'kind': 'reference', 'path': '/work/old.md'},
                      documents=self.current(), contract={'example': {'count': 0}}, inputs={'directory': '/current'})
         raw = '[exitCode:0]\nDOCUMENT /work/old.md OFFSET 0\n# Old\nOld requirements\nTASK_INPUTS {"directory":"/old"}'
         step(mem, 2, lastCmdResult=raw)
         self.assertEqual(mem.inputs['directory'], '/current')
         self.assertEqual(mem.contract, {'example': {'count': 0}})
-        self.assertIn('/work/old.md', mem.task_archive)
+        self.assertIn('/work/old.md', mem.current_task_archive())
         self.assertEqual(mem.documents, self.current())
