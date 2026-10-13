@@ -2,10 +2,12 @@
 from collections import deque
 from dataclasses import dataclass, field
 from .model import WEAPONS, distance, pos
+from .vehicle import VehicleMemory
 
 
 @dataclass
 class MovementMemory:
+    vehicle: VehicleMemory = field(default_factory=VehicleMemory)
     failures: dict = field(default_factory=dict)
     failure_counts: dict = field(default_factory=dict)
     trails: dict = field(default_factory=dict)
@@ -15,6 +17,7 @@ class MovementMemory:
     looped: set = field(default_factory=set)
 
     def observe(self, turn, mem):
+        self.vehicle.observe(turn, mem)
         self.looped.clear()
         self.failures = {k: r for k, r in self.failures.items()
                          if r > turn.round and k[0] in turn.units}

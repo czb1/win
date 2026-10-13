@@ -40,12 +40,12 @@ class VehicleTests(unittest.TestCase):
         self.assertTrue(n.move_along(t.pioneer, l, walking, {(10, 5)}))
         self.assertEqual(pos(l.commands['11']['targetPos'][0]), (2, 5))
 
-    def test_equal_cost_and_long_detour_keep_original_move(self):
+    def test_equal_cost_and_detour_now_prefer_vehicle(self):
         for data, goal in ((case(), (3, 5)), (case(car=(1, 13)), (5, 5))):
             t, _, n, l, walking, faster = travel(data, goal)
             self.assertIsNone(faster)
             self.assertTrue(n.move_along(t.pioneer, l, walking, {goal}))
-            self.assertEqual(pos(l.commands['11']['targetPos'][0]), walking[1])
+            self.assertNotEqual(pos(l.commands['11']['targetPos'][0]), walking[1])
 
     def test_already_driving_two_cell_action_reserves_both_cells(self):
         t, _, n, l, walking, faster = travel(case(start=(2, 5), driving=True))
@@ -164,7 +164,7 @@ class VehicleTests(unittest.TestCase):
         data['phaseTask'] = 'Return the integer 1.'
         data['teamOur']['playerTasks'] = [task(x=3)]
         agent = Agent(Config(layout_mode='explicit'))
-        with patch('agent.vehicle.faster_route', wraps=faster_route) as planner:
+        with patch('agent.vehicle.plan_route', side_effect=AssertionError('active task moved')) as planner:
             response = agent.decide(data)
         self.assertNotEqual(response['roleCommandMap'].get('11', {}).get('action'), 'move')
         planner.assert_not_called()
@@ -206,7 +206,7 @@ class VehicleTests(unittest.TestCase):
 
     def test_search_timeout_keeps_valid_original_action(self):
         t, _, n, l, walking, _ = travel(case())
-        with patch('agent.vehicle.faster_route', side_effect=DeadlineExceeded):
+        with patch('agent.vehicle.plan_route', side_effect=DeadlineExceeded):
             self.assertTrue(n.move_along(t.pioneer, l, walking, {(10, 5)}))
         self.assertEqual(l.commands['11'], command('move', walking[1]))
 

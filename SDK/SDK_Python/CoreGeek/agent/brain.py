@@ -435,8 +435,10 @@ class Agent:
                 mem.robot_assault = RobotAssaultMemory()
             # A paid base heal takes the pioneer before task or gun allocation,
             # including at night and on the final daylight turn.
+            nav.vehicle_detours = False
             heal_station_with_pioneer(turn, mem, nav, ledger)
             prepare_station_reserve(turn, self.cfg, mem, nav, ledger)
+            nav.vehicle_detours = True
             opening_scout_excluded = ({w.id for w in turn.workers}
                 if turn.day == 1 and len(turn.workers) < 2
                 and not first_day_guns_built(turn, self.cfg) else set())
@@ -484,6 +486,7 @@ class Agent:
                                                  task_return + self.cfg.return_margin + r.attack_range)
                 or distance(h.pos, r.pos) <= max(self.cfg.task_danger_radius, r.attack_range + 2))
                 for r in turn.robots))
+            nav.vehicle_detours = not danger
             # Every day shares one task/recall/wall cutoff, independent of
             # the operator's distance or the general logistics margin.
             defence_return_due = turn.is_day and bool(home) and turn.tick >= DEFENCE_RETURN_TICK
@@ -774,7 +777,9 @@ class Agent:
                     else:
                         pioneer(turn, self.cfg, mem, nav, ledger, h, shopping=turn.day > 1)
                         if h.id not in ledger.used:
-                            park_idle_pioneer(turn, self.cfg, mem, nav, ledger, h)
+                            from .vehicle import take_idle_vehicle
+                            if not take_idle_vehicle(turn, self.cfg, mem, nav, ledger, h):
+                                park_idle_pioneer(turn, self.cfg, mem, nav, ledger, h)
                 yield_idle_worker_for_traffic(turn, mem, nav, ledger, returning)
                 finish_daytime_work(turn, self.cfg, mem, nav, ledger, returning)
                 emit_event('spending_plan', dict(ledger.spending_plan,
