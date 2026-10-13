@@ -15,10 +15,10 @@ from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger, command
 from .combat import (assignments, fixed_gatling_crew, operator_posts, return_plan, defend, emergency_items,
                      shared_crew, shared_defend, clear_gunner_route, yield_gate_operators,
-                     finish_weapon_reports, catch_nearby_imp)
+                     finish_weapon_reports, catch_nearby_imp, relieve_night_pioneer)
 from .projectiles import wall_gates
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
-from .economy import reserve_treasure_gold
+from .economy import reserve_treasure_gold, pioneer_needs_night_relief
 from .treasure_clues import treasure_active
 from .economy import first_day_front, build
 from .economy_plan import via, reserve_income_worker, maxed_weapon_mining_phase
@@ -516,8 +516,12 @@ class Agent:
                 # Prefer releasing the other worker's watch over this operator.
                 fixed_gatling_crew(turn, mem, nav, ledger)
             if turn.day == 1:
+                relief_ids = ({mem.pioneer_relief['worker_id']}
+                              if mem.pioneer_relief.get('day') == turn.day and not turn.is_day
+                              and (not h or pioneer_needs_night_relief(turn)) else set())
                 scout = scout or act_night_scout(turn, mem.night_scout, nav, ledger,
-                                        home_roles=(mem.gatling_operator_id, mem.wall_watch_id))
+                                        home_roles=(mem.gatling_operator_id, mem.wall_watch_id),
+                                        excluded=relief_ids)
             pioneer_gunner = bool(h and turn.weapons and
                                  ((not turn.is_day and not finish_opening_task) or not hold_task))
             if not turn.is_day and pioneer_gunner:
@@ -528,15 +532,23 @@ class Agent:
             excluded = ({h.id} if h and hold_task else set())
             if scout:
                 excluded.add(scout.id)
+            relief_excluded = excluded | ({mem.gatling_operator_id} if mixed else set())
+            if mem.wall_watch_id is not None:
+                relief_excluded.add(mem.wall_watch_id)
+            relief = relieve_night_pioneer(turn, mem, nav, ledger, excluded=relief_excluded)
+            if relief and h:
+                excluded.add(h.id)
             alive = {hero.id for hero in turn.heroes}
             mem.operator_yields = {uid: state for uid, state in mem.operator_yields.items()
                                   if not turn.is_day and uid in alive and state["until"] >= turn.round}
             unavailable = {uid: {state["gate"]} for uid, state in mem.operator_yields.items()}
             if pioneer_gunner and not mixed:
-                excluded.update(worker.id for worker in turn.workers)
+                excluded.update(worker.id for worker in turn.workers
+                                if not relief or worker.id != relief[0].id)
             mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items() if uid not in excluded}
             mem.return_posts = {uid: post for uid, post in mem.return_posts.items() if uid not in excluded}
-            shared = shared_crew(turn, self.cfg, mem, nav, towers, walls, excluded=excluded)
+            shared = shared_crew(turn, self.cfg, mem, nav, towers, walls, excluded=excluded,
+                                 relief=relief[0] if relief else None)
             if mixed:
                 gatling_pairs = fixed_gatling_crew(turn, mem, nav, ledger,
                                                   excluded={scout.id} if scout else ())
@@ -570,13 +582,16 @@ class Agent:
             else:
                 if mixed:
                     pairs = assignments(turn, nav, ledger,
-                        excluded={worker.id for worker in turn.workers} | excluded,
+                        excluded={worker.id for worker in turn.workers
+                                  if not relief or worker.id != relief[0].id} | excluded,
+                        fixed={relief[0].id: relief[1].id} if relief else None,
                         towers=sorted((w for w in turn.weapons if w.kind == "rocket"),
                                       key=lambda w: (bool(w.cooldown), w.id)))
                     pairs += gatling_pairs
                 else:
                     pairs = assignments(turn, nav, ledger, excluded=excluded,
-                                        fixed=mem.return_targets if turn.is_day else None)
+                                        fixed=({relief[0].id: relief[1].id} if relief else
+                                               mem.return_targets if turn.is_day else None))
                 fixed = ({hero.id: weapon.id for hero, weapon in pairs} if mixed else mem.return_targets)
                 pairs, posts = (return_plan(turn, nav, pairs, walls, fixed, mem.return_posts)
                                 if turn.is_day else (pairs, operator_posts(turn, nav, pairs, walls,
@@ -588,7 +603,7 @@ class Agent:
                 # Recall from the current position early enough for an approaching
                 # wave, but release workers immediately when local danger ends.
                 def needs_defence(hero, tower):
-                    if hero.kind != "worker":
+                    if hero.kind != "worker" or (relief and hero.id == relief[0].id):
                         return True
                     route = (nav.search(hero, {posts[hero.id][0]}) if hero.id in posts
                              else nav.approach(hero, [tower.pos]))
@@ -607,7 +622,8 @@ class Agent:
             # the other worker's wall-watch role when the local wave clears.
             watcher = select_watch(turn, mem, pairs + gatling_pairs,
                                    fixed_operator=mem.gatling_operator_id if mixed else None,
-                                   excluded={scout.id} if scout else ())
+                                   excluded=({scout.id} if scout else set()) |
+                                            ({relief[0].id} if relief else set()))
             ledger.return_pairs = pairs
             ledger.operator_posts = {uid: p for uid, (p, _) in posts.items()}
             for actor, weapon in pairs:

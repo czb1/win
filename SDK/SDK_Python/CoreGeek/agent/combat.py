@@ -714,7 +714,43 @@ def emergency_items(turn, ledger):
 
 
 
-def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
+def relieve_night_pioneer(turn, mem, nav, ledger, excluded=()):
+    """Recall one free worker and retain the handoff for this wounded night."""
+    from .economy import pioneer_needs_night_relief
+    hero = turn.pioneer
+    state = mem.pioneer_relief
+    if turn.is_day or (hero and not pioneer_needs_night_relief(turn)) or state.get('day') != turn.day:
+        state.clear()
+    if not pioneer_needs_night_relief(turn) and not state:
+        return None
+    if not turn.weapons:
+        return None
+    target = state.get('tower_id', mem.return_targets.get(hero.id) if hero else None)
+    tower = next((w for w in turn.weapons if w.id == target), None)
+    if tower is None:
+        towers = [w for w in turn.weapons if w.kind == 'rocket'] or turn.weapons
+        tower = min(towers, key=lambda w: (distance(hero.pos, w.pos) if hero else 0, w.id))
+    workers = [w for w in turn.workers if w.id not in excluded
+               and (w.id not in ledger.used or w.id == state.get('worker_id'))]
+    # A teammate on the post may yield next turn; never plan through buildings.
+    original = turn.blocked
+    try:
+        turn.blocked = original - {h.pos for h in turn.heroes}
+        options = [(w.id != state.get('worker_id'), bool(w.inventory['WallFixer']), route[0], w.id, w)
+                   for w in workers
+                   if (route := nav.approach(w, tower.cells, ledger.reserved)) is not None]
+    finally:
+        turn.blocked = original
+    if not options:
+        return None
+    worker = min(options, key=lambda row: row[:-1])[-1]
+    state.update(day=turn.day, worker_id=worker.id, tower_id=tower.id)
+    ledger.explain(worker.id, 'pioneer_night_relief', pioneer_health=hero.health if hero else 0,
+                   tower=tower.id)
+    return worker, tower
+
+
+def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=(), relief=None):
     """Return one persistent operator/post, or None for non-clustered layouts."""
     mixed = (cfg.loadout.count("rocket") == 2 and cfg.loadout.count("gatling") == 1
              and any(w.kind == "gatling" for w in turn.weapons))
@@ -732,7 +768,8 @@ def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=()):
     if not common:
         return None
     # Keep a living gunner even while medicine consumes this turn's action.
-    crew = ([turn.pioneer] if turn.pioneer and turn.pioneer.id not in excluded else
+    crew = ([relief] if relief is not None else
+            [turn.pioneer] if turn.pioneer and turn.pioneer.id not in excluded else
             [] if mixed else [h for h in turn.heroes if h.id not in excluded])
     gunner = next((h for h in crew if h.id == mem.gunner_id and
                    (not turn.is_day or h.id in mem.return_targets)), None)
@@ -805,7 +842,14 @@ def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6, corridor
                        "cooldown" if tower.cooldown else "waiting_for_rotation")
     if hero is None or hero.id in ledger.used:
         return
-    route = nav.search(hero, {mem.gunner_post}, ledger.reserved)
+    goals = {mem.gunner_post}
+    route = nav.search(hero, goals, ledger.reserved)
+    if route is None and mem.pioneer_relief.get('worker_id') == hero.id:
+        # The pioneer still occupies the common post while using the voucher.
+        # Start recalling the replacement now to a free firing cell; the next
+        # observed turn can finish the handoff without a same-turn tile swap.
+        goals = {p for w in turn.weapons if w.kind == 'rocket' for p in neighbours(w.pos)} - set(sites)
+        route = nav.search(hero, goals, ledger.reserved)
     for offset in range(len(sites)):
         index = (mem.next_gun + offset) % len(sites)
         tower = next((w for w in turn.weapons if w.pos == sites[index]), None)
@@ -822,7 +866,7 @@ def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6, corridor
             report["reason"] = "fired"
             return
     if route and route[1] is not None:
-        nav.move_along(hero, ledger, route, {mem.gunner_post})
+        nav.move_along(hero, ledger, route, goals)
         for tower in turn.weapons:
             if tower.kind == "rocket" and not tower.cooldown:
                 ledger.weapon_diagnostics[tower.id].update(reason="operator_moving", return_steps=route[0])

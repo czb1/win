@@ -196,6 +196,10 @@ def walls_ready_for_station(turn, mem):
             and not mem.wall_rebuild_levels)
 
 
+def pioneer_needs_night_relief(turn):
+    return bool(not turn.is_day and turn.pioneer and turn.pioneer.health <= 150)
+
+
 def critical_station(turn, building, mem=None):
     """Reserve upgrades for healing strictly below the requested 500 HP."""
     return (building.kind == "station" and building.level < 3
@@ -286,22 +290,25 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
             and (name_only is None or name_only == 'Medicine')):
         return ledger.add(hero.id, command("use", name="Medicine"))
     upgrades = []
+    pioneer_emergency = hero.kind == 'pioneer' and pioneer_needs_night_relief(turn)
     for building in turn.ours:
+        station_heal = (building.kind == 'station' and building.level < 3
+                        and (critical_station(turn, building, mem) or pioneer_emergency))
         if target_sites is not None and building.pos not in target_sites:
             continue
-        if building.kind == 'station' and not critical_station(turn, building, mem):
+        if building.kind == 'station' and not station_heal:
             continue
         if turn.day == 1 and building.kind in WEAPONS:
             continue
         if target_only is not None and building.pos != target_only:
             continue
-        if urgent_only and not (building.kind == 'station' and critical_station(turn, building, mem)
+        if urgent_only and not (station_heal
                                 or rebuilding_wall(turn, building, mem)
                                 or building.kind == 'wall' and building.health < 500):
             continue
         # Paid emergency healing competes with other feasible deliveries.
         if (building.kind == "station" and replacement_work_pending(turn, mem)
-                and not critical_station(turn, building, mem)):
+                and not station_heal):
             continue
         name = voucher_for(building)
         if (name and (name_only is None or name == name_only)
@@ -322,7 +329,8 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
                          if turn.is_day and (upgrades_only or turn.tick >= DUSK_SPEND_TICK or late_wall_phase(turn))
                          else nav.approach(hero, building.cells, ledger.reserved))
             if route and (not local_only or route[0] == 0):
-                upgrades.append((upgrade_order(turn, building, mem), route[0], name, building, route))
+                priority = (-1, building.id) if station_heal else upgrade_order(turn, building, mem)
+                upgrades.append((priority, route[0], name, building, route))
         if (not turn.is_day and not upgrades_only and building.kind == "wall"
                 and (name_only is None or name_only == 'WallFixer')
                 and hero.inventory["WallFixer"]

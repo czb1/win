@@ -279,6 +279,7 @@ class Memory:
     wall_watch: WallWatchState = field(default_factory=WallWatchState)
     gunner_id: int | None = None
     gunner_post: tuple | None = None
+    pioneer_relief: dict = field(default_factory=dict)
     gatling_operator_id: int | None = None
     operator_yields: dict = field(default_factory=dict)
     traffic_leases: dict = field(default_factory=dict)
