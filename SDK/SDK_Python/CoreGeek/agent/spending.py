@@ -101,8 +101,7 @@ def prepare_station_reserve(turn, cfg, mem, nav, ledger):
             state['station_purchased'] = True
             state['station_pending'] = turn.round, hero.id
     else:
-        accepted = nav.move_along(hero, ledger, route, {route[2]}, targets={shop},
-                                  prefer_vehicle=False)
+        accepted = nav.move_along(hero, ledger, route, {route[2]})
         if accepted:
             ledger.gold -= turn.shop[name]
             ledger.purchases.add(name)
@@ -201,7 +200,7 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
                 # Leave room for at least one robot purchase/use while waiting for income.
                 needed = actions + (1 + count if count else 2 if remaining and robot_price >= 0 else 0)
                 if trip + needed <= turn.day_left:
-                    options.append((-count, route[0], shop, route, route[0] + turn.day_left - trip - needed))
+                    options.append((-count, route[0], shop, route))
             if not options:
                 if shop_seen and not route_seen:
                     ledger.used.add(hero.id)
@@ -209,15 +208,14 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
                     return True
                 state['phase'] = 'station'
             else:
-                negative_count, _, shop, route, travel_limit = min(options)
+                negative_count, _, shop, route = min(options)
                 quantity = -negative_count
                 item, count = (name, 1) if base_missing else (robot_name, quantity)
                 price = base_price if base_missing else robot_price * count
                 retry = (hero.id, item) in mem.buy_failures
                 waiting = not count or ledger.gold < price
                 if route[1] is not None:
-                    accepted = nav.move_along(hero, ledger, route, {route[2]},
-                                              targets={shop}, max_rounds=travel_limit)
+                    accepted = nav.move_along(hero, ledger, route, {route[2]})
                 elif count and not retry and ledger.gold >= price:
                     accepted = ledger.add(hero.id, command('buy', name=item, num=count))
                     if accepted:
@@ -257,9 +255,7 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
                 if route[1] is None:
                     accepted = ledger.add(hero.id, command('use', station.nearest_cell(hero.pos), name=name))
                 else:
-                    accepted = nav.move_along(hero, ledger, route, {route[2]},
-                                              targets=station.cells,
-                                              max_rounds=turn.day_left - 1 - held)
+                    accepted = nav.move_along(hero, ledger, route, {route[2]})
                 if accepted:
                     ledger.upgrade_claims.add(station.id)
                     ledger.explain(hero.id, 'first_day_pioneer_upgrade_station', item=name,
