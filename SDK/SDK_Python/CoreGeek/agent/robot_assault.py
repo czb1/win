@@ -53,6 +53,7 @@ class RobotAssaultMemory:
     rejected_buildings: set = field(default_factory=set)
     pending: dict = field(default_factory=dict)
     yield_waiters: dict = field(default_factory=dict)
+    ingress_ids: set = field(default_factory=set)
     failed_shots: set = field(default_factory=set)
     shot_contexts: dict = field(default_factory=dict)
     accepted_shots: dict = field(default_factory=dict)
@@ -83,6 +84,7 @@ class RobotAssaultMemory:
             self.objectives.clear()
             self.pending.clear()
             self.yield_waiters.clear()
+            self.ingress_ids.clear()
             self.failed_shots.clear()
             self.shot_contexts.clear()
             self.accepted_shots.clear()
@@ -99,6 +101,10 @@ class RobotAssaultMemory:
         alive = turn.summon_robot_ids
         self.robot_ids = alive.copy()
         self.entry_crossed.intersection_update(alive)
+        self.ingress_ids.intersection_update(alive)
+        if base is not None:
+            self.ingress_ids.difference_update(r.id for r in turn.summon_robots
+                                              if base_distance(base, r.pos) == 1)
         self.objectives = {uid: goal for uid, goal in self.objectives.items() if uid in alive}
         self.failed_shots = {key for key in self.failed_shots if key[0] in alive}
         self.shot_contexts = {key: value for key, value in self.shot_contexts.items()
@@ -601,7 +607,17 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
                  failed_base_lane_count=len(memory.failed_base_lanes),
                  assault_choice="base_route" if phase == "base" else
                  "shared_clearance" if target.id == memory.focus_target_id else "local_clearance",
-                 focus_unreachable=memory.focus_target_id is not None and target.id != memory.focus_target_id)
+                 focus_unreachable=memory.focus_target_id is not None and target.id != memory.focus_target_id,
+                 ingress_pending=robot.id in memory.ingress_ids)
+    if phase == 'base' and robot.id in memory.ingress_ids:
+        # After opening a shared gap, finish bringing this queue to the inner
+        # ring rather than stopping again at the first range-three shot.
+        if attack_only:
+            return False
+        if _move_toward_target(turn, memory, nav, ledger, robot, target, occupied, facts, reach=1):
+            return True
+        # A newly occupied/unreachable inner stance must not suppress a legal
+        # current shot or the ordinary clearance fallback indefinitely.
     point = _firing_point(robot.pos, robot, target, memory, occupied)
     if point is not None and ledger.add(robot.id, command("attack", point)):
         memory.objectives[robot.id] = RobotObjective(point, target.id if target.kind == "wall" else None, phase)
@@ -614,10 +630,15 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
         return True
     if attack_only:
         return False
+    return _move_toward_target(turn, memory, nav, ledger, robot, target, occupied, facts,
+                               reach=robot.attack_range)
+
+
+def _move_toward_target(turn, memory, nav, ledger, robot, target, occupied, facts, *, reach):
+    phase = facts['phase']
     reserved = _assault_reserved(turn, memory, ledger, robot)
     blocked = (turn.blocked | reserved) - {robot.pos}
     goals = set()
-    reach = robot.attack_range
     nearest = _target_point(robot.pos, target)
     if memory.rejected(robot.id, robot.pos, target.id, nearest):
         # After exhausting alternate aims, prefer a closer stance for an
@@ -704,7 +725,7 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
         return False
     aims = {r.id: _firing_point(r.pos, r, base, memory, occupied)
             for r in turn.summon_robots if r.abnormal_state != 'dizzy'}
-    waiting = [r for r in movable if aims[r.id] is None]
+    waiting = [r for r in movable if aims[r.id] is None or r.id in memory.ingress_ids]
     if not waiting:
         return False
     inner = {p for cell in base.cells for p in neighbours(cell)
@@ -716,6 +737,7 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
                        if hit[0] is None or hit[0].id not in movable_ids}
     rays = {r.id: set(line_cells(r.pos, aims[r.id]))
             for r in turn.summon_robots if aims.get(r.id) is not None
+            and r.id not in memory.ingress_ids
             and (r.id in movable_ids or ledger.commands.get(str(r.id), {}).get('action') == 'attack')}
     firing_lanes = set().union(*rays.values()) if rays else set()
     queue = []
@@ -732,7 +754,8 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
             # An enemy, public robot or NPC still seals the passage; moving a
             # shooter cannot open it, so retain the ordinary clearance attack.
             continue
-        current_goals = {p for p in _attack_goals(turn, base.cells, robot.attack_range)
+        reach = 1 if robot.id in memory.ingress_ids else robot.attack_range
+        current_goals = {p for p in _attack_goals(turn, base.cells, reach)
                          - (turn.blocked - {robot.pos}) - avoided
                          if _firing_point(p, robot, base, memory, occupied) is not None}
         current = nav.search(robot, current_goals, avoided | firing_lanes)
@@ -778,6 +801,14 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
     # A shooter on the doorway can obstruct the same queue as an inner
     # shooter. Apply the same measurable route/space improvement checks to it.
     depth.update(entry_depths)
+    # A range-three shooter can reserve the doorway from one cell outside it.
+    # Bring that shooter through the selected entrance before protecting its
+    # shot again; unrelated exterior shots must not be pulled off their lane.
+    for robot in movable:
+        if (base_distance(base, robot.pos) == 3
+                and any(entry in rays.get(robot.id, ()) and distance(robot.pos, entry) == 1
+                        for entry in entry_depths)):
+            depth[robot.pos] = -2
 
     def queue_routes(view, vacated, lanes, destinations=()):
         # Compare one projected move, without removing any other occupant.
@@ -809,7 +840,7 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
         if nav.memory:
             blocked |= nav.memory.blocked(robot.id)
         for step in neighbours(robot.pos):
-            if step in blocked or depth.get(step, -1) < depth[robot.pos]:
+            if step in blocked or step not in depth or depth[step] < depth[robot.pos]:
                 continue
             moved = occupied.copy()
             moved.pop(robot.pos, None)
@@ -837,6 +868,9 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
             choices.append((rank, step, robot, relief, space_gain))
     for _, step, robot, relief, space_gain in sorted(choices, key=lambda row: row[0]):
         if ledger.add(robot.id, command('move', step)):
+            if depth[robot.pos] == -2:
+                memory.ingress_ids.update(r.id for r in (robot, *queue)
+                                          if base_distance(base, r.pos) > 1)
             memory.remember(turn, robot, 'move', step)
             ledger.explain(robot.id, 'robot_make_room_inside', target_id=base.id,
                            from_pos=robot.pos, next_pos=step, inner_depth=depth[robot.pos],
