@@ -44,7 +44,7 @@ def observed_memory(data, *, stalled=False, hidden=False):
 
 
 class RobotInnerProgressTests(unittest.TestCase):
-    def test_entered_robot_clears_inner_tower_before_leaving_the_gap(self):
+    def test_entered_robot_attacks_through_visible_or_remembered_inner_tower(self):
         for stalled in (False, True):
             for hidden in (False, True):
                 with self.subTest(stalled=stalled, hidden=hidden):
@@ -52,10 +52,9 @@ class RobotInnerProgressTests(unittest.TestCase):
                     memory = observed_memory(data, stalled=stalled, hidden=hidden)
                     before = copy.deepcopy(data)
                     ledger, _ = decide(data, memory)
-                    self.assertEqual(ledger.commands['31036'], command('attack', (8, 22)))
-                    self.assertEqual(ledger.notes[31036]['conditions']['target_id'], 10041)
-                    self.assertEqual(ledger.notes[31036]['conditions']['target_source'],
-                                     'last_seen_building' if hidden else 'visible')
+                    self.assertEqual(ledger.commands['31036'], command('attack', (9, 21)))
+                    self.assertEqual(ledger.notes[31036]['conditions']['target_id'], 10013)
+                    self.assertIn(10041, memory.buildings)
                     self.assertEqual(data, before)
                     self.assertNotIn('30025', ledger.commands)
                     self.assertNotIn('30032', ledger.commands)
@@ -67,9 +66,11 @@ class RobotInnerProgressTests(unittest.TestCase):
                     data = reported_gap()
                     data['teamOur']['summonRobotList'][1]['id'] = lead_id
                     reflect(data, flip_x, flip_y)
-                    tower = next(r for r in data['teamEnemy']['roles'] if r['id'] == 10041)
                     ledger, _ = decide(data)
-                    self.assertEqual(ledger.commands[str(lead_id)], command('attack', pos(tower['pos'])))
+                    self.assertEqual(ledger.commands[str(lead_id)]['action'], 'attack')
+                    self.assertIn(pos(ledger.commands[str(lead_id)]['targetPos'][0]),
+                                  enemy_base(ledger.turn).cells)
+                    self.assertEqual(ledger.notes[lead_id]['conditions']['target_id'], 10013)
 
     def test_open_inner_route_precedes_an_optional_inner_target(self):
         data = reported_gap()
@@ -85,6 +86,8 @@ class RobotInnerProgressTests(unittest.TestCase):
 
     def test_clear_base_shot_resumes_as_soon_as_public_blocker_leaves(self):
         data = reported_gap()
+        # A worker remains opaque under the confirmed turret-only penetration rule.
+        next(r for r in data['teamEnemy']['roles'] if r['id'] == 10041)['roleType'] = 'worker'
         # Isolate recovery of direct fire from the separate cooperative-yield rule.
         data['teamOur']['summonRobotList'] = [data['teamOur']['summonRobotList'][1]]
         ledger, memory = decide(data)
@@ -98,6 +101,7 @@ class RobotInnerProgressTests(unittest.TestCase):
 
     def test_unstalled_follower_keeps_its_base_route_before_clearance_move(self):
         data = reported_gap(round_no=88, inside=False)
+        next(r for r in data['teamEnemy']['roles'] if r['id'] == 10041)['roleType'] = 'worker'
         memory = observed_memory(data, stalled=True)
         ledger, _ = decide(data, memory)
         self.assertEqual(ledger.commands['31035']['action'], 'move')
@@ -123,12 +127,12 @@ class RobotInnerProgressTests(unittest.TestCase):
         data = reported_gap()
         data['teamOur']['summonRobotList'] = [data['teamOur']['summonRobotList'][1]]
         ledger, memory = decide(data)
-        self.assertEqual(ledger.commands['31036'], command('attack', (8, 22)))
+        self.assertEqual(ledger.commands['31036'], command('attack', (9, 21)))
         data['roundNo'] += 1
         data['lastRoundRoleActionResults'] = {'31036': False}
         ledger, _ = decide(data, memory)
-        self.assertNotEqual(ledger.commands.get('31036'), command('attack', (8, 22)))
-        self.assertIn((31036, (8, 23), 10041, (8, 22)), memory.failed_shots)
+        self.assertNotEqual(ledger.commands.get('31036'), command('attack', (9, 21)))
+        self.assertIn((31036, (8, 23), 10013, (9, 21)), memory.failed_shots)
 
     def test_unstalled_robot_still_supports_clearance_when_base_routes_are_closed(self):
         data = reported_frontage(closed=True)

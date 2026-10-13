@@ -1,6 +1,7 @@
 """Reach an open base firing position before coordinating unavoidable clearance."""
 from collections import deque
 from dataclasses import dataclass, field
+from heapq import heappop, heappush
 import re
 
 from .commands import command
@@ -70,6 +71,7 @@ class RobotAssaultMemory:
     base_id: int | None = None
     base_pos: tuple | None = None
     focus_target_id: int | None = None
+    clearance_entry: tuple | None = None
 
     def observe(self, turn, base):
         base_id = base.id if base else None
@@ -80,6 +82,7 @@ class RobotAssaultMemory:
         if self.day != turn.day or changed_base:
             self.entry_crossed.clear()
             self.focus_target_id = None
+            self.clearance_entry = None
             self.objectives.clear()
             self.pending.clear()
             self.yield_waiters.clear()
@@ -481,8 +484,8 @@ def _summon_at_gap(turn, ledger, base, entry, deadline):
 def scouted_rear_summon_position(turn, ledger, deadline=None):
     """Use an observed turret's open rear to shoot the base from legal land.
 
-    Walls are globally reported. Weapons must have been seen, and remembered
-    weapons still obstruct lanes; absence from local sight is not destruction.
+    Walls are globally reported. Seen/remembered weapons occupy movement and
+    spawn cells, but robot attacks can pass through them.
     The rear is relative to the two bases, not a hard-coded map direction.
     """
     base = enemy_base(turn)
@@ -494,10 +497,13 @@ def scouted_rear_summon_position(turn, ledger, deadline=None):
         return None
     blocked = (turn.blocked | ledger.reserved | ledger.summon_pending_positions
                | {p for u in weapons.values() for p in u.cells})
-    obstacles = blocked - base.cells
+    weapon_cells = {p for u in (*turn.ours, *turn.enemies, *ledger.robot_known_enemies)
+                    if u.kind in WEAPONS for p in u.cells}
+    obstacles = ((turn.blocked - base.cells - weapon_cells)
+                 | ledger.reserved | ledger.summon_pending_positions)
     candidates = []
     # Every summon type has range three. Check the same conservative rays as
-    # night attacks, including characters/NPCs, without shooting through towers.
+    # night attacks, including characters/NPCs, while shooting through towers.
     for point in sorted(_attack_goals(turn, base.cells, 3)):
         if deadline is not None:
             check_time(deadline)
@@ -596,12 +602,21 @@ def _occupants(turn, memory):
     return occupied
 
 
-def _first_hit(origin, point, occupied, actor_id):
+def _ray_hits(origin, point, occupied, actor_id):
+    """Robot attacks pass intermediate turrets; an aimed turret is still a target.
+
+    This is independent of weapon projectiles and of movement occupancy.
+    """
     for cell in line_cells(origin, point):
         hit = occupied.get(cell)
         if hit is not None and (hit[0] is None or hit[0].id != actor_id):
-            return *hit, cell
-    return None
+            if hit[0] is not None and hit[0].kind in WEAPONS and cell != point:
+                continue
+            yield (*hit, cell)
+
+
+def _first_hit(origin, point, occupied, actor_id):
+    return next(_ray_hits(origin, point, occupied, actor_id), None)
 
 
 def _clear_shot(origin, target, point, occupied, actor_id):
@@ -610,10 +625,9 @@ def _clear_shot(origin, target, point, occupied, actor_id):
 
 
 def _shot_context(origin, point, occupied, actor_id, target_id):
-    return tuple((cell, hit[0].id if hit[0] else None)
-                 for cell in line_cells(origin, point)
-                 if (hit := occupied.get(cell)) is not None
-                 and (hit[0] is None or hit[0].id not in (actor_id, target_id)))
+    return tuple((cell, unit.id if unit else None)
+                 for unit, _, cell in _ray_hits(origin, point, occupied, actor_id)
+                 if unit is None or unit.id != target_id)
 
 
 def _firing_point(origin, robot, target, memory, occupied):
@@ -651,6 +665,7 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
     facts = dict(phase=phase, target_id=target.id, target_kind=target.kind,
                  target_source="visible" if target in turn.enemies else "last_seen_building",
                  observed_health=target.health, focus_target_id=memory.focus_target_id,
+                 clearance_entry=memory.clearance_entry if target.id == memory.focus_target_id else None,
                  approach_stalls=memory.approach_stalls.get(robot.id, 0),
                  failed_base_lane_count=len(memory.failed_base_lanes),
                  assault_choice="base_route" if phase == "base" else
@@ -709,7 +724,7 @@ def _act_inside_base(turn, memory, nav, ledger, robot, base, occupied):
              if turn.inside(p) and p not in base.cells}
     if _act_toward_target(turn, memory, nav, ledger, robot, base, occupied, move_within=inner):
         return True
-    # A public robot may block one ray while a known inner tower blocks the
+    # A public robot may block one ray while a visible inner worker blocks the
     # others. Clear that local obstacle instead of retreating to the shared
     # outer wall. Do not invent targets or assume any occupant will move.
     targets = {}
@@ -729,8 +744,91 @@ def _act_inside_base(turn, memory, nav, ledger, robot, base, occupied):
     return False
 
 
-def _focus_blocker(turn, memory, ledger, base, occupied):
-    """Coordinate exposed obstacles on base-directed rays, never hunt gunners."""
+def _gap_clearance_target(turn, memory, nav, ledger, base, occupied):
+    """Find the first enemy on a useful route through a gap, not on a base ray.
+
+    Projected removal only chooses a target. Actual attacks and moves still
+    require the current observation, so a live blocker is never walked through.
+    """
+    robots = [r for r in turn.summon_robots
+              if r.id not in ledger.used and r.abnormal_state != 'dizzy']
+    if not robots:
+        return None
+    robot_ids = {r.id for r in robots}
+    ring = set(enemy_entries(turn, base))
+    preferred = (ledger.robot_assault_entry if ledger.robot_assault_entry in ring
+                 else memory.clearance_entry)
+    entries = [p for p in ring if p == preferred or not (
+        (hit := occupied.get(p)) and hit[0] is not None and hit[0].kind == 'wall')]
+    inner = {p for cell in base.cells for p in neighbours(cell)
+             if turn.inside(p) and p not in base.cells}
+    for entry in sorted(entries, key=lambda p: (p != preferred,
+                        min(distance(r.pos, p) for r in robots), p)):
+        check_time(nav.deadline)
+        region = inner | {entry}
+        removable = {p: hit[0] for p, hit in occupied.items()
+                     if p in region and hit[1] and hit[0] is not None
+                     and hit[0].kind in (*CHARACTERS, *WEAPONS, 'wall')}
+        holder = occupied.get(entry)
+        vacated = {entry} if holder and holder[0] is not None and holder[0].id in robot_ids else set()
+        fixed = ((turn.blocked - removable.keys() - vacated) | ledger.reserved
+                 | set(memory.occupied_steps))
+        if entry in fixed:
+            continue
+        projected = {p: hit for p, hit in occupied.items() if p not in removable}
+        goals = {p for p in inner - fixed
+                 if any(_clear_shot(p, base, cell, projected, -1) for cell in base.cells)}
+        if not goals:
+            continue
+        first = removable.get(entry)
+        initial = (int(first is not None), first.health if first else 0, 0)
+        queue, costs, parents = [(*initial, entry)], {entry: initial}, {entry: None}
+        target = None
+        while queue:
+            check_time(nav.deadline)
+            count, hp, steps, point = heappop(queue)
+            if (count, hp, steps) != costs[point]:
+                continue
+            if point in goals:
+                path = []
+                while point is not None:
+                    path.append(point)
+                    point = parents[point]
+                target = next((removable[p] for p in reversed(path) if p in removable), None)
+                break
+            for step in neighbours(point):
+                if step not in region or step in fixed:
+                    continue
+                obstacle = removable.get(step)
+                cost = (count + int(obstacle is not None), hp + (obstacle.health if obstacle else 0),
+                        steps + 1)
+                if step not in costs or cost < costs[step]:
+                    costs[step], parents[step] = cost, point
+                    heappush(queue, (*cost, step))
+        if target is None:
+            continue
+        # Do not lock onto an entry that no remaining robot can support.
+        for robot in robots:
+            check_time(nav.deadline)
+            if _firing_point(robot.pos, robot, target, memory, occupied) is None:
+                reserved = _assault_reserved(turn, memory, ledger, robot)
+                goals = {p for p in _attack_goals(turn, target.cells, robot.attack_range)
+                         - (turn.blocked - {robot.pos}) - reserved
+                         if _firing_point(p, robot, target, memory, occupied) is not None}
+                if nav.search(robot, goals, reserved) is None:
+                    continue
+            memory.clearance_entry = entry
+            return target
+    return None
+
+
+def _focus_blocker(turn, memory, nav, ledger, base, occupied):
+    """Clear a usable gap first, then fall back to base-directed ray blockers."""
+    gap_target = _gap_clearance_target(turn, memory, nav, ledger, base, occupied)
+    if gap_target is not None:
+        memory.focus_target_id = gap_target.id
+        return gap_target
+    memory.clearance_entry = None
     blocked = []
     candidates = {}
     for robot in turn.summon_robots:
@@ -895,7 +993,7 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
         if nav.memory:
             blocked |= nav.memory.blocked(robot.id)
         for step in neighbours(robot.pos):
-            if step in blocked or depth.get(step, -1) < depth[robot.pos]:
+            if step in blocked or step not in depth or depth[step] < depth[robot.pos]:
                 continue
             moved = occupied.copy()
             moved.pop(robot.pos, None)
@@ -976,6 +1074,7 @@ def act_robots(turn, memory, nav, ledger):
                                        if uid not in memory.rejected_buildings)
     if not turn.summon_robots:
         memory.focus_target_id = None
+        memory.clearance_entry = None
         return
     occupied = _occupants(turn, memory)
     if base is not None and not turn.is_day:
@@ -1021,7 +1120,7 @@ def act_robots(turn, memory, nav, ledger):
             memory.approach_stalls.get(r.id, 0) >= ASSAULT_STALL_LIMIT
             for r in turn.summon_robots if r.id not in ledger.used):
         memory.focus_target_id = previous_focus
-        early_focus = _focus_blocker(turn, memory, ledger, base, occupied)
+        early_focus = _focus_blocker(turn, memory, nav, ledger, base, occupied)
         if early_focus is not None:
             for attack_only in (True, False):
                 for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
@@ -1053,7 +1152,7 @@ def act_robots(turn, memory, nav, ledger):
                 _wait_for_scout_gap(turn, memory, nav, ledger, robot, base, entry, occupied)
 
     memory.focus_target_id = early_focus.id if early_focus else previous_focus
-    focus = early_focus or (_focus_blocker(turn, memory, ledger, base, occupied)
+    focus = early_focus or (_focus_blocker(turn, memory, nav, ledger, base, occupied)
                             if base and not turn.is_day else None)
     if focus is None:
         memory.focus_target_id = None
