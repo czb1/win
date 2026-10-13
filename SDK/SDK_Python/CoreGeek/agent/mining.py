@@ -63,11 +63,20 @@ def target_sector(turn, target):
     return 'southwest' if projection < 0 else 'northeast' if projection > 0 else 'boundary'
 
 
-def prefer_separate_sector(turn, hero, options):
+def prefer_separate_sector(turn, hero, options, sale_dist=None):
     # Nearby simultaneous collection remains useful. Only redirect a journey
     # when a comparable independent deposit exists; never walk to a bare corner.
     separate = [o for o in options if not o.claimants or o.route[0] == 0]
     options = separate or options
+    if sale_dist:
+        # The opening wall blocker should finish mining near its sale stop,
+        # rather than follow the ordinary worker's southwest/northeast wing.
+        from .opening_offense import FIRST_DAY_OFFENSE_TICK
+        reachable = [o for o in options if o.cell in sale_dist
+                     and o.route[0] < FIRST_DAY_OFFENSE_TICK - turn.tick]
+        if reachable:
+            shortest = min(sale_dist[o.cell] for o in reachable)
+            return [o for o in reachable if sale_dist[o.cell] == shortest]
     sector = mining_sector(turn, hero)
     local = [o for o in options if target_sector(turn, o.target) in (sector, 'boundary')] if sector else []
     return local or options
@@ -185,6 +194,17 @@ def first_day_ore_only(turn, cfg, mem, hero):
     return worker is not None and worker.id == hero.id
 
 
+def first_day_sale_distances(turn, cfg, mem, nav, ledger, hero, vendors=None):
+    """Prefer the vendor corridor only before the opening worker departs."""
+    from .opening_offense import FIRST_DAY_OFFENSE_TICK
+    if turn.tick >= FIRST_DAY_OFFENSE_TICK or not first_day_ore_only(turn, cfg, mem, hero):
+        return {}
+    if vendors is None:
+        vendors = [p for p, kind in turn.zones.items() if kind == 'vendor']
+    vendors = [p for p in vendors if not mem.movement.avoids(hero.id, p)]
+    return nav.actor_distances_to(hero, vendors, ledger.reserved) if vendors else {}
+
+
 def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
                reserved=(), max_steps=2, allow_blocked_home=False, target_only=None):
     """Use otherwise idle daylight near ore; carry it to a later day's sale."""
@@ -254,6 +274,7 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
                   turn.round, hero.id, turn.day_left)
         return False
     preferred = preferred_stock(turn, cfg, mem, ledger, hero)
+    sale_dist = first_day_sale_distances(turn, cfg, mem, nav, ledger, hero)
     order = lambda o: (o.route[0], -o.score, o.return_steps, o.target, o.cell)
     previous = min((o for o in options if o.target == mem.mine_targets.get(hero.id)),
                    key=order, default=None)
@@ -263,9 +284,9 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
     comparable = [o for o in nearby if comparable_score(o.score, best_score)]
     if preferred:
         news = [o for o in comparable if turn.zones[o.target] in preferred]
-        chosen = min(prefer_separate_sector(turn, hero, news or comparable), key=order)
+        chosen = min(prefer_separate_sector(turn, hero, news or comparable, sale_dist), key=order)
     else:
-        chosen = previous or min(prefer_separate_sector(turn, hero, comparable), key=order)
+        chosen = previous or min(prefer_separate_sector(turn, hero, comparable, sale_dist), key=order)
     target, route = chosen.target, chosen.route
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
@@ -502,13 +523,15 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
     # Finish a productive deposit, including its last few units. Replan only
     # when it vanishes, becomes inaccessible/unprofitable, or cannot meet dusk.
     comparable = [o for o in options if comparable_score(o.score, best.score)]
+    opening_sale_dist = first_day_sale_distances(
+        turn, cfg, mem, nav, ledger, hero, vendors if selling else None)
     chosen = (previous if previous and previous.score >= .65 * best.score else
-              min(prefer_separate_sector(turn, hero, comparable), key=order))
+              min(prefer_separate_sector(turn, hero, comparable, opening_sale_dist), key=order))
     preferred = preferred_stock(turn, cfg, mem, ledger, hero) if not want_stone else set()
     # Never chase a shortage deposit whose present yield is substantially worse.
     news_options = [o for o in comparable if turn.zones[o.target] in preferred]
     if news_options:
-        chosen = min(prefer_separate_sector(turn, hero, news_options), key=order)
+        chosen = min(prefer_separate_sector(turn, hero, news_options, opening_sale_dist), key=order)
     target, route = chosen.target, chosen.route
     action = command("collect", target) if route[1] is None else command("move", route[1])
     if ledger.add(hero.id, action):
