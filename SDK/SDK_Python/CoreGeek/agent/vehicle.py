@@ -29,7 +29,7 @@ def faster_route(nav, ledger, hero, goals, walking, reserved=()):
     if not driving and not cars:
         return None
     # Keep all actor occupancy, movement feedback and caller safety masks.
-    forbidden = set(reserved) | ledger.reserved
+    forbidden = set(reserved) | ledger.reserved | set(nav.traffic_forbidden.get(hero.id, ()))
     if nav.memory:
         forbidden |= nav.memory.blocked(hero.id)
     blocked = ((turn.blocked - cars - {hero.pos}) | forbidden)

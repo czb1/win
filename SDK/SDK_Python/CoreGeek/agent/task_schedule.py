@@ -68,7 +68,7 @@ def wait_cell_safe(turn, nav, ledger, hero, cell, forbidden):
     adjacent = {p for p in neighbours(cell) if turn.inside(p) and p not in blocked}
     if len(adjacent) < 2:
         return True
-    connected = nav.distances_to({min(adjacent)}, vacated={hero.pos},
+    connected = nav.actor_distances_to(hero, {min(adjacent)},
                                 reserved=set(forbidden) | {cell}, exact=True)
     return adjacent <= connected.keys()
 
@@ -89,7 +89,7 @@ def task_options(turn, cfg, mem, nav, ledger, hero, *, switching=False):
     if nav.memory:
         forbidden |= nav.memory.blocked(hero.id)
     home, exact = return_destination(turn, nav, ledger, hero)
-    back = nav.distances_to(home, vacated={hero.pos}, reserved=forbidden, exact=exact) if home else {}
+    back = nav.actor_distances_to(hero, home, reserved=forbidden, exact=exact) if home else {}
     options = []
     for task in turn.tasks:
         cooldown = max(0, int(task.get('coldDownRounds', 0)))
@@ -131,7 +131,7 @@ def task_options(turn, cfg, mem, nav, ledger, hero, *, switching=False):
                     and t['startRound'] < turn.round + turn.day_left):
                 altar = nav.approach(hero, [tuple(t['position'])], ledger.reserved)
                 if altar and turn.round + altar[0] <= t['endRound']:
-                    distances = nav.distances_to([tuple(t['position'])], {hero.pos}, forbidden)
+                    distances = nav.actor_distances_to(hero, [tuple(t['position'])], forbidden)
                     onward = max((distances[p] for p in goals if p in distances), default=None)
                     timeout = min(int(task.get('timeoutRounds', cfg.task_max_rounds)), cfg.task_max_rounds)
                     if (Counter(t['items']) - hero.inventory or onward is None
@@ -153,7 +153,7 @@ def task_options(turn, cfg, mem, nav, ledger, hero, *, switching=False):
         for second in options:
             if first is second:
                 continue
-            routes = nav.distances_to({second['cell']}, vacated={hero.pos}, reserved=forbidden, exact=True)
+            routes = nav.actor_distances_to(hero, {second['cell']}, reserved=forbidden, exact=True)
             travel = routes.get(first['cell'])
             if travel is None:
                 continue
@@ -163,7 +163,7 @@ def task_options(turn, cfg, mem, nav, ledger, hero, *, switching=False):
             # Treasure timing applies to the whole proposed sequence as well.
             t = mem.treasure
             if t and treasure_active(turn, mem):
-                onward = nav.distances_to([tuple(t['position'])], {hero.pos}, forbidden).get(second['cell'])
+                onward = nav.actor_distances_to(hero, [tuple(t['position'])], forbidden).get(second['cell'])
                 timeout = min(int(second['task'].get('timeoutRounds', cfg.task_max_rounds)), cfg.task_max_rounds)
                 safe_finish = max(first['finish'] + travel, second['cooldown']) + timeout
                 if onward is None or turn.round + safe_finish + onward + 2 + cfg.return_margin >= t['startRound']:

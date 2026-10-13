@@ -44,6 +44,8 @@ class Ledger:
         # Daytime ownership is separate from issuing a command. Failed recall
         # and intentional watch standby must have different fallback policies.
         self.daytime_waits = {}
+        self.traffic_forbidden = {}
+        self.traffic_holds = set()
         self.income_worker_id = None
         self.watch_pack_slots = {}
         self.work_jobs = {}
@@ -137,6 +139,11 @@ class Ledger:
         if any(not self.turn.inside(p) for p in points):
             return self._reject("target_outside_map")
         target = points[0] if points else None
+        if cmd.get("action") == "move":
+            restricted = self.traffic_forbidden.get(uid, set())
+            segment = driving_segment(unit.pos, target) if target is not None else None
+            if target in restricted or segment and any(p in restricted for p in segment):
+                return self._reject("traffic_corridor_reserved")
         name = cmd.get("name")
         cost = 0
         controller = None

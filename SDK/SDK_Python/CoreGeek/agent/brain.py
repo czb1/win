@@ -7,6 +7,7 @@ from .logging_system import turn_context, update_context, request_context, emit_
 from . import diagnostics
 from .config import Config
 from .daytime import finish_daytime_work, park_idle_pioneer, yield_idle_worker_for_traffic
+from .traffic import coordinate_traffic
 from .worker_jobs import resume_daytime_jobs, save_daytime_jobs
 from .model import Turn, distance, SUMMON_ORDERS, DEFENCE_RETURN_TICK, FIRST_DAY_PIONEER_SHOP_TICK
 from .navigation import Navigator, layout, DeadlineExceeded
@@ -710,6 +711,7 @@ class Agent:
                 income = reserve_income_worker(turn, mem, nav, ledger, returning)
                 if income:
                     emit_event('income_reserve', dict(actor=income.id, day_left=turn.day_left), 'economy')
+                coordinate_traffic(turn, self.cfg, mem, nav, ledger, returning)
                 # Reserve the watcher's repair budget before other dusk buyers
                 # spend it. The watcher may sell its own ore first.
                 watch_locked, watch_gold = prepare_watch(turn, self.cfg, mem, nav, ledger, watcher, walls)

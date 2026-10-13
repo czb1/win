@@ -281,6 +281,7 @@ class Memory:
     gunner_post: tuple | None = None
     gatling_operator_id: int | None = None
     operator_yields: dict = field(default_factory=dict)
+    traffic_leases: dict = field(default_factory=dict)
     pioneer_wait_post: tuple | None = None
     next_gun: int = 0
     pending: tuple | None = None
@@ -458,6 +459,7 @@ class Memory:
             self.preparation_tick = 70
             self.preparation_workers.clear()
             self.sold_workers.clear()
+            self.traffic_leases.clear()
             self.sale_workers.clear()
             self.sale_targets.clear()
             self.mine_targets.clear()
@@ -470,7 +472,7 @@ class Memory:
             self.return_targets.clear()
             self.return_posts.clear()
         # Once selling has begun, any other action ends that visit. A failed
-        # sell remains retryable; it must not authorize another trip later today.
+        # sell remains retryable; later trips are governed by the remaining budget.
         if self.last_round == turn.round - 1:
             for uid, cmd in self.last_commands.items():
                 if int(uid) in self.sold_workers and cmd["action"] != "sell":
