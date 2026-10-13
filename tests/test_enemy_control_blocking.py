@@ -71,7 +71,7 @@ class EnemyControlBlockingTests(unittest.TestCase):
             self.assertEqual(bool(ledger.commands), expected)
 
     def test_task_keeps_priority_without_enemy_post_departure(self):
-        for round_no, expected in ((1, 'acceptTask'), (63, 'acceptTask')):
+        for round_no, expected in ((1, 'acceptTask'), (193, 'acceptTask')):
             data = sole_post(round_no)
             data['teamOur']['roles'][0]['pos'] = {'x': 7, 'y': 5}
             data['teamOur']['playerTasks'] = [dict(isValid=True, coldDownRounds=0,
