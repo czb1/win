@@ -8,9 +8,12 @@ from agent.brain import Agent
 from agent.commands import command
 from agent.config import Config
 from agent.intelligence import Memory
+from agent.mining import mine, spare_mine
 from agent.model import pos
 from agent.opening_offense import act_first_day_offense
 from agent.robot_assault import act_robots, RobotAssaultMemory
+from agent.economy import first_day_front
+from agent.worker_jobs import resume_daytime_jobs
 
 
 TOWERS = [[8, 23], [9, 23], [8, 21]]
@@ -45,6 +48,126 @@ def step(data, memory, walls=WALLS):
     worker = act_first_day_offense(turn, config, memory, nav, ledger,
                                    sorted(ledger.tower_cells), sorted(ledger.wall_cells))
     return worker, ledger
+
+
+def ore_case(tick=1, ore='iron'):
+    data = case(tick, gold=0)
+    for zone in data['mapInfo']['zones']:
+        if zone['neutralType'] == 'iron':
+            zone['neutralType'] = ore
+    data['mapInfo']['zones'].append(
+        {'neutralType': 'stone', 'pos': {'x': 8, 'y': 19}, 'remain': 10})
+    data['vendorShopList'][0]['price'] = 100
+    return data
+
+
+class FirstDayOreOnlyTests(unittest.TestCase):
+    def setup(self, data):
+        return setup_case(data, llm_enabled=False, layout_mode='explicit',
+                          weapon_cells=TOWERS, wall_cells=WALLS)
+
+    def test_offense_worker_prefers_iron_or_copper_even_when_stone_is_more_valuable(self):
+        for ore in ('iron', 'copper'):
+            for mining in (mine, spare_mine):
+                with self.subTest(ore=ore, mining=mining.__name__):
+                    turn, config, nav, ledger = self.setup(ore_case(ore=ore))
+                    memory = Memory(mine_targets={10: (8, 19)})
+                    self.assertTrue(mining(turn, config, memory, nav, ledger, turn.workers[0]))
+                    self.assertEqual(ledger.commands['10'], command('collect', (8, 20)))
+                    self.assertEqual(memory.mine_targets[10], (8, 20))
+
+    def test_stone_only_never_starts_a_regular_material_or_spare_trip(self):
+        data = ore_case()
+        data['mapInfo']['zones'] = [z for z in data['mapInfo']['zones']
+                                  if z['neutralType'] != 'iron']
+        for mining, options in ((mine, {}), (mine, {'stockpile': True}),
+                                (mine, {'want_stone': True}), (spare_mine, {})):
+            with self.subTest(mining=mining.__name__, options=options):
+                turn, config, nav, ledger = self.setup(data)
+                self.assertFalse(mining(turn, config, Memory(), nav, ledger,
+                                        turn.workers[0], **options))
+                self.assertNotIn('10', ledger.commands)
+                self.assertNotIn(10, ledger.mine_claims)
+
+    def test_old_stone_jobs_release_instead_of_continuing_collection(self):
+        for kind, want_stone, stockpile in (('mine', False, False), ('mine', False, True),
+                                           ('mine', True, False), ('spare', False, True)):
+            with self.subTest(kind=kind, want_stone=want_stone, stockpile=stockpile):
+                turn, config, nav, ledger = self.setup(ore_case())
+                job = dict(kind=kind, target=(8, 19), ore='stone', want_stone=want_stone,
+                           stockpile=stockpile, deadline=35, stone_goal=2)
+                memory = Memory(daytime_jobs={10: job}, mine_targets={10: (8, 19)})
+                resume_daytime_jobs(turn, config, memory, nav, ledger,
+                                    sorted(ledger.tower_cells), sorted(ledger.wall_cells), set())
+                self.assertNotIn(10, memory.daytime_jobs)
+                self.assertNotIn(10, ledger.mine_claims)
+                self.assertNotEqual(ledger.commands.get('10'), command('collect', (8, 19)))
+
+    def test_other_worker_keeps_the_front_wall_material_job(self):
+        turn, config, nav, ledger = self.setup(ore_case())
+        memory = Memory(day1_wall_worker=10, day1_wall_delivering=False)
+        first_day_front(turn, config, memory, nav, ledger, sorted(ledger.wall_cells))
+        self.assertEqual(memory.day1_wall_worker, 12)
+        self.assertEqual(ledger.mine_claims[12], (8, 19))
+        self.assertNotIn(10, ledger.used)
+
+    def test_recovery_releases_old_stone_goal_and_chooses_ore(self):
+        turn, config, nav, ledger = self.setup(ore_case())
+        memory = Memory()
+        memory.recovery.active[10] = ((10, 'collect', (8, 19)), 9)
+        memory.recovery.resume(turn, config, memory, nav, ledger, set())
+        self.assertNotIn(10, memory.recovery.active)
+        self.assertNotIn('10', ledger.commands)
+        memory.recovery.idle[10] = 2
+        memory.recovery.recover(turn, config, memory, nav, ledger, set())
+        self.assertEqual(ledger.commands['10'], command('collect', (8, 20)))
+        self.assertNotIn((10, 'collect', (8, 19)), memory.recovery.ready)
+
+    def test_agent_mines_ore_until_tick_24_then_sells_at_tick_25(self):
+        agent = Agent(cfg())
+        data = ore_case(24)
+        response = agent.decide(data)['roleCommandMap']
+        self.assertEqual(response['10'], command('collect', (8, 20)))
+        data['roundNo'] = 25
+        data['teamOur']['roles'][1].update(pos={'x': 11, 'y': 20}, backpack=['iron'])
+        data['lastRoundRoleActionResults'] = {'10': True}
+        response = agent.decide(data)['roleCommandMap']
+        self.assertEqual(response['10'], command('sell', name='iron', num=1))
+        memory = next(iter(agent.sessions.values()))
+        self.assertEqual(memory.first_day_offense['worker_id'], 10)
+        self.assertEqual(memory.first_day_offense['phase'], 'sell')
+
+    def test_other_worker_later_days_and_night_can_still_mine_stone(self):
+        for tick, worker_id in ((1, 12), (70, 10), (130, 10)):
+            with self.subTest(tick=tick, worker_id=worker_id):
+                turn, config, nav, ledger = self.setup(ore_case(tick))
+                hero = next(w for w in turn.workers if w.id == worker_id)
+                self.assertTrue(mine(turn, config, Memory(), nav, ledger, hero,
+                                     stockpile=True, target_only=(8, 19)))
+                self.assertEqual(ledger.mine_claims[worker_id], (8, 19))
+
+    def test_only_worker_keeps_material_gathering_until_guns_are_built(self):
+        for ready in (False, True):
+            with self.subTest(ready=ready):
+                data = ore_case()
+                data['teamOur']['roles'] = [r for r in data['teamOur']['roles']
+                                          if r['id'] != 12 and (ready or r['id'] != 22)]
+                turn, config, nav, ledger = self.setup(data)
+                self.assertEqual(mine(turn, config, Memory(), nav, ledger, turn.workers[0],
+                                      want_stone=True, target_only=(8, 19)), not ready)
+
+    def test_offense_worker_is_selected_by_id_for_either_faction(self):
+        for offset, faction in ((0, 'challenger'), (10000, 'defender')):
+            with self.subTest(faction=faction):
+                data = ore_case()
+                data['teamOur']['type'] = faction
+                for role in data['teamOur']['roles']:
+                    role['id'] += offset
+                data['teamOur']['roles'].reverse()
+                turn, config, nav, ledger = self.setup(data)
+                hero = next(w for w in turn.workers if w.id == 10 + offset)
+                self.assertTrue(mine(turn, config, Memory(), nav, ledger, hero))
+                self.assertEqual(ledger.commands[str(hero.id)], command('collect', (8, 20)))
 
 
 class FirstDayOffenseTests(unittest.TestCase):

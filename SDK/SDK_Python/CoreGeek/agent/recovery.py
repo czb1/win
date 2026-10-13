@@ -4,7 +4,7 @@ import json
 import logging
 
 from .commands import command
-from .mining import return_destination
+from .mining import first_day_ore_only, return_destination
 from .model import ORES, distance, neighbours
 
 LOG = logging.getLogger(__name__)
@@ -49,6 +49,7 @@ class Recovery:
             return None
         if kind == "collect":
             if (not hero.space or turn.zones.get(target) not in ORES
+                    or turn.zones.get(target) == 'stone' and first_day_ore_only(turn, cfg, mem, hero)
                     or turn.prices.get(turn.zones.get(target), 0) <= 0
                     or target in mem.collect_failures or distance(hero.pos, target) > 3):
                 return None
