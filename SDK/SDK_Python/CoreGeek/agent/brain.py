@@ -8,7 +8,7 @@ from . import diagnostics
 from .config import Config
 from .daytime import finish_daytime_work, park_idle_pioneer, yield_idle_worker_for_traffic
 from .worker_jobs import resume_daytime_jobs, save_daytime_jobs
-from .model import Turn, distance, SUMMON_ORDERS, DEFENCE_RETURN_TICK
+from .model import Turn, distance, SUMMON_ORDERS, DEFENCE_RETURN_TICK, FIRST_DAY_PIONEER_SHOP_TICK
 from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger, command
 from .combat import (assignments, fixed_gatling_crew, operator_posts, return_plan, defend, emergency_items,
@@ -28,7 +28,8 @@ from .gate_guard import prepare_gate_guard
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position, enemy_base
 from .spending import (first_day_guns_built, first_day_purchase_reserve, plan_day_spending, robot_purchase_plan,
                        prepare_paid_upgrades, prepare_defense_purchase, FIRST_DAY_ROBOT_PURCHASE_LIMIT,
-                       heal_station_with_pioneer, prepare_station_reserve)
+                       heal_station_with_pioneer, prepare_station_reserve,
+                       first_day_pioneer_plan_active, prepare_first_day_pioneer)
 from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scout,
                        yield_wall_entry)
 from .task_schedule import task_options
@@ -120,7 +121,10 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     ledger.summon_daily_count = state["count"]
     ledger.robot_summon_anchor = state["anchor"] if turn.day == 1 else None
     excluded = set(excluded)
-    if turn.pioneer and (turn.phase_task or treasure_active(turn, mem)):
+    pioneer_plan = first_day_pioneer_plan_active(turn)
+    pioneer_summoning = (pioneer_plan and mem.first_day_pioneer.get('phase') == 'robots'
+                         and not turn.phase_task)
+    if turn.pioneer and (turn.phase_task or (treasure_active(turn, mem) and not pioneer_summoning)):
         excluded.add(turn.pioneer.id)
     free = [hero for hero in turn.heroes
             if hero.id not in ledger.used and hero.id not in excluded]
@@ -128,10 +132,11 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     free = [hero for hero in free if hero.id not in ledger.used]
     carriers = sorted(((-rank, hero.kind != 'worker', hero.id, hero, name)
                        for hero in free for rank, name in enumerate(SUMMON_ORDERS)
-                       if hero.inventory[name]), key=lambda row: row[:3])
+                       if hero.inventory[name] and not (pioneer_plan and hero.kind == 'pioneer'
+                                                       and not pioneer_summoning)), key=lambda row: row[:3])
     can_use = (turn.is_day and state["count"] < DAILY_SUMMON_LIMIT
                and not (state["pending"] and state["pending"][0] == turn.round))
-    if turn.day == 1:
+    if turn.day == 1 and not pioneer_summoning:
         scout = mem.night_scout
         base = enemy_base(turn)
         entry = None
@@ -161,6 +166,9 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         elif ledger.robot_summon_anchor is not None:
             ledger.spending_plan['robot_use_blocked'] = 'first_day_summon_cluster_full'
     if use_only:
+        return False
+    if pioneer_plan:
+        ledger.spending_plan['robot_blocked'] = 'first_day_pioneer_after_tasks'
         return False
     if turn.day > cfg.robot_purchase_last_day:
         state["buyer"] = None
@@ -420,6 +428,9 @@ class Agent:
         budget_reached = False
         gate_guard = None
         try:
+            if turn.day != 1:
+                mem.night_scout.key, mem.night_scout.worker_id = None, None
+                mem.night_scout.post, mem.night_scout.wall_entry = None, None
             if not hasattr(mem, "robot_assault"):
                 mem.robot_assault = RobotAssaultMemory()
             # A paid base heal takes the pioneer before task or gun allocation,
@@ -477,12 +488,16 @@ class Agent:
             # the operator's distance or the general logistics margin.
             defence_return_due = turn.is_day and bool(home) and turn.tick >= DEFENCE_RETURN_TICK
             first_watch = turn.day == 1 and defence_return_due
-            hold_task = within_timeout and not danger and not defence_return_due and not mem.stop_reason
+            finish_opening_task = (turn.day == 1 and turn.tick >= FIRST_DAY_PIONEER_SHOP_TICK
+                                   and within_timeout and not mem.first_day_pioneer)
+            hold_task = (within_timeout and not danger and not mem.stop_reason
+                         and (not defence_return_due or finish_opening_task))
             if turn.phase_task or mem.log_task_id:
                 emit_event("task_schedule", {"active": bool(turn.phase_task), "within_timeout": within_timeout,
                            "return_steps": task_return, "return_margin": self.cfg.return_margin,
                            "day_left": turn.day_left, "danger": danger, "first_watch": first_watch,
                            "defence_return_due": defence_return_due, "return_tick": DEFENCE_RETURN_TICK,
+                           "finish_opening_task": finish_opening_task,
                            "hold_task": hold_task, "stop_reason": mem.stop_reason}, "evolution")
             if not turn.is_day:
                 emergency_items(turn, ledger)
@@ -493,9 +508,11 @@ class Agent:
                 # Establish the existing gunner before choosing a new scout.
                 # Prefer releasing the other worker's watch over this operator.
                 fixed_gatling_crew(turn, mem, nav, ledger)
-            scout = scout or act_night_scout(turn, mem.night_scout, nav, ledger,
-                                    home_roles=(mem.gatling_operator_id, mem.wall_watch_id))
-            pioneer_gunner = bool(h and turn.weapons and (not turn.is_day or not hold_task))
+            if turn.day == 1:
+                scout = scout or act_night_scout(turn, mem.night_scout, nav, ledger,
+                                        home_roles=(mem.gatling_operator_id, mem.wall_watch_id))
+            pioneer_gunner = bool(h and turn.weapons and
+                                 ((not turn.is_day and not finish_opening_task) or not hold_task))
             if not turn.is_day and pioneer_gunner:
                 hold_task = False
                 if turn.phase_task and not mem.stop_reason:
@@ -592,6 +609,7 @@ class Agent:
                     ledger.weapon_diagnostics[weapon.id] = current.copy()
             if turn.is_day:
                 ledger.daytime_gunner_post = mem.gunner_post if shared is not None else None
+                prepare_first_day_pioneer(turn, self.cfg, mem, nav, ledger)
             returning = set()
             for hero, tower in pairs:
                 route = (nav.search(hero, {posts[hero.id][0]}, ledger.reserved) if hero.id in posts
@@ -639,10 +657,10 @@ class Agent:
                 # Submit a ready answer before a return movement can cancel it.
                 # LLM/sandbox work holds the pioneer at the task point and gets
                 # its own chance before expensive worker connectivity searches.
-                if (within_timeout and not defence_return_due and h.id not in ledger.used
+                if (within_timeout and (not defence_return_due or finish_opening_task) and h.id not in ledger.used
                         and (mem.answer is not None or hold_task)):
                     available = min(mem.task_timeout, self.cfg.task_max_rounds) - (turn.round - mem.task_started)
-                    if home:
+                    if home and not finish_opening_task:
                         available = min(available, max(0, DEFENCE_RETURN_TICK - turn.tick))
                     prompt, execute = intel.task(ledger, available_rounds=available)
                 if hold_task:
@@ -674,9 +692,9 @@ class Agent:
                     if watcher and hero.id == watcher.id and hero.id not in ledger.used:
                         if hero.health <= 165 and hero.inventory["Medicine"]:
                             use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem)
-                        else:
-                            repair_watch(turn, mem, nav, ledger, hero, walls)
-                        continue
+                            continue
+                        if repair_watch(turn, mem, nav, ledger, hero, walls):
+                            continue
                     if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
                         continue
                     if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs}:
@@ -704,7 +722,7 @@ class Agent:
                 scout_excluded = returning | ({watcher.id} if watcher else set()) | opening_scout_excluded
                 staged_scout = scout
                 enemy_station = enemy_base(turn)
-                if (not staged_scout and enemy_station and mem.night_scout.worker_id is not None
+                if (turn.day == 1 and not staged_scout and enemy_station and mem.night_scout.worker_id is not None
                         and mem.night_scout.key == (turn.day, enemy_station.id, enemy_station.pos)):
                     staged_scout = prepare_night_scout(
                         turn, mem.night_scout, nav, ledger,
@@ -718,7 +736,7 @@ class Agent:
                     summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
                                       excluded=returning | priority_actors, reserve=priority_gold)
                 dusk_resources(turn, self.cfg, mem, nav, ledger, towers)
-                if not staged_scout:
+                if turn.day == 1 and not staged_scout:
                     staged_scout = prepare_night_scout(
                         turn, mem.night_scout, nav, ledger,
                         excluded=scout_excluded, jobs=mem.daytime_jobs)

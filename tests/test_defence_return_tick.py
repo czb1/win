@@ -95,8 +95,8 @@ class DefenceReturnTickTests(unittest.TestCase):
         return Config(layout_mode='explicit', weapon_cells=[[4, 4]],
                       loadout=['rocket'], llm_enabled=False, **settings)
 
-    def test_operator_recall_starts_at_67_independent_of_distance_and_margin(self):
-        for day in (1, 2, 10):
+    def test_later_day_operator_recall_starts_at_67_independent_of_distance_and_margin(self):
+        for day in (2, 10):
             for position in ((0, 0), (3, 3)):
                 for margin in (0, 5):
                     with self.subTest(day=day, position=position, margin=margin):
@@ -113,8 +113,8 @@ class DefenceReturnTickTests(unittest.TestCase):
                             self.assertEqual(result['11']['action'], 'move')
                             self.assertNotEqual(pos(result['11']['targetPos'][0]), position)
 
-    def test_active_task_releases_pioneer_at_67_on_every_day(self):
-        for day in (1, 2):
+    def test_later_day_active_task_releases_pioneer_at_67(self):
+        for day in (2, 10):
             with self.subTest(day=day):
                 agent = Agent(self.operator_config())
                 data = self.operator_case((day - 1) * 130 + 66)
@@ -133,14 +133,14 @@ class DefenceReturnTickTests(unittest.TestCase):
 
     def test_ready_task_answer_cannot_take_the_recall_action_at_67(self):
         agent = Agent(self.operator_config())
-        data = self.operator_case(66)
+        data = self.operator_case(196)
         data['phaseTask'] = 'active task'
         with patch.object(Intelligence, 'task', return_value=('', '')) as task:
             agent.decide(data)
             mem = next(iter(agent.sessions.values()))
             mem.answer = '42'
             task.reset_mock()
-            data['roundNo'] = 67
+            data['roundNo'] = 197
             result = agent.decide(data)['roleCommandMap']
         task.assert_not_called()
         self.assertEqual(result['11']['action'], 'move')

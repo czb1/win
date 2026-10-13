@@ -76,7 +76,7 @@ class TaskScheduleTests(unittest.TestCase):
         self.assertFalse(ledger.commands)
 
     def test_short_verified_stream_can_fit_where_unknown_cannot(self):
-        data = case(58, x=5)
+        data = case(188, x=5)
         _, _, _, ledger, _ = self.dispatch(data)
         self.assertFalse(ledger.commands)
         mem = Memory()
@@ -99,7 +99,7 @@ class TaskScheduleTests(unittest.TestCase):
             self.assertEqual(budget['source'], 'failure_fallback')
 
     def test_failed_task_blocks_late_accept(self):
-        data = case(58, x=5)
+        data = case(188, x=5)
         mem = Memory()
         mem.task_outcomes.extend([record(data['teamOur']['playerTasks'][0]),
                                  record(data['teamOur']['playerTasks'][0], 15, False)])

@@ -288,13 +288,13 @@ class WallWatchTests(unittest.TestCase):
         self.assertEqual(ledger.commands['2']['action'], 'move')
         self.assertNotIn(2, mem.sale_workers)
 
-    def test_watcher_does_not_mine_at_night_without_damage_or_stock(self):
+    def test_empty_watcher_can_mine_on_quiet_night_while_stocked_watch_stays(self):
         for packs in (0, 4):
             p = self.case(day=7, packs=packs, damaged=False)
             p['robot']['roles'] = []
             p['teamOur']['roles'][2]['pos'] = {'x': 10, 'y': 2}
             result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
-            self.assertNotEqual(result.get('2', {}).get('action'), 'collect')
+            self.assertEqual(result.get('2', {}).get('action') == 'collect', packs == 0)
             self.assertNotEqual(result.get('2', {}).get('name'), 'WallFixer')
 
     def test_early_critical_walls_reserve_night_stock_without_stopping_work(self):

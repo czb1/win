@@ -2,7 +2,7 @@
 from dataclasses import replace
 import logging
 from .commands import command
-from .model import neighbours, ORES
+from .model import neighbours, ORES, distance
 from .mining import earn, sale_inventory
 from .economy_plan import via, maxed_weapon_mining_phase
 from .wall_health import repair_risk
@@ -41,10 +41,13 @@ def geometry(turn, sites):
     return inside, front
 
 
-def watch_route(turn, nav, ledger, mem, hero, sites, target=None):
+def watch_route(turn, nav, ledger, mem, hero, sites, target=None, *, standing=None,
+                with_endpoint=False):
     inside, _ = geometry(turn, sites)
     goals = (set(neighbours(target.pos)) if target else
              {p for wall in sites for p in neighbours(wall)}) & inside
+    if standing is not None:
+        goals &= {standing}
     reserved = set(ledger.reserved)
     post = (getattr(ledger, 'daytime_gunner_post', mem.gunner_post)
             if turn.is_day else mem.gunner_post)
@@ -53,7 +56,7 @@ def watch_route(turn, nav, ledger, mem, hero, sites, target=None):
     if hero.pos in inside:
         reserved.update((x, y) for x in range(turn.width) for y in range(turn.height)
                         if (x, y) not in inside)
-    return nav.search(hero, goals, reserved)
+    return nav.search(hero, goals, reserved, with_endpoint=with_endpoint)
 
 
 def staging_wall(turn, sites):
@@ -171,6 +174,51 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
                      ledger.reserved, final_exact=True)
                  for vendor in vendors for stop in (shops_for_sale or [None])]
     buying = bool(quota and feasible_stock_trip)
+    from .economy import wall_upgrade_allowed, upgrade_order, critical_station
+    carried = hero.inventory.copy()
+    deliveries = []
+    for building in sorted((w for w in turn.ours if voucher_for(w)),
+                           key=lambda w: (upgrade_order(turn, w, mem), w.id)):
+        name = voucher_for(building)
+        if (not name or not carried[name] or not wall_upgrade_allowed(turn, building, mem, paid=True)
+                or building.kind == 'station' and not critical_station(turn, building, mem)):
+            continue
+        carried[name] -= 1
+        deliveries.append(building.pos)
+    if deliveries:
+        # Finish one shop visit before departure, then protect its paid
+        # delivery from later increases in the team's gold/stock quota.
+        minimum = max(0, min(safety_stock, target) - held)
+        count = min(quota, minimum, hero.space)
+        landing, _ = geometry(turn, sites)
+        trip = via(nav, hero, [[p] for p in deliveries] + [landing],
+                   ledger.reserved, final_exact=True)
+        can_top_up = bool(count and buying and shop[1][0] == 0
+                          and trip is not None
+                          and trip + len(deliveries) + 1 + cfg.return_margin < turn.day_left
+                          and not (hero.health <= 165 and hero.inventory['Medicine']))
+        ledger.watch_pack_slots[hero.id] = count if can_top_up else 0
+        if can_top_up and ledger.add(hero.id, command('buy', name='WallFixer', num=count)):
+            ledger.explain(hero.id, 'finish_shared_shop_purchase', shop=shop[2],
+                           item='WallFixer', quantity=count, pending_deliveries=deliveries)
+            report('buy', 'same_shop_safety_stock', count=count, pending_deliveries=deliveries)
+            return True, 0
+        from .economy import use_inventory
+        target_only = previous_job.get('target') if previous_job.get('kind') == 'use' else None
+        if use_inventory(turn, nav, ledger, hero, mem=mem, target_only=target_only):
+            report('use', 'continue_paid_delivery', pending_deliveries=deliveries)
+            return True, 0
+        report('work', 'continue_paid_delivery', pending_deliveries=deliveries)
+        return False, 0
+    if (buying and previous_job.get('kind') == 'buy'
+            and 'UpgradeVoucher' in previous_job.get('name', '')):
+        # The voucher and its safety packs share a visit. Reserve the packs
+        # once, let the existing voucher order arrive/buy, then top up in place.
+        count = min(quota, max(0, min(safety_stock, target) - held))
+        ledger.watch_pack_slots[hero.id] = count
+        funds = count * price if price is not None and price > 0 else 0
+        report('reserve', 'shared_shop_order', pending_item=previous_job['name'], count=count)
+        return False, funds
     budget = (shop[0] if buying else home[0]) + cfg.return_margin + (len(ORES) if buying else 1)
     sale_trip = min((trip for trip in trips if trip is not None), default=None)
     if sale_trip is not None:
@@ -287,56 +335,94 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
 def repair_watch(turn, mem, nav, ledger, hero, sites):
     if turn.is_day:
         return False
-    _, front = geometry(turn, sites)
+    inside, front = geometry(turn, sites)
+    state = mem.wall_watch
+    key = turn.day, hero.id
+    if state.patrol_key != key:
+        state.patrol_key, state.patrol_target, state.patrol_post = key, None, None
     options, waiting, critical = [], [], []
     # Stunned robots may wake next turn: stop spending, but retain late watch.
     hostile = [r for r in turn.robots if turn.threatens_us(r)]
     held = hero.inventory['WallFixer']
+    pressure = False
     for wall in turn.ours:
         if wall.kind != 'wall' or wall.pos not in sites or wall.id in ledger.repair_claims:
             continue
         risk = repair_risk(turn, wall, mem)
+        pressure |= bool(risk.nearby)
         if risk.needed:
             critical.append(wall)
         if not held:
             if risk.needed:
                 mem.wall_watch.shortage(turn, wall, 'no_pack')
             continue
-        route = watch_route(turn, nav, ledger, mem, hero, sites, wall)
+        standing = state.patrol_post if wall.id == state.patrol_target else None
+        route = watch_route(turn, nav, ledger, mem, hero, sites, wall,
+                            standing=standing, with_endpoint=True)
+        if route is None and standing is not None:
+            route = watch_route(turn, nav, ledger, mem, hero, sites, wall, with_endpoint=True)
         if route is None:
             if risk.needed:
                 mem.wall_watch.shortage(turn, wall, 'no_route')
             continue
         rate = max(risk.recent_damage, risk.nearby_damage)
-        slack = wall.health / rate - route[0] - 1 if rate else float('inf')
-        # A threatened flank that cannot survive another turn outranks frontage.
-        rank = (not (risk.emergency or slack <= 0),
-                slack if slack <= 0 else 0, wall.pos[0] != front,
+        lifetime = wall.health / rate if rate else float('inf')
+        # Urgency is a property of the wall. Subtracting the worker's walk
+        # promotes the farther wall after every step, even with unchanged HP.
+        urgent = risk.emergency or bool(risk.nearby and lifetime <= 1)
+        rank = (0 if risk.emergency else 1 if urgent else 2, wall.pos[0] != front,
                 wall.health / risk.maximum, route[0], wall.id)
         item = (rank, wall, route, risk)
         if risk.needed:
             options.append(item)
         elif ((wall.health * 10 <= risk.maximum * 4)
-              or hostile and (turn.day >= 8 or risk.nearby and slack <= 2)):
+              or hostile and (turn.day >= 8 or risk.nearby and lifetime <= 3)):
             waiting.append(item)
     selected = min(options or waiting, key=lambda o: o[0], default=None)
+    previous = next((o for o in (options or waiting) if o[1].id == state.patrol_target), None)
+    if previous and selected and previous[0][0] <= selected[0][0]:
+        selected = previous
     if selected:
         _, wall, route, risk = selected
         action = 'move' if route[1] else 'use' if risk.needed else 'hold'
         accepted = (action == 'hold' or ledger.add(hero.id, command('move', route[1]) if route[1]
                                                  else command('use', wall.pos, name='WallFixer')))
+        if accepted:
+            state.patrol_target, state.patrol_post = wall.id, route[2]
+            if action == 'hold':
+                ledger.used.add(hero.id)
+                ledger.reserved.add(hero.pos)
+            ledger.explain(hero.id, 'wall_watch_' + ('repair' if risk.needed else 'preposition'),
+                           wall=wall.id, target=wall.pos, post=route[2], steps=route[0],
+                           health=wall.health, threshold=risk.threshold, held=held,
+                           retained_target=selected is previous, emergency=selected[0][0] < 2)
         mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, wall=wall.id,
                                 health=wall.health, threshold=risk.threshold, held=held,
                                 recent_damage=risk.recent_damage, nearby=risk.nearby,
                                 steps=route[0], action=action, accepted=accepted,
                                 reason=risk.reason if risk.needed else 'preposition')
         return accepted
+    state.patrol_target, state.patrol_post = None, None
+    threatened = bool(critical or pressure or any(distance(hero.pos, r.pos) <= r.attack_range + 2
+                                                 for r in hostile))
+    if not held and not threatened:
+        ledger.explain(hero.id, 'wall_watch_empty_released', held=0)
+        mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, action='release',
+                                reason='no_pack_safe_work', held=0)
+        return False
+    # Stay at a valid inside post instead of chasing the weakest wall without
+    # a pack or a repair target. An outside watcher still returns to shelter.
     stage = staging_wall(turn, sites)
-    home = watch_route(turn, nav, ledger, mem, hero, sites, stage) if stage else None
+    home = (watch_route(turn, nav, ledger, mem, hero, sites, stage)
+            if hero.pos not in inside and stage else None)
     action = 'move' if home and home[1] is not None else 'hold'
     if action == 'move':
         ledger.add(hero.id, command('move', home[1]))
+    elif hero.pos in inside:
+        ledger.used.add(hero.id)
+        ledger.reserved.add(hero.pos)
     reason = 'no_pack' if not held else 'no_route' if critical else 'inside_watch'
+    ledger.explain(hero.id, 'wall_watch_' + reason, held=held, critical=[w.id for w in critical])
     mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, action=action,
                             reason=reason, held=held, critical=[w.id for w in critical])
     return True

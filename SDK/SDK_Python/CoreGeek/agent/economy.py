@@ -18,13 +18,15 @@ DUSK_USE_TICK = 65
 RESOURCE_POLICY_DAY = 4
 
 
-def dusk_stop(turn, nav, ledger, hero, destinations, actions=1, require_home=True):
+def dusk_stop(turn, nav, ledger, hero, destinations, actions=1, require_home=True,
+              home_override=None):
     """A real delivery tile plus the night destination must fit daylight.
 
     Keep one spare turn for travel congestion; an actor already at its post
     can spend the final turn on an adjacent upgrade without moving.
     """
-    home, exact = delivery_destination(turn, nav, ledger, hero)
+    home, exact = (home_override if home_override is not None
+                   else delivery_destination(turn, nav, ledger, hero))
     if require_home and not home:
         return None
     # All delivery endpoints share one reverse return search. Forward BFS
@@ -48,8 +50,9 @@ def dusk_stop(turn, nav, ledger, hero, destinations, actions=1, require_home=Tru
     return min(options) if options else None
 
 
-def dusk_route(turn, nav, ledger, hero, destinations, actions=1, require_home=True):
-    stop = dusk_stop(turn, nav, ledger, hero, destinations, actions, require_home)
+def dusk_route(turn, nav, ledger, hero, destinations, actions=1, require_home=True,
+               home_override=None):
+    stop = dusk_stop(turn, nav, ledger, hero, destinations, actions, require_home, home_override)
     return stop[3] if stop else None
 
 
@@ -309,10 +312,10 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
                 route = nav.approach(hero, building.cells, ledger.reserved)
             elif (building.kind == 'wall' and mem and turn.is_day and turn.day >= 4
                     and hero.id == mem.wall_watch_id):
-                from .wall_watch import watch_route
-                route = watch_route(turn, nav, ledger, mem, hero, ledger.wall_cells, building)
-                if route and route[0] + 1 + ledger.cfg.return_margin > turn.day_left:
-                    route = None
+                # Daylight delivery may use either side of the wall. Verify
+                # the subsequent inside/post return separately, as at dusk.
+                route = dusk_route(turn, nav, ledger, hero, building.cells,
+                                   home_override=return_destination(turn, nav, ledger, hero, mem))
             else:
                 route = (dusk_route(turn, nav, ledger, hero, building.cells)
                          if turn.is_day and (upgrades_only or turn.tick >= DUSK_SPEND_TICK or late_wall_phase(turn))
