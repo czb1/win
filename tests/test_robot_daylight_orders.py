@@ -160,7 +160,7 @@ class RobotDaylightOrderTests(unittest.TestCase):
         self.assertNotIn(20012, ledger.used)
 
     def test_before_departure_stages_one_worker_and_keeps_the_last_gun_builder(self):
-        data = opening_data(29)
+        data = opening_data(24)
         turn, cfg, _, _ = opening_setup(data, llm_enabled=False)
         agent = Agent(cfg)
         response = agent.decide(data)['roleCommandMap']
