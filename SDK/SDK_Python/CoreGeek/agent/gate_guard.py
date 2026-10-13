@@ -45,11 +45,11 @@ class GateGuard:
             if self.ledger.notes.get(helper.id, {}).get('reason') == 'off_route_standby':
                 continue
             action = self.ledger.commands.get(str(helper.id), {})
-            target = (pos(action['targetPos'][0]) if action.get('action') == 'move' else None)
+            target = (pos(action['targetPos'][-1]) if action.get('action') == 'move' else None)
             # An accepted collection/use/attack is not a request to pass.
             if helper.id in self.ledger.used and target is None:
                 continue
-            if helper.pos == self.gate or target == self.gate:
+            if helper.pos == self.gate or (action.get('action') == 'move' and self.gate in {pos(p) for p in action['targetPos']}):
                 traffic[helper.id] = self.requests.get(helper.id, set())
             elif helper.id in self.requests and (target is None
                     or distance(target, self.gate) < distance(helper.pos, self.gate)):
