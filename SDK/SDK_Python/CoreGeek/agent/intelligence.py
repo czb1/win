@@ -26,7 +26,7 @@ from .task_evidence import computed_answer, evidence_matches, parsing_rules, inh
 from .task_log_repair import (repair_context, merge_repair, validate_literal_regex,
                               FullRepairRequired, repair_expressions)
 from .task_sop import answer_contract, answer_error, engineering_code
-from .task_query import reference_paths, query_config, query_code
+from .task_query import reference_paths
 from .market import observe_prices, merge_signals
 from .movement import MovementMemory
 from .scouting import ScoutMemory
@@ -336,7 +336,6 @@ class Memory:
     log_diagnostics: dict = field(default_factory=dict)
     contract: dict = field(default_factory=dict)
     sop_attempted: bool = False
-    query_sop_attempted: bool = False
     check_pending: bool = False
     work_deadline: int | None = None
     task_stats: dict = field(default_factory=dict)
@@ -653,7 +652,6 @@ class Memory:
             self.log_diagnostics.clear()
             self.contract.clear()
             self.sop_attempted = self.check_pending = False
-            self.query_sop_attempted = False
             self.work_deadline = None
             self.task_stats = {"llmCalls": 0, "sandboxCalls": 0, "submissions": 0, "rejections": 0}
             self.task_start_gold = turn.gold
@@ -718,7 +716,7 @@ class Memory:
                 target = str(PurePosixPath(self.task_directory() or '.') / tool.get('path', ''))
                 if target in {r.get('source') for r in refs}:
                     tool = self.running_tool = {**tool, 'kind': 'reference'}
-            result, report = runtime_result(raw) if not tool or tool.get('kind') == 'query' else (raw, {})
+            result, report = runtime_result(raw) if not tool else (raw, {})
             status, body, answer = sandbox_result(result)
             if status == 'ok' and not tool and self.contract.get('input_kind') == 'logs':
                 answer = computed_answer(body, self.contract)
@@ -744,8 +742,6 @@ class Memory:
                 elif status == 'ok':
                     self.input_blocked = False
                 log_task_payload(turn.round, 'parse_diagnostics', json.dumps(self.log_diagnostics, ensure_ascii=False))
-            if tool.get('kind') == 'query' and status != 'ok':
-                self.query_blocked = True
             if report.get("http_errors"):
                 self.query_blocked = True
                 status, answer = "query_failed", None
@@ -781,7 +777,7 @@ class Memory:
             if not tool:
                 self.exploration.append({"python": excerpt(self.running_python, 2400),
                                          "sandbox": excerpt(str(raw), 3000), "status": status})
-            if tool.get("kind") in ("engineering", "check", "query"):
+            if tool.get("kind") in ("engineering", "check"):
                 self.last_attempt["python"] = ""
                 self.last_attempt["tool"] = tool["kind"]
             if tool.get('kind') == 'transform':
@@ -829,7 +825,7 @@ class Memory:
                     if call not in self.method_calls:
                         self.method_calls.append(call)
                 self.method_calls = self.method_calls[-12:]
-                if not tool or tool.get('kind') in ('engineering', 'check', 'query', 'transform'):
+                if not tool or tool.get('kind') in ('engineering', 'check', 'transform'):
                     self.supported_output, self.supported_python = body, self.running_python
                 self.successful_python, self.successful_output = self.running_python, body
                 self.task_failures = 0
@@ -864,7 +860,7 @@ class Memory:
                     # Model-generated output is not proof of a checker token.
                     # Verify the current workspace ourselves before submission.
                     self.check_pending = True
-                elif answer is not None and (not self.running_tool or checker or tool.get('kind') == 'query'):
+                elif answer is not None and (not self.running_tool or checker):
                     if checker and not answer_error(answer, self.contract):
                         self.query_blocked = False  # An independent check is authoritative for token tasks.
                     error = ("输入解析尚未验证；先修复 parse_line 并重新计算。" if self.input_blocked else
@@ -1413,13 +1409,6 @@ class Intelligence:
                 self.mem.python = document_code(path, base=self.mem.task_directory())
                 self.mem.running_tool = {"kind": "read", "path": path, "start": 0}
                 break
-        if (self.mem.python is None and self.mem.pending is None
-                and not self.mem.query_sop_attempted and remaining >= 3):
-            config = query_config(self.mem.documents, self.mem.contract)
-            if config:
-                self.mem.query_sop_attempted = True
-                self.mem.python = query_code(config)
-                self.mem.running_tool = {"kind": "query"}
         if self.mem.python is not None and self.mem.pending is None:
             code, self.mem.python = self.mem.python, None
             conversion = self.mem.transform_config() if not self.mem.running_tool else None

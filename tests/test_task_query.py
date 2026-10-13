@@ -1,9 +1,8 @@
-"""Independent offset API and three-question replay with no model replies."""
+"""Model-routed query regressions with an independent local offset API."""
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 from pathlib import Path
-import shlex
 import tempfile
 import threading
 import unittest
@@ -12,9 +11,9 @@ from urllib.parse import parse_qs, urlsplit
 from test_agent import setup_case
 from test_evolution import task_payload
 from test_task_completion import run_sandbox
-from agent.intelligence import Intelligence, Memory, sandbox_result
-from agent.task_query import query_code, query_config, reference_paths
-from agent.task_runtime import runtime_result
+from agent.intelligence import Intelligence, Memory
+from agent.task_query import reference_paths
+from test_evolution_v2 import step
 from agent.task_sop import answer_contract
 
 
@@ -84,74 +83,136 @@ def documents(base, city='北京', key='first-key'):
              'output': f'curl -H "X-API-Key: {key}" "{base}/search?city=北京"'}]
 
 
+def model_program(base, city='北京', key='first-key', only_type=None, reverse=False):
+    """Controlled model response, never production query logic."""
+    return f'''
+import json
+from urllib.request import Request, urlopen
+from urllib.parse import urlencode
+rows = []
+while True:
+    params = {{'location': {city!r}, 'offset': len(rows), 'limit': 100}}
+    request = Request({base!r} + '/search?' + urlencode(params),
+                      headers={{'Authorization': 'Bearer ' + {key!r}}})
+    with urlopen(request, timeout=3) as response:
+        data = json.load(response)['data']
+    rows.extend(data['records'])
+    if len(rows) == data['pagination']['total_count']:
+        break
+    if not data['records']:
+        raise ValueError('incomplete page')
+only_type = {only_type!r}
+selected = [r for r in rows if only_type is None or r['type'] == only_type]
+result = {{'city': {city!r}, 'total_count': len(selected),
+          'world_heritage_count': sum(r['protected_level'] == '世界遗产' for r in selected),
+          'types': sorted({{r['type'] for r in selected}}, reverse={reverse!r})}}
+task_result(result)
+'''
+
+
 class QueryTests(unittest.TestCase):
-    def execute_query(self, base, city='北京'):
-        docs = documents(base, city)
-        config = query_config(docs, answer_contract(docs))
+    def ready(self, docs, directory=None):
+        if directory:
+            docs = [{**d, 'resolved_path': str(Path(directory, Path(d['resolved_path']).name))}
+                    for d in docs]
+        return Memory(task_text='query', task_started=1, task_timeout=15,
+                      bootstrap_done=True, documents=docs, contract=answer_contract(docs))
+
+    def test_original_and_changed_rules_request_model_before_execution(self):
+        for extra in ('', '\n全部统计仅限建筑类型。', '\ntypes 必须按名称降序。'):
+            with self.subTest(extra=extra):
+                docs = documents('http://localhost:8899')
+                docs[0]['output'] += extra
+                mem = self.ready(docs)
+                prompt, command, ledger = step(mem, 2)
+                self.assertTrue(prompt)
+                self.assertIn(docs[0]['output'], json.loads(prompt.split('上下文：')[1])['documents'][0]['output'])
+                self.assertFalse(command)
+                self.assertFalse(ledger.commands)
+                self.assertEqual(mem.pending, ('task', 2))
+
+    def test_model_query_pagination_filter_sort_and_submission(self):
+        with api() as (base, calls, _), tempfile.TemporaryDirectory() as directory:
+            for only_type, reverse, total, kinds in (
+                    (None, True, 3, ['遗址', '建筑', '园林']),
+                    ('建筑', False, 1, ['建筑'])):
+                with self.subTest(only_type=only_type):
+                    docs = documents(base)
+                    docs[0]['output'] += '\n按当前指定类型筛选，types 使用本题要求的次序。'
+                    mem = self.ready(docs, directory)
+                    step(mem, 2)
+                    prompt, command, _ = step(mem, 3, llmResp='PYTHON\n' + model_program(
+                        base, only_type=only_type, reverse=reverse))
+                    self.assertFalse(prompt)
+                    self.assertTrue(command)
+                    output = run_sandbox({'executeCmd': command}, directory)
+                    prompt, command, ledger = step(mem, 4, lastCmdResult=output)
+                    answer = json.loads(ledger.commands['11']['taskAnswer'])
+                    self.assertEqual(answer, {'city':'北京', 'total_count':total,
+                        'world_heritage_count': 1 if only_type is None else 0, 'types':kinds})
+                    self.assertFalse(prompt or command)
+            self.assertEqual([c[0]['offset'] for c in calls], [['0'], ['2'], ['0'], ['2']])
+
+    def test_failed_query_blocks_answer_then_successful_repair_submits(self):
+        with api() as (base, _, _), tempfile.TemporaryDirectory() as directory:
+            mem = self.ready(documents(base), directory)
+            step(mem, 2)
+            code = model_program(base, key='wrong-key')
+            _, command, _ = step(mem, 3, llmResp='PYTHON\n' + code)
+            raw = run_sandbox({'executeCmd':command}, directory)
+            prompt, command, ledger = step(mem, 4, lastCmdResult=raw)
+            self.assertTrue(mem.query_blocked)
+            self.assertIn('401', prompt)
+            self.assertFalse(command or ledger.commands)
+            _, _, ledger = step(mem, 5, llmResp='ANSWER\n{"total_count":0}')
+            self.assertFalse(ledger.commands)
+            self.assertTrue(mem.query_blocked)
+            _, command, _ = step(mem, 6, llmResp='PYTHON\n' + model_program(base))
+            raw = run_sandbox({'executeCmd':command}, directory)
+            _, _, ledger = step(mem, 7, lastCmdResult=raw)
+            self.assertFalse(mem.query_blocked)
+            self.assertEqual(json.loads(ledger.commands['11']['taskAnswer'])['total_count'], 3)
+
+    def test_caught_later_page_failure_cannot_submit_default_zero(self):
+        with api('later_error') as (base, _, _), tempfile.TemporaryDirectory() as directory:
+            mem = self.ready(documents(base), directory)
+            step(mem, 2)
+            code = 'try:\n' + '\n'.join('    ' + line for line in model_program(base).splitlines())
+            code += '\nexcept Exception:\n    task_result({"total_count": 0})'
+            _, command, _ = step(mem, 3, llmResp='PYTHON\n' + code)
+            raw = run_sandbox({'executeCmd':command}, directory)
+            prompt, command, ledger = step(mem, 4, lastCmdResult=raw)
+            self.assertTrue(mem.query_blocked)
+            self.assertIn('500', prompt)
+            self.assertFalse(command or ledger.commands)
+
+    def test_three_tasks_reread_current_key_then_request_model(self):
         with tempfile.TemporaryDirectory() as directory:
-            output = run_sandbox({'executeCmd': 'python3 -c ' + shlex.quote(query_code(config))}, directory)
-        return sandbox_result(runtime_result(output)[0]), output
-
-    def test_negotiation_and_server_clamped_offset_pagination(self):
-        with api() as (base, calls, _):
-            (status, _, answer), output = self.execute_query(base)
-        self.assertEqual(status, 'ok', output)
-        self.assertEqual(json.loads(answer), {'city': '北京', 'total_count': 3,
-            'world_heritage_count': 1, 'types': ['园林', '建筑', '遗址'], 'oldest_era': '北京1'})
-        self.assertEqual(len(calls), 4)  # 401, 400, then two successful pages.
-        self.assertEqual(calls[-1][0]['offset'], ['2'])
-        self.assertNotIn('first-key', output)
-
-    def test_failed_or_incomplete_query_never_prints_answer(self):
-        for mode in ('repeated', 'duplicate', 'changed_total', 'missing_field',
-                     'bad_shape', 'later_error', 'empty_page'):
-            with self.subTest(mode=mode), api(mode) as (base, _, _):
-                (status, _, answer), output = self.execute_query(base)
-                self.assertNotEqual(status, 'ok', output)
-                self.assertIsNone(answer)
-                self.assertNotIn('FINAL_ANSWER', output)
-
-    def test_empty_and_unknown_chronology_submit_only_proven_fields(self):
-        for city, mode, total in (('空城', 'ok', 0), ('南京', 'unknown_era', 2)):
-            with self.subTest(city=city), api(mode) as (base, _, _):
-                (status, _, answer), output = self.execute_query(base, city)
-                self.assertEqual(status, 'ok', output)
-                value = json.loads(answer)
-                self.assertEqual(value['total_count'], total)
-                self.assertNotIn('oldest_era', value)
-
-    def test_three_tasks_reread_rotating_key_without_llm_or_prior_completion(self):
-        with api() as (base, calls, state), tempfile.TemporaryDirectory() as directory:
             mem = Memory()
             for index, city in enumerate(('北京', '南京', '成都')):
-                state['key'] = 'current-key-' + str(index)
-                docs = documents(base, city, state['key'])
+                docs = documents('http://localhost:8899', city, 'current-key-' + str(index))
                 text = docs[0]['output']
                 if index:
                     text = text.replace('`API_DOCS.md`', '前题文档') + '\nAPI 与前面完全相同\n'
                 task = Path(directory, f'task_{index}.md')
                 task.write_text(text)
                 Path(directory, 'API_DOCS.md').write_text(docs[1]['output'])
-                description = '请阅读' + str(task)
                 previous = ''
-                for offset in range(4):
-                    p = task_payload(index * 10 + offset + 1, description)
-                    p['teamOur']['playerTasks'][0]['timeoutRounds'] = 10
-                    p['lastCmdResult'] = previous
-                    turn, cfg, _, ledger = setup_case(p)
+                for offset in range(3):
+                    payload = task_payload(index * 10 + offset + 1, '请阅读' + str(task))
+                    payload['lastCmdResult'] = previous
+                    turn, cfg, _, ledger = setup_case(payload)
                     mem.observe(turn, cfg)
                     prompt, command = Intelligence(turn, cfg, mem).task(ledger)
-                    self.assertFalse(prompt, prompt)
-                    if command:
-                        previous = run_sandbox({'executeCmd': command}, directory)
+                    self.assertFalse(ledger.commands)
+                    if offset < 2:
+                        self.assertTrue(command)
+                        previous = run_sandbox({'executeCmd':command}, directory)
                     else:
-                        answer = json.loads(ledger.commands['11']['taskAnswer'])
-                        self.assertEqual(answer['city'], city)
-                        self.assertEqual(answer['total_count'], (3, 2, 4)[index])
-                        self.assertEqual(answer['oldest_era'], city + '1')
-                self.assertFalse(mem.skills)  # No completion signal; reread still works.
-            self.assertEqual({auth for _, auth in calls if auth},
-                             {'Bearer current-key-0', 'Bearer current-key-1', 'Bearer current-key-2'})
+                        self.assertFalse(command)
+                        self.assertIn('current-key-' + str(index), prompt)
+                        if index:
+                            self.assertNotIn('current-key-' + str(index-1), prompt)
 
     def test_reference_reuse_requires_same_point_directory_and_explicit_continuity(self):
         docs = documents('http://localhost:8899')
@@ -164,28 +225,3 @@ class QueryTests(unittest.TestCase):
         docs[0]['resolved_path'] = '/current/task.md'
         docs[0]['output'] = 'unrelated question'
         self.assertFalse(reference_paths(docs[:1], knowledge, (1, 2)))
-
-    def test_unrecognized_or_changed_service_uses_model_fallback(self):
-        docs = documents('http://localhost:8899')
-        self.assertIsNone(query_config(docs, {'example': {'token': ''}}))
-        docs[1]['output'] = docs[1]['output'].replace(':8899', ':9900')
-        self.assertIsNone(query_config(docs, answer_contract(docs)))
-
-    def test_query_failure_falls_back_once_without_submitting(self):
-        docs = documents('http://localhost:8899')
-        mem = Memory(task_text='query', task_started=1, bootstrap_done=True,
-                     query_sop_attempted=True, pending=('cmd', 2),
-                     running_tool={'kind': 'query'}, documents=docs, contract=answer_contract(docs))
-        p = task_payload(3, 'query')
-        p['lastCmdResult'] = '[exitCode:1]\nQUERY_DIAGNOSTIC invalid pagination'
-        turn, cfg, _, ledger = setup_case(p)
-        mem.observe(turn, cfg)
-        prompt, command = Intelligence(turn, cfg, mem).task(ledger)
-        self.assertTrue(prompt)
-        self.assertFalse(command)
-        self.assertFalse(ledger.commands)
-        self.assertIn('invalid pagination', prompt)
-
-
-if __name__ == '__main__':
-    unittest.main()
