@@ -245,7 +245,7 @@ class FirstDayWallBlockTests(unittest.TestCase):
         self.assertEqual(response, agent.decide(copy.deepcopy(data)))
         step = pos(response['roleCommandMap']['10']['targetPos'][0])
         self.assertNotEqual(step, ENTRY)
-        self.assertNotIn('30000', response['roleCommandMap'])
+        self.assertEqual(response['roleCommandMap']['30000']['action'], 'attack')
         memory = next(iter(agent.sessions.values()))
         self.assertEqual(memory.night_scout.wall_entry, ENTRY)
         data['roundNo'] = 71
@@ -261,27 +261,30 @@ class FirstDayWallBlockTests(unittest.TestCase):
         self.assertIn(pos(shot['targetPos'][0]), Turn(data, Config()).enemies[0].cells)
 
     def test_failed_yield_or_dizzy_scout_never_opens_occupancy_early(self):
+        from robot_feedback import reject_base_aims
         for dizzy in (False, True):
             data = seal_ring(block_case(70, held=True))
             data['teamOur']['summonRobotList'] = [controlled_robot(x=30, y=13)]
             if dizzy:
                 data['teamOur']['roles'][1]['abnormalState'] = 'dizzy'
+            assault = reject_base_aims(data)
             memory = memory_for()
             turn, _, nav, ledger = setup_case(data)
             self.assertIsNotNone(yield_wall_entry(turn, memory, nav, ledger))
             self.assertIn(ENTRY, turn.blocked)
             ledger.robot_assault_entry = ENTRY
-            act_robots(turn, RobotAssaultMemory(), nav, ledger)
+            act_robots(turn, assault, nav, ledger)
             self.assertNotIn('30000', ledger.commands)
-            self.assertEqual(ledger.notes[30000]['reason'], 'robot_wait_scout_gap')
+            self.assertIn(ledger.notes[30000]['reason'],
+                          {'robot_wait_scout_gap', 'robot_assault_path_blocked'})
             # The next request still reports the worker in the gap: wait again.
-            data['roundNo'] = 71
+            data['roundNo'] += 1
             turn, _, nav, ledger = setup_case(data)
             ledger.robot_assault_entry = ENTRY
-            act_robots(turn, RobotAssaultMemory(), nav, ledger)
+            act_robots(turn, assault, nav, ledger)
             self.assertNotIn('30000', ledger.commands)
 
-    def test_multiple_robots_clear_gap_without_same_turn_collision(self):
+    def test_multiple_in_range_robots_attack_without_entering_occupied_gap(self):
         data = seal_ring(block_case(71))
         data['teamOur']['roles'][1]['pos'] = {'x': 29, 'y': 13}
         data['teamOur']['summonRobotList'] = [controlled_robot(x=30, y=12),
@@ -291,16 +294,16 @@ class FirstDayWallBlockTests(unittest.TestCase):
         memory = RobotAssaultMemory()
         act_robots(turn, memory, nav, ledger)
         lead = ledger.commands['30000']
-        self.assertEqual(lead['action'], 'move')
-        self.assertEqual(base_distance(turn.enemies[0], pos(lead['targetPos'][0])), 1)
+        self.assertEqual(lead['action'], 'attack')
+        self.assertIn(pos(lead['targetPos'][0]), turn.enemies[0].cells)
         self.assertFalse(any(c['action'] == 'move' and pos(c['targetPos'][0]) == ENTRY
                              for c in ledger.commands.values()))
         data['roundNo'] = 72
-        data['teamOur']['summonRobotList'][0]['pos'] = lead['targetPos'][0]
+        data['lastRoundRoleActionResults'] = {'30000': True, '30001': True}
         turn, _, nav, ledger = setup_case(data)
         ledger.robot_assault_entry = ENTRY
         act_robots(turn, memory, nav, ledger)
-        self.assertEqual(ledger.commands['30001'], command('move', ENTRY))
+        self.assertEqual(ledger.commands['30001']['action'], 'attack')
         self.assertEqual(ledger.commands['30000']['action'], 'attack')
 
     def test_daybreak_releases_entry_and_crossing_state(self):
