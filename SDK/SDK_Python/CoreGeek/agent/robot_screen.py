@@ -8,6 +8,7 @@ from .mining import earn
 from .economy import pioneer, walk
 from .logging_system import emit_event
 from .sabotage import act_imps
+from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position
 
 ORDER = 'SmallRobotSummonOrder'
 VOUCHER = 'StationUpgradeVoucher1'
@@ -67,7 +68,10 @@ def threat_rays(turn):
 def defend_screen(turn, mem, nav, ledger):
     if not turn.station or turn.is_day:
         return
-    robots = sorted(turn.summon_robots, key=lambda r: (turn.base_distance(r.pos), r.id))
+    # The home screen is exclusively the cheap small-robot layer. Larger
+    # summoned robots remain assault units and must never be recalled home.
+    robots = sorted((r for r in turn.summon_robots if r.kind == 'smallRobot'),
+                    key=lambda r: (turn.base_distance(r.pos), r.id))
     rays = threat_rays(turn)
     actual = {r.pos for r in robots}
     goals = screen_cells(turn)
@@ -118,13 +122,53 @@ def defend_screen(turn, mem, nav, ledger):
                geometry='positive_length_ray_assumption', positions=sorted(actual)), 'decision')
 
 
+def act_offensive_robots(turn, mem, nav, ledger):
+    """Run the normal assault controller only for non-small summoned robots."""
+    offensive = tuple(r for r in turn.summon_robots if r.kind != 'smallRobot')
+    if not offensive:
+        return
+    if not hasattr(mem, 'robot_assault'):
+        mem.robot_assault = RobotAssaultMemory()
+    original_robots, original_ids = turn.summon_robots, turn.summon_robot_ids
+    try:
+        turn.summon_robots = offensive
+        turn.summon_robot_ids = {r.id for r in offensive}
+        act_robots(turn, mem.robot_assault, nav, ledger)
+    finally:
+        turn.summon_robots, turn.summon_robot_ids = original_robots, original_ids
+
+
+def summon_offensive_order(turn, mem, nav, ledger, state):
+    """Keep any carried larger order on the original enemy-base summon path."""
+    if state['count'] >= 10:
+        return False
+    carriers = [(hero, name) for hero in turn.heroes if hero.id not in ledger.used
+                for name in SUMMON_ORDERS if name != ORDER and hero.inventory[name]]
+    if not carriers:
+        return False
+    position = choose_summon_position(turn, ledger, nav.deadline)
+    if position is None:
+        return False
+    hero, name = carriers[0]
+    if not ledger.add(hero.id, command('use', position, name=name)):
+        return False
+    state['count'] += 1
+    state['positions'].add(position)
+    state['pending'] = turn.round, hero.id, position
+    ledger.summon_pending_positions.add(position)
+    ledger.summon_daily_count = state['count']
+    ledger.explain(hero.id, 'robot_assault_summon', item=name, position=position,
+                   count=state['count'])
+    return True
+
+
 def summon_position(turn, state):
     goals = screen_cells(turn)
     candidates = [p for x in range(turn.width) for y in range(turn.height)
                   if (p := (x, y)) not in turn.blocked and p not in state['positions']
                   and turn.summon_position_legal(p)]
-    # Spread around our own base, not the opposing base. Actual spawn offsets
-    # are handled by replanning from summonRobotList on the first night turn.
+    # Small robots alone spread around our own base. Larger orders use the
+    # normal enemy-base assault summon selector above.
     return min(candidates, key=lambda p: (min(distance(p, q) for q in goals),
                -min((distance(p, q) for q in state['positions']), default=0), p), default=None)
 
@@ -184,10 +228,13 @@ def prepare_screen(turn, cfg, mem, nav, ledger, state):
 
 
 def run_experiment(turn, cfg, mem, nav, ledger, intel, state):
-    """No construction/scouting/assault dispatch in this isolated experiment."""
+    """No construction/scouting in this isolated experiment."""
     prompt, execute = '', ''
     if not turn.station:
         return prompt, execute
+    # Larger robots keep the normal assault lifecycle on both day and night.
+    # Only small robots are diverted into the home screen experiment.
+    act_offensive_robots(turn, mem, nav, ledger)
     if not turn.is_day:
         defend_screen(turn, mem, nav, ledger)
         # Personnel stay out of the eight edge/interception cells. Do not send
@@ -209,6 +256,9 @@ def run_experiment(turn, cfg, mem, nav, ledger, intel, state):
                 ledger.add(hero.id, command('use', turn.station.nearest_cell(hero.pos), name=VOUCHER))
             else:
                 walk(nav, ledger, hero, turn.station.cells)
+    # A larger order, if already carried, retains the original enemy-base spawn
+    # behavior. Small orders then fill the local screen with remaining actors.
+    summon_offensive_order(turn, mem, nav, ledger, state)
     prepare_screen(turn, cfg, mem, nav, ledger, state)
     act_imps(turn, mem.sabotage, nav, ledger)
     # No stone demand or wall material reservation in this experiment.
