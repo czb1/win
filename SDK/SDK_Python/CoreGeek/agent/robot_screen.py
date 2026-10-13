@@ -11,8 +11,10 @@ from .sabotage import act_imps
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position
 
 ORDER = 'SmallRobotSummonOrder'
+BOSS_ORDER = 'BossRobotSummonOrder'
 VOUCHER = 'StationUpgradeVoucher1'
 LIMIT = 8
+DAILY_SUMMON_LIMIT = 10
 
 
 def screen_cells(turn):
@@ -21,12 +23,6 @@ def screen_cells(turn):
 
 
 def ray_cells(origin, target, base_cells):
-    """Count positive-length ray intersections, not unverified corner touches.
-
-    Stop at the first base cell: shooting a rear base cell cannot bypass the
-    front footprint. Excluding corner-only contacts deliberately underclaims
-    protection relative to the assault module's supercover model.
-    """
     result = set()
     for cell in line_cells(origin, target):
         if cell in base_cells:
@@ -50,8 +46,6 @@ def threat_rays(turn):
     for enemy in turn.robots:
         if enemy.id in turn.summon_robot_ids or turn.base_distance(enemy.pos) > 10:
             continue
-        # Do not infer ownership/safety from targetTeam. Nearby public robots
-        # can be controlled opponents, and can change their next destination.
         for origin in [enemy.pos] + sorted(p for p in neighbours(enemy.pos)
                 if turn.inside(p) and p not in turn.blocked):
             for target in sorted(turn.station.cells):
@@ -68,8 +62,6 @@ def threat_rays(turn):
 def defend_screen(turn, mem, nav, ledger):
     if not turn.station or turn.is_day:
         return
-    # The home screen is exclusively the cheap small-robot layer. Larger
-    # summoned robots remain assault units and must never be recalled home.
     robots = sorted((r for r in turn.summon_robots if r.kind == 'smallRobot'),
                     key=lambda r: (turn.base_distance(r.pos), r.id))
     rays = threat_rays(turn)
@@ -79,8 +71,6 @@ def defend_screen(turn, mem, nav, ledger):
     for robot in robots:
         check_time(nav.deadline)
         others = actual - {robot.pos}
-        # Never surrender a currently protected shot on the assumption another
-        # robot's same-turn movement succeeds or resolves before enemy attack.
         critical = [cells for _, cells, _, immediate in rays
                     if immediate and robot.pos in cells and not cells & others]
         uncovered = [(cells, weight) for _, cells, weight, _ in rays if not cells & others]
@@ -97,7 +87,6 @@ def defend_screen(turn, mem, nav, ledger):
             next_pos = step if step is not None else robot.pos
             if critical and next_pos != robot.pos:
                 continue
-            # Current position gets a tie preference; no periodic patrol.
             spread = min((distance(goal, p) for p in assigned | others), default=3)
             score = (coverage(next_pos) * 10 + coverage(goal) / (steps + 1)
                      + min(spread, 3) * .1 - steps * .15
@@ -123,7 +112,6 @@ def defend_screen(turn, mem, nav, ledger):
 
 
 def act_offensive_robots(turn, mem, nav, ledger):
-    """Run the normal assault controller only for non-small summoned robots."""
     offensive = tuple(r for r in turn.summon_robots if r.kind != 'smallRobot')
     if not offensive:
         return
@@ -139,11 +127,10 @@ def act_offensive_robots(turn, mem, nav, ledger):
 
 
 def summon_offensive_order(turn, mem, nav, ledger, state):
-    """Keep any carried larger order on the original enemy-base summon path."""
-    if state['count'] >= 10:
+    if state['count'] >= DAILY_SUMMON_LIMIT:
         return False
     carriers = [(hero, name) for hero in turn.heroes if hero.id not in ledger.used
-                for name in SUMMON_ORDERS if name != ORDER and hero.inventory[name]]
+                for name in reversed(SUMMON_ORDERS) if name != ORDER and hero.inventory[name]]
     if not carriers:
         return False
     position = choose_summon_position(turn, ledger, nav.deadline)
@@ -157,8 +144,60 @@ def summon_offensive_order(turn, mem, nav, ledger, state):
     state['pending'] = turn.round, hero.id, position
     ledger.summon_pending_positions.add(position)
     ledger.summon_daily_count = state['count']
-    ledger.explain(hero.id, 'robot_assault_summon', item=name, position=position,
-                   count=state['count'])
+    ledger.explain(hero.id, 'summon_highest_robot', item=name, summon_position=position,
+                   daily_reserved_uses=state['count'], daily_limit=DAILY_SUMMON_LIMIT)
+    return True
+
+
+def buy_original_boss(turn, cfg, mem, nav, ledger, state):
+    """Restore the normal day-one offense: spend surplus on strongest BOSS orders."""
+    if not turn.is_day or state['count'] >= DAILY_SUMMON_LIMIT:
+        return False
+    price = turn.shop.get(BOSS_ORDER)
+    if price is None or price < 0 or ledger.gold < price:
+        return False
+    held = sum(hero.inventory[name] for hero in turn.heroes for name in SUMMON_ORDERS)
+    remaining = DAILY_SUMMON_LIMIT - state['count'] - held
+    if remaining <= 0:
+        return False
+    quantity = min(remaining, ledger.gold // price if price else remaining)
+    if quantity <= 0:
+        return False
+    buyers = []
+    for hero in turn.heroes:
+        if hero.id in ledger.used or (hero.kind == 'pioneer' and turn.phase_task):
+            continue
+        plan = robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, BOSS_ORDER,
+                                   quantity=quantity, reserved_uses=held)
+        if plan:
+            count, shop, route = plan
+            buyers.append((hero.id != state.get('buyer'), -count, route[0],
+                           hero.kind != 'worker', hero.id, hero, route))
+    if not buyers:
+        return False
+    _, negative_count, _, _, _, hero, route = min(buyers)
+    quantity = -negative_count
+    if route[1] is None:
+        accepted = ledger.add(hero.id, command('buy', name=BOSS_ORDER, num=quantity))
+    else:
+        accepted = ledger.add(hero.id, command('move', route[1]))
+    if not accepted:
+        return False
+    state['buyer'] = hero.id
+    if route[1] is None:
+        state['purchased'] += quantity
+        state['pending_purchase'] = turn.round, hero.id, quantity
+    else:
+        ledger.gold -= price * quantity
+        ledger.purchases.add(BOSS_ORDER)
+        ledger.remember_work(hero, 'robot_buy', route[2], name=BOSS_ORDER, quantity=quantity)
+    ledger.explain(hero.id, 'prepare_highest_robot', item=BOSS_ORDER, price=price,
+                   quantity=quantity, total_cost=price * quantity,
+                   route_steps=route[0], day_left=turn.day_left,
+                   required_daylight_actions=route[0] + 1 + held + quantity,
+                   purchase_submitted=route[1] is None)
+    ledger.spending_plan['robot_purchase'] = dict(actor=hero.id, item=BOSS_ORDER,
+        quantity=quantity, unit_price=price, total_cost=price * quantity)
     return True
 
 
@@ -167,8 +206,6 @@ def summon_position(turn, state):
     candidates = [p for x in range(turn.width) for y in range(turn.height)
                   if (p := (x, y)) not in turn.blocked and p not in state['positions']
                   and turn.summon_position_legal(p)]
-    # Small robots alone spread around our own base. Larger orders use the
-    # normal enemy-base assault summon selector above.
     return min(candidates, key=lambda p: (min(distance(p, q) for q in goals),
                -min((distance(p, q) for q in state['positions']), default=0), p), default=None)
 
@@ -176,9 +213,9 @@ def summon_position(turn, state):
 def prepare_screen(turn, cfg, mem, nav, ledger, state):
     free = [h for h in turn.workers if h.id not in ledger.used]
     for hero in turn.heroes:
-        if hero.id in ledger.used or (hero.kind == "pioneer" and turn.phase_task):
+        if hero.id in ledger.used or (hero.kind == 'pioneer' and turn.phase_task):
             continue
-        if hero.inventory[ORDER] and state['count'] < 10:
+        if hero.inventory[ORDER] and state['count'] < DAILY_SUMMON_LIMIT:
             point = summon_position(turn, state)
             if point is not None and ledger.add(hero.id, command('use', point, name=ORDER)):
                 state['count'] += 1
@@ -188,7 +225,6 @@ def prepare_screen(turn, cfg, mem, nav, ledger, state):
                 ledger.summon_daily_count = state['count']
                 ledger.explain(hero.id, 'robot_screen_summon', position=point, count=state['count'])
                 return
-    # At least four cheap blockers before spending 100 on the base upgrade.
     voucher_held = any(h.inventory[VOUCHER] for h in turn.heroes)
     name = (VOUCHER if state['purchased'] >= 4 and turn.station.level == 1
             and not voucher_held and not state['station_purchased']
@@ -199,7 +235,7 @@ def prepare_screen(turn, cfg, mem, nav, ledger, state):
     if price is None or price < 0 or ledger.gold < price:
         return
     held = sum(h.inventory[n] for h in turn.heroes for n in SUMMON_ORDERS)
-    capacity = min(LIMIT - state['purchased'], 10 - state['count'] - held)
+    capacity = min(LIMIT - state['purchased'], DAILY_SUMMON_LIMIT - state['count'] - held)
     quantity = (min(capacity, ledger.gold // price if price else capacity) if name == ORDER else 1)
     if quantity <= 0:
         return
@@ -213,7 +249,7 @@ def prepare_screen(turn, cfg, mem, nav, ledger, state):
     if not plans:
         return
     _, _, _, hero, count, route = min(plans)
-    cmd = (command('buy', name=name, num=count) if route[1] is None else command('move', route[1]))
+    cmd = command('buy', name=name, num=count) if route[1] is None else command('move', route[1])
     if ledger.add(hero.id, cmd):
         state['buyer'] = hero.id
         if route[1] is None:
@@ -228,17 +264,12 @@ def prepare_screen(turn, cfg, mem, nav, ledger, state):
 
 
 def run_experiment(turn, cfg, mem, nav, ledger, intel, state):
-    """No construction/scouting in this isolated experiment."""
     prompt, execute = '', ''
     if not turn.station:
         return prompt, execute
-    # Larger robots keep the normal assault lifecycle on both day and night.
-    # Only small robots are diverted into the home screen experiment.
     act_offensive_robots(turn, mem, nav, ledger)
     if not turn.is_day:
         defend_screen(turn, mem, nav, ledger)
-        # Personnel stay out of the eight edge/interception cells. Do not send
-        # undefended workers mining among the incoming wave.
         safe = {p for x in range(turn.width) for y in range(turn.height)
                 if turn.inside(p := (x, y)) and turn.base_distance(p) in (1, 2)
                 and p not in screen_cells(turn) and p not in turn.blocked
@@ -249,19 +280,19 @@ def run_experiment(turn, cfg, mem, nav, ledger, intel, state):
             if route and route[1] is not None:
                 ledger.add(hero.id, command('move', route[1]))
         return prompt, execute
-    # Deliver any paid level-one base upgrade before ordinary work.
     for hero in turn.heroes:
         if hero.inventory[VOUCHER] and turn.station.level == 1:
             if turn.base_distance(hero.pos) <= 1:
                 ledger.add(hero.id, command('use', turn.station.nearest_cell(hero.pos), name=VOUCHER))
             else:
                 walk(nav, ledger, hero, turn.station.cells)
-    # A larger order, if already carried, retains the original enemy-base spawn
-    # behavior. Small orders then fill the local screen with remaining actors.
+    # Preserve the original offensive robot flow: use existing large/BOSS orders
+    # at the enemy base, then spend remaining gold on BOSS orders exactly as the
+    # standard day-one strategy does. The screen logic only owns small robots.
     summon_offensive_order(turn, mem, nav, ledger, state)
     prepare_screen(turn, cfg, mem, nav, ledger, state)
+    buy_original_boss(turn, cfg, mem, nav, ledger, state)
     act_imps(turn, mem.sabotage, nav, ledger)
-    # No stone demand or wall material reservation in this experiment.
     zones = turn.zones
     turn.zones = {p: k for p, k in zones.items() if k != 'stone'}
     try:
