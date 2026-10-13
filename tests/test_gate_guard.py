@@ -24,7 +24,7 @@ def logged_morning_case():
     return json.loads((ROOT / 'tests/fixtures/daytime_gate_turn.json').read_text(encoding='utf-8'))
 
 
-def gate_case(round_no=70, imp=GATE, worker=(11, 2), pioneer=(4, 11)):
+def gate_case(round_no=200, imp=GATE, worker=(11, 2), pioneer=(4, 11)):
     data = payload(round_no, [unit(13, 'station', 5, 11, health=1500),
         unit(1, 'worker', *worker, health=500),
         unit(11, 'pioneer', *pioneer, health=500),
@@ -83,7 +83,7 @@ class ThreeRocketTests(unittest.TestCase):
                 self.assertEqual(ledger.commands['1'], command('build', TOWERS[missing], name='rocket'))
 
     def test_pioneer_rotates_three_rockets_and_workers_keep_mining(self):
-        data, agent = gate_case(), Agent(Config(llm_enabled=False))
+        data, agent = gate_case(70), Agent(Config(llm_enabled=False))
         data['teamOur']['roles'].append(unit(2, 'worker', 13, 2, health=500))
         data['robot']['roles'] = [unit(90, 'largeRobot', 8, 10, health=500,
                                       targetTeam='challenger', attackRange=3)]
@@ -211,7 +211,7 @@ class GateGuardEligibilityTests(unittest.TestCase):
                 turn, cfg, nav, ledger = setup_case(data, llm_enabled=False)
                 mem = Memory()
                 mem.observe(turn, cfg)
-                mem.sabotage.gate_states[14] = dict(day=turn.day, recalling=True, yield_until=75)
+                mem.sabotage.gate_states[14] = dict(day=turn.day, recalling=True, yield_until=205)
                 mem.sabotage.targets[14] = (12, 2), 'copper'
                 mem.sabotage.progress[14] = 2
                 towers, walls = layout(turn, cfg)
@@ -255,15 +255,15 @@ class GateGuardEligibilityTests(unittest.TestCase):
         data, agent = gate_case(), Agent(Config(llm_enabled=False))
         self.assertNotIn('14', agent.decide(data)['roleCommandMap'])
         mem = next(iter(agent.sessions.values()))
-        mem.sabotage.gate_states[14].update(recalling=True, yield_until=75)
-        data['roundNo'] = 71
+        mem.sabotage.gate_states[14].update(recalling=True, yield_until=205)
+        data['roundNo'] = 201
         data['robot']['roles'] = []
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['14']['action'], 'move')
         self.assertIn(pos(commands['14']['targetPos'][0]), POSTS)
         self.assertTrue(mem.sabotage.gate_states[14]['traffic_only'])
         self.assertNotEqual(mem.sabotage.gate_states[14]['post'], pos(commands['14']['targetPos'][0]))
-        data['roundNo'] = 72
+        data['roundNo'] = 202
         data['teamOur']['roles'][3]['pos'] = commands['14']['targetPos'][0]
         data['robot']['roles'] = [unit(90, 'largeRobot', 9, 14, attackRange=3)]
         self.assertEqual(agent.decide(data)['roleCommandMap']['14'], command('move', GATE))
@@ -275,7 +275,7 @@ class GateGuardEligibilityTests(unittest.TestCase):
         turn, cfg, nav, ledger = setup_case(data, llm_enabled=False)
         mem = Memory()
         mem.observe(turn, cfg)
-        mem.sabotage.gate_states[14] = dict(day=turn.day, recalling=True, yield_until=75)
+        mem.sabotage.gate_states[14] = dict(day=turn.day, recalling=True, yield_until=205)
         towers, walls = layout(turn, cfg)
         self.assertIsNone(prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls))
         self.assertEqual(mem.sabotage.gate_states, {})
@@ -287,7 +287,7 @@ class GateGuardEligibilityTests(unittest.TestCase):
         data, agent = gate_case(imp=(11, 2), worker=(1, 1)), Agent(Config(llm_enabled=False))
         data['robot']['roles'] = []
         for offset in range(4):
-            data['roundNo'] = 70 + offset
+            data['roundNo'] = 200 + offset
             data['lastRoundRoleActionResults'] = {'14': True}
             self.assertEqual(agent.decide(data)['roleCommandMap']['14'], command('destroy', (12, 2)))
             mem = next(iter(agent.sessions.values()))
@@ -392,8 +392,8 @@ class GateGuardTests(unittest.TestCase):
         self.assertIsNone(prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls))
         self.assertNotIn(20014, ledger.used)
 
-    def test_last_day_turn_leaves_gap_and_first_night_enters_for_local_wave(self):
-        data, agent = gate_case(69), Agent(Config(llm_enabled=False, return_margin=5))
+    def test_later_dusk_leaves_gap_and_night_enters_for_local_wave(self):
+        data, agent = gate_case(199), Agent(Config(llm_enabled=False, return_margin=5))
         commands = agent.decide(data)['roleCommandMap']
         self.assertIn(pos(commands['14']['targetPos'][0]), POSTS)
         advance(data, commands)
@@ -489,11 +489,11 @@ class GateGuardTests(unittest.TestCase):
         data, agent = gate_case(), Agent(Config(llm_enabled=False))
         agent.decide(data)
         mem = next(iter(agent.sessions.values()))
-        mem.sabotage.gate_states[14].update(yield_until=72, post=(1, 8))
+        mem.sabotage.gate_states[14].update(yield_until=202, post=(1, 8))
         data['teamOur']['roles'][3]['pos'] = dict(x=1, y=8)
-        data['roundNo'] = 72
+        data['roundNo'] = 202
         self.assertNotIn('14', agent.decide(data)['roleCommandMap'])
-        data['roundNo'] = 73
+        data['roundNo'] = 203
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['14'], command('move', (2, 9)))
         advance(data, commands)
@@ -561,7 +561,7 @@ class GateGuardTests(unittest.TestCase):
     def test_next_morning_releases_night_guard_for_daytime_sabotage(self):
         data, agent = gate_case(), Agent(Config(llm_enabled=False))
         agent.decide(data)
-        data['roundNo'] = 130
+        data['roundNo'] = 260
         data['teamOur']['roles'][3]['pos'] = dict(x=2, y=9)
         data['mapInfo']['zones'] = [dict(neutralType='copper', pos=dict(x=12, y=2), remain=10)]
         commands = agent.decide(data)['roleCommandMap']
