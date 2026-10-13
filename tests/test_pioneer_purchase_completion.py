@@ -104,7 +104,7 @@ class PioneerPurchaseCompletionTests(unittest.TestCase):
         data['weaponShopList'] = [dict(name=BASE, price=100), dict(name=BOSS, price=120)]
         agent = Agent(Config(layout_mode='explicit', llm_enabled=False))
         first = agent.decide(copy.deepcopy(data))['roleCommandMap']['20011']
-        self.assertEqual(first, command('move', (23, 18)))
+        self.assertEqual(first, {'action': 'move', 'targetPos': [{'x': 24, 'y': 17}, {'x': 23, 'y': 18}]})
         data.update(roundNo=56, lastRoundRoleActionResults={'20011': False})
         response = agent.decide(copy.deepcopy(data))['roleCommandMap']
         mem = next(iter(agent.sessions.values()))
@@ -211,7 +211,7 @@ class DrivingFailureFallbackTests(unittest.TestCase):
         turn, cfg, _, _, _, _ = vehicles.travel(data)
         mem.movement.observe(turn, mem)
         mem.last_round = 55
-        mem.last_commands = {'11': command('move', (4, 5))}
+        mem.last_commands = {'11': {'action': 'move', 'targetPos': [{'x': 3, 'y': 5}, {'x': 4, 'y': 5}]}}
         data = vehicles.case(start=landed, car=landed, driving=True, round_no=56)
         data['lastRoundRoleActionResults'] = {'11': landed == (4, 5)}
         turn, cfg, nav, ledger, _, _ = vehicles.travel(data)
@@ -226,14 +226,14 @@ class DrivingFailureFallbackTests(unittest.TestCase):
                 route = nav.search(turn.pioneer, {(10, 7)})
                 self.assertTrue(nav.move_along(turn.pioneer, ledger, route, {(10, 7)}))
                 self.assertEqual(distance(turn.pioneer.pos,
-                                          pos(ledger.commands['11']['targetPos'][0])), 1)
+                                          pos(ledger.commands['11']['targetPos'][-1])), 1)
 
     def test_successful_driving_keeps_two_cell_acceleration(self):
         _, turn, nav, ledger = self.observed_move((4, 5))
         route = nav.search(turn.pioneer, {(10, 5)})
         self.assertTrue(nav.move_along(turn.pioneer, ledger, route, {(10, 5)}))
         self.assertEqual(distance(turn.pioneer.pos,
-                                  pos(ledger.commands['11']['targetPos'][0])), 2)
+                                  pos(ledger.commands['11']['targetPos'][-1])), 2)
 
     def test_new_day_can_retry_observed_driving(self):
         mem, _, _, _ = self.observed_move((2, 5))
@@ -244,4 +244,4 @@ class DrivingFailureFallbackTests(unittest.TestCase):
         route = nav.search(turn.pioneer, {(10, 5)})
         self.assertTrue(nav.move_along(turn.pioneer, ledger, route, {(10, 5)}))
         self.assertEqual(distance(turn.pioneer.pos,
-                                  pos(ledger.commands['11']['targetPos'][0])), 2)
+                                  pos(ledger.commands['11']['targetPos'][-1])), 2)

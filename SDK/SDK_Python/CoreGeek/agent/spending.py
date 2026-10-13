@@ -108,7 +108,8 @@ def prepare_station_reserve(turn, cfg, mem, nav, ledger):
             state['station_purchased'] = True
             state['station_pending'] = turn.round, hero.id
     else:
-        accepted = nav.move_along(hero, ledger, route, {route[2]})
+        accepted = nav.move_along(hero, ledger, route, {route[2]}, targets={shop},
+                                  prefer_vehicle=False)
         if accepted:
             ledger.gold -= turn.shop[name]
             ledger.purchases.add(name)
@@ -220,7 +221,12 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
                 retry = (hero.id, item) in mem.buy_failures
                 waiting = not count or ledger.gold < price
                 if route[1] is not None:
-                    accepted = nav.move_along(hero, ledger, route, {route[2]})
+                    # Spend only spare daylight on pickup. If the original trip
+                    # is already late, preserve its progress rather than cancel it.
+                    travel_limit = max(route[0], turn.day_left - int(base_missing)
+                                       - int(quantity > 0) - held - quantity)
+                    accepted = nav.move_along(hero, ledger, route, {route[2]},
+                                              targets={shop}, max_rounds=travel_limit)
                 elif count and not retry and ledger.gold >= price:
                     accepted = ledger.add(hero.id, command('buy', name=item, num=count))
                     if accepted:
@@ -267,7 +273,9 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
                 if route[1] is None:
                     accepted = ledger.add(hero.id, command('use', station.nearest_cell(hero.pos), name=name))
                 else:
-                    accepted = nav.move_along(hero, ledger, route, {route[2]})
+                    accepted = nav.move_along(hero, ledger, route, {route[2]},
+                                              targets=station.cells,
+                                              max_rounds=turn.day_left - 1 - held)
                 if accepted:
                     ledger.upgrade_claims.add(station.id)
                     ledger.explain(hero.id, 'first_day_pioneer_upgrade_station', item=name,

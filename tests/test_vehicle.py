@@ -38,14 +38,14 @@ class VehicleTests(unittest.TestCase):
         self.assertEqual(faster[1], (2, 5))
         self.assertLess(faster[0], walking[0])
         self.assertTrue(n.move_along(t.pioneer, l, walking, {(10, 5)}))
-        self.assertEqual(pos(l.commands['11']['targetPos'][0]), (2, 5))
+        self.assertEqual(pos(l.commands['11']['targetPos'][-1]), (2, 5))
 
-    def test_equal_cost_and_long_detour_keep_original_move(self):
+    def test_equal_cost_and_detour_now_prefer_vehicle(self):
         for data, goal in ((case(), (3, 5)), (case(car=(1, 13)), (5, 5))):
             t, _, n, l, walking, faster = travel(data, goal)
             self.assertIsNone(faster)
             self.assertTrue(n.move_along(t.pioneer, l, walking, {goal}))
-            self.assertEqual(pos(l.commands['11']['targetPos'][0]), walking[1])
+            self.assertNotEqual(pos(l.commands['11']['targetPos'][-1]), walking[1])
 
     def test_already_driving_two_cell_action_reserves_both_cells(self):
         t, _, n, l, walking, faster = travel(case(start=(2, 5), driving=True))
@@ -73,17 +73,17 @@ class VehicleTests(unittest.TestCase):
             data = case(start=(2, 5), driving=True)
             data['teamOur']['roles'].append(unit(12, 'worker', *cell))
             _, _, _, l = setup_case(data)
-            self.assertFalse(l.add(11, command('move', (4, 5))))
+            self.assertFalse(l.add(11, {'action': 'move', 'targetPos': [{'x': 3, 'y': 5}, {'x': 4, 'y': 5}]}))
             _, _, _, l = setup_case(case(start=(2, 5), driving=True))
             l.reserved.add(cell)
-            self.assertFalse(l.add(11, command('move', (4, 5))))
+            self.assertFalse(l.add(11, {'action': 'move', 'targetPos': [{'x': 3, 'y': 5}, {'x': 4, 'y': 5}]}))
 
     def test_prior_and_later_friendly_moves_cannot_share_driving_path(self):
         data = case(start=(2, 5), driving=True)
         data['teamOur']['roles'].append(unit(12, 'worker', 3, 6))
         for first_driver in (False, True):
             _, _, _, l = setup_case(data)
-            commands = [(11, command('move', (4, 5))), (12, command('move', (3, 5)))]
+            commands = [(11, {'action': 'move', 'targetPos': [{'x': 3, 'y': 5}, {'x': 4, 'y': 5}]}), (12, command('move', (3, 5)))]
             if not first_driver:
                 commands.reverse()
             self.assertTrue(l.add(*commands[0]))
@@ -96,7 +96,7 @@ class VehicleTests(unittest.TestCase):
                      case(start=(2, 5), driving=True, car=None),
                      case(start=(2, 5), driving=False)):
             _, _, _, l = setup_case(data)
-            self.assertFalse(l.add(11, command('move', (4, 5))))
+            self.assertFalse(l.add(11, {'action': 'move', 'targetPos': [{'x': 3, 'y': 5}, {'x': 4, 'y': 5}]}))
             self.assertIsNone(travel(data)[-1])
 
     def test_no_car_worker_and_night_preserve_original_route(self):
@@ -149,7 +149,7 @@ class VehicleTests(unittest.TestCase):
         mem = Memory()
         pioneer(t, c, mem, n, l, t.pioneer, shopping=False)
         self.assertEqual(mem.task_target, (12, 5))
-        self.assertEqual(pos(l.commands['11']['targetPos'][0]), (2, 5))
+        self.assertEqual(pos(l.commands['11']['targetPos'][-1]), (2, 5))
         self.assertIsNone(mem.accepted_round)
 
     def test_task_on_car_accepts_without_dismounting(self):
@@ -164,7 +164,7 @@ class VehicleTests(unittest.TestCase):
         data['phaseTask'] = 'Return the integer 1.'
         data['teamOur']['playerTasks'] = [task(x=3)]
         agent = Agent(Config(layout_mode='explicit'))
-        with patch('agent.vehicle.faster_route', wraps=faster_route) as planner:
+        with patch('agent.vehicle.plan_route', side_effect=AssertionError('active task moved')) as planner:
             response = agent.decide(data)
         self.assertNotEqual(response['roleCommandMap'].get('11', {}).get('action'), 'move')
         planner.assert_not_called()
@@ -177,17 +177,17 @@ class VehicleTests(unittest.TestCase):
         mem = Memory(treasure=dict(items=['arbitrary_material'], position=[12, 10],
                                    startRound=150, endRound=180))
         self.assertTrue(prepare_treasure(t, c, mem, n, l, t.pioneer))
-        self.assertEqual(pos(l.commands['11']['targetPos'][0]), (2, 5))
+        self.assertEqual(pos(l.commands['11']['targetPos'][-1]), (2, 5))
 
     def test_observed_board_drive_and_exit_sequence(self):
         # A small protocol state transition check, not a match simulator.
         t, _, n, l, walking, _ = travel(case())
         self.assertTrue(n.move_along(t.pioneer, l, walking, {(10, 5)}))
-        self.assertEqual(pos(l.commands['11']['targetPos'][0]), (2, 5))
+        self.assertEqual(pos(l.commands['11']['targetPos'][-1]), (2, 5))
         observed = case(start=(2, 5), driving=True, round_no=11)
         t, _, n, l, walking, _ = travel(observed, (6, 5))
         self.assertTrue(n.move_along(t.pioneer, l, walking, {(6, 5)}))
-        destination = pos(l.commands['11']['targetPos'][0])
+        destination = pos(l.commands['11']['targetPos'][-1])
         self.assertIsNotNone(driving_segment((2, 5), destination))
         observed = case(start=destination, car=destination, driving=True, round_no=12)
         exit_cell = destination[0] + 1, destination[1]
@@ -206,7 +206,7 @@ class VehicleTests(unittest.TestCase):
 
     def test_search_timeout_keeps_valid_original_action(self):
         t, _, n, l, walking, _ = travel(case())
-        with patch('agent.vehicle.faster_route', side_effect=DeadlineExceeded):
+        with patch('agent.vehicle.plan_route', side_effect=DeadlineExceeded):
             self.assertTrue(n.move_along(t.pioneer, l, walking, {(10, 5)}))
         self.assertEqual(l.commands['11'], command('move', walking[1]))
 
