@@ -543,7 +543,7 @@ def defend(turn, nav, ledger, pairs=None, posts=None, damage=None):
             if yield_operator(turn, nav, ledger, hero, pairs, posts, route):
                 continue
         if route and route[1] is not None:
-            nav.move_along(hero, ledger, route, {route[2]})
+            nav.move_along(hero, ledger, route, {route[2]}, returning=True)
             report.update(reason="operator_moving", post=posts.get(hero.id) if posts else None,
                           return_steps=route[0])
             ledger.explain(hero.id, "operator_repositioning", tower=tower.id,
@@ -866,7 +866,7 @@ def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6, corridor
             report["reason"] = "fired"
             return
     if route and route[1] is not None:
-        nav.move_along(hero, ledger, route, goals)
+        nav.move_along(hero, ledger, route, goals, returning=True)
         for tower in turn.weapons:
             if tower.kind == "rocket" and not tower.cooldown:
                 ledger.weapon_diagnostics[tower.id].update(reason="operator_moving", return_steps=route[0])

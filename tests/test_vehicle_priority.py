@@ -163,6 +163,89 @@ class VehiclePriorityTests(unittest.TestCase):
         self.assertTrue(n.move_along(t.pioneer, l, route, {goal}))
         self.assertEqual(l.commands['11'], command('move', route[1]))
 
+    def late_return_case(self, round_no=63, driving=True):
+        # Geometry from the reported return: car at (25,19), post at (8,22).
+        data = case(start=(25, 19), car=(25, 19), driving=driving, round_no=round_no)
+        data['mapInfo'].update(width=41, height=32)
+        walls = [(12, y) for y in range(19, 25)] + [(11, 24), (11, 19), (9, 19), (8, 19)]
+        data['teamOur']['roles'] += [unit(13, 'station', 9, 22)]
+        data['teamOur']['roles'] += [unit(100+i, 'wall', *p) for i, p in enumerate(walls)]
+        data['teamOur']['roles'] += [unit(40+i, 'rocket', *p, cooldown=0)
+                                    for i, p in enumerate([(8, 23), (8, 21), (9, 23)])]
+        return data
+
+    def test_late_onboard_return_uses_real_gunner_call_and_two_coordinates(self):
+        from agent.combat import shared_defend
+        t, c, n, l = self.setup(self.late_return_case())
+        mem = Memory()
+        mem.gunner_id, mem.gunner_post = 11, (8, 22)
+        sites = [w.pos for w in t.weapons]
+        l.operator_posts[11] = mem.gunner_post
+        walking = n.search(t.pioneer, {mem.gunner_post})
+        self.assertEqual(walking[0], 19)
+        self.assertEqual(t.day_left, 7)
+        self.assertIsNone(plan_route(n, l, t.pioneer, {mem.gunner_post}, walking))
+        selected = plan_route(n, l, t.pioneer, {mem.gunner_post}, walking, returning=True)
+        self.assertIsNotNone(selected)
+        self.assertGreater(selected.rounds, t.day_left)
+        self.assertLessEqual(selected.rounds - selected.walking_tail, t.day_left)
+        self.assertNotIn(selected.parking, home_area(t, l))
+        shared_defend(t, n, l, mem, [(t.pioneer, t.weapons[0])], sites)
+        segment = l.commands['11']['targetPos']
+        self.assertEqual(len(segment), 2)
+        self.assertEqual(tuple(map(pos, segment)), driving_segment(t.pioneer.pos, pos(segment[-1])))
+        self.assertIsNone(n.vehicle.pending_exit)
+
+    def test_last_daylight_return_drives_but_night_walks(self):
+        t, c, n, l = self.setup(self.late_return_case(round_no=69))
+        goal = (8, 22)
+        route = n.search(t.pioneer, {goal})
+        selected = plan_route(n, l, t.pioneer, {goal}, route, returning=True)
+        self.assertEqual(selected.rounds - selected.walking_tail, 1)
+        n.move_along(t.pioneer, l, route, {goal}, returning=True)
+        self.assertEqual(len(l.commands['11']['targetPos']), 2)
+        endpoint = pos(l.commands['11']['targetPos'][-1])
+        data = self.late_return_case(round_no=70, driving=False)
+        data['teamOur']['roles'][0]['pos'] = dict(x=endpoint[0], y=endpoint[1])
+        data['mapInfo']['zones'] = []
+        t, c, n, l = self.setup(data)
+        n.move_along(t.pioneer, l, n.search(t.pioneer, {goal}), {goal}, returning=True)
+        self.assertEqual(len(l.commands['11']['targetPos']), 1)
+
+    def test_late_return_exception_does_not_extend_pickup_or_business_trip(self):
+        for driving, returning in [(False, True), (True, False)]:
+            with self.subTest(driving=driving, returning=returning):
+                data = case(start=(2, 5) if driving else (1, 5), driving=driving, round_no=69)
+                t, c, n, l = self.setup(data)
+                goal = (12, 5)
+                route = n.search(t.pioneer, {goal})
+                self.assertIsNone(plan_route(n, l, t.pioneer, {goal}, route, returning=returning))
+                n.move_along(t.pioneer, l, route, {goal}, returning=returning)
+                self.assertEqual(l.commands['11'], command('move', route[1]))
+
+    def test_late_return_at_outside_parking_dismounts_and_keeps_foot_tail(self):
+        memory = MovementMemory()
+        t, c, n, l = self.setup(case(start=(4, 5), car=(4, 5), driving=True, round_no=69),
+                                memory, wall_cells=[(6, 3), (10, 7)])
+        goal = (8, 5)
+        n.move_along(t.pioneer, l, n.search(t.pioneer, {goal}), {goal}, returning=True)
+        self.assertEqual(len(l.commands['11']['targetPos']), 1)
+        endpoint = pos(l.commands['11']['targetPos'][-1])
+        self.assertEqual(memory.vehicle.pending_exit, endpoint)
+        next_turn, _, _, _ = self.setup(case(start=endpoint, car=(4, 5), round_no=69))
+        memory.vehicle.observe(next_turn, SimpleNamespace(last_round=68, last_commands=l.commands))
+        self.assertTrue(memory.vehicle.walking)
+
+    def test_late_return_without_drive_edge_can_exit_on_foot(self):
+        data = case(start=(1, 1), car=(1, 1), driving=True, round_no=69)
+        allowed = {(1, 1), (2, 1), (2, 2), (2, 3), (2, 4), (2, 5)}
+        data['mapInfo']['zones'] += [dict(neutralType='stone', pos=dict(x=x, y=y))
+                                    for x in range(15) for y in range(15) if (x, y) not in allowed]
+        t, c, n, l = self.setup(data)
+        goal = (2, 5)
+        n.move_along(t.pioneer, l, n.search(t.pioneer, {goal}), {goal}, returning=True)
+        self.assertEqual(len(l.commands['11']['targetPos']), 1)
+
     def test_idle_pickup_and_onboard_wait(self):
         for driving in (False, True):
             data = case(start=(2, 5) if driving else (1, 5), driving=driving)
