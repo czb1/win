@@ -67,7 +67,7 @@ class FirstDayWallBlockTests(unittest.TestCase):
         data = block_case(54)
         data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] != 22]
         data['teamOur']['roles'][1]['pos'] = {'x': 25, 'y': 17}
-        data['teamOur']['roles'][1]['backpack'] = [BOSS]
+        data['teamOur']['roles'][1]['backpack'] = [BOSS] * 3
         data['teamOur']['roles'][2]['pos'] = {'x': 9, 'y': 20}
         data['teamOur']['goldNum'] = 25
         agent = Agent(Config(llm_enabled=False, layout_mode='explicit', wall_cells=[],

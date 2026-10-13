@@ -5,6 +5,29 @@ from .model import DEFENCE_RETURN_TICK
 FIRST_DAY_ROBOT_PURCHASE_LIMIT = 3
 
 
+def first_day_purchase_reserve(turn, mem, ledger, include_robots=True):
+    """Protect the base heal and unbought opening orders, counting trips once."""
+    if not turn.is_day or turn.day != 1:
+        return 0
+    from .brain import observe_robot_summons
+    from .economy import voucher_for
+    from .robot_assault import enemy_base
+    state = observe_robot_summons(turn, mem)
+    name = voucher_for(turn.station) if turn.station else None
+    held = any(name in (role.get('backpack') or [])
+               for role in turn.raw.get('teamOur', {}).get('roles', [])) if name else False
+    reserve = (max(0, turn.shop.get(name, 0)) if name and not held
+               and not state['station_purchased'] and name not in ledger.purchases else 0)
+    if include_robots and enemy_base(turn) is not None:
+        remaining = max(0, FIRST_DAY_ROBOT_PURCHASE_LIMIT - state['purchased'])
+        planned = ledger.spending_plan.get('robot_purchase')
+        if planned and ledger.commands.get(str(planned['actor']), {}).get('action') != 'buy':
+            # Walking has already removed this batch's money from ledger.gold.
+            remaining = max(0, remaining - planned['quantity'])
+        reserve += remaining * max(0, turn.shop.get('BossRobotSummonOrder', 0))
+    return reserve
+
+
 def heal_station_with_pioneer(turn, mem, nav, ledger):
     """Keep the pioneer's base voucher until HP is strictly below 500."""
     from .economy import critical_station, use_inventory, voucher_for
@@ -19,8 +42,8 @@ def heal_station_with_pioneer(turn, mem, nav, ledger):
                          target_only=station.pos, name_only=name, upgrades_only=True)
 
 
-def prepare_station_reserve(turn, cfg, mem, nav, ledger, reserve=0):
-    """Buy one base voucher with gold left after the first three robots."""
+def prepare_station_reserve(turn, cfg, mem, nav, ledger):
+    """Buy the opening base heal before allocating money to robots or guns."""
     from .brain import observe_robot_summons
     from .commands import command
     from .economy import voucher_for
@@ -28,25 +51,16 @@ def prepare_station_reserve(turn, cfg, mem, nav, ledger, reserve=0):
     hero, station = turn.pioneer, turn.station
     state = observe_robot_summons(turn, mem)
     if (not turn.is_day or turn.day != 1 or turn.tick >= DEFENCE_RETURN_TICK
-            or not first_day_boss_phase(turn, cfg)
             or not hero or hero.id in ledger.used or turn.phase_task or not hero.space
             or not station or state.get('station_purchased')):
         return False
     name = voucher_for(station)
     if (not name or name not in turn.shop or turn.shop[name] < 0
             or (hero.id, name) in mem.buy_failures or name in ledger.purchases
-            or any(h.inventory[name] for h in turn.heroes)):
+            or any(name in (role.get('backpack') or [])
+                   for role in turn.raw.get('teamOur', {}).get('roles', []))):
         return False
-    remaining = max(0, FIRST_DAY_ROBOT_PURCHASE_LIMIT - state.get('purchased', 0))
-    planned = ledger.spending_plan.get('robot_purchase')
-    if planned and ledger.commands.get(str(planned['actor']), {}).get('action') != 'buy':
-        # Walking/staging already reserved its gold, but is not a purchase.
-        remaining = max(0, remaining - planned['quantity'])
-    boss_price = turn.shop.get('BossRobotSummonOrder')
-    if remaining and (boss_price is None or boss_price < 0):
-        return False
-    available = ledger.gold - reserve - remaining * (boss_price or 0)
-    if available < turn.shop[name]:
+    if ledger.gold < turn.shop[name]:
         return False
     home, exact = return_destination(turn, nav, ledger, hero, mem)
     if not home:
@@ -119,16 +133,9 @@ def prepare_defense_purchase(turn, mem, ledger, reserve):
     return reserve
 
 
-def first_day_boss_phase(turn, cfg):
-    """Opening gold funds the configured guns first, then only BOSS orders."""
+def first_day_guns_built(turn, cfg):
+    """Observed gun completion for scouting, independent of order purchases."""
     return turn.day == 1 and len(turn.weapons) >= min(3, len(cfg.loadout))
-
-
-def first_day_boss_staging(turn, cfg):
-    """A spare worker can reach the shop while the last opening gun is built."""
-    count = min(3, len(cfg.loadout))
-    return (turn.is_day and turn.day == 1 and turn.tick < DEFENCE_RETURN_TICK and count > 1
-            and len(turn.weapons) == count - 1)
 
 
 def defenses_ready(turn, cfg, towers, walls, mem=None, ledger=None):
@@ -160,13 +167,21 @@ def plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded=()):
     Same-item alternatives are one batch, not duplicated obligations. Current
     stock-trips and continued purchases have already reserved ledger gold.
     """
+    if turn.day == 1:
+        reserve = min(ledger.gold, first_day_purchase_reserve(turn, mem, ledger,
+                                                             include_robots=False))
+        ledger.defense_purchase = None
+        ledger.spending_plan.update(gold_available=ledger.gold, reserved_gold=reserve,
+                                   surplus=max(0, ledger.gold - reserve), purchases={},
+                                   medical_gold_reserved=0, priority_actors=[], purchase_actor=None,
+                                   day_left=turn.day_left)
+        return set(), reserve
     from .economy import supplies, build_options
     planned = planned_weapons(turn, cfg, mem, towers)
     construction = sum(w.id < 0 for w in planned) * cfg.weapon_cost
     actors, purchases, buyers = set(), {}, []
     free = [h for h in turn.workers if h.id not in ledger.used and h.id not in excluded]
-    # Opening surplus belongs to BOSS orders, not vouchers or night stock.
-    for hero in (free if turn.day > 1 else ()):
+    for hero in free:
         if not hero.space:
             continue
         next_purchase = supplies(turn, cfg, mem, nav, ledger, hero, construction,
@@ -192,16 +207,7 @@ def plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded=()):
     claimed = set()
     if construction and ledger.gold >= cfg.weapon_cost:
         missing_weapons = [w for w in planned if w.id < 0]
-        missing_targets = {w.pos: w.kind for w in missing_weapons}
-        def opening_builder_priority(hero):
-            job = mem.daytime_jobs.get(hero.id, {})
-            continuing = (job.get('kind') == 'build' and job.get('target') in missing_targets
-                          and job.get('name') == missing_targets[job['target']])
-            # Keep an accepted builder. Borrow a staged buyer only when no
-            # other worker has a feasible construction route.
-            return not continuing, job.get('kind') == 'robot_buy', hero.id
-        priority = opening_builder_priority if turn.day == 1 else lambda h: h.id
-        for hero in sorted(free, key=priority):
+        for hero in sorted(free, key=lambda h: h.id):
             if len(claimed) >= ledger.gold // cfg.weapon_cost:
                 break
             if hero.id == buyer:

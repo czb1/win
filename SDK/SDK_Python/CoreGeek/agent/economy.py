@@ -377,11 +377,11 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
     emptied by the worker before buying, and duplicate walking buyers reserve
     both their item and the shared gold for this decision.
     """
-    # First-day construction is followed by BOSS shopping. Do not let normal
-    # buying or a continued voucher job spend that opening surplus.
+    # Opening money funds the base heal, then three BOSS orders, then guns.
     if turn.day == 1:
-        from .spending import first_day_boss_phase
-        if first_day_boss_phase(turn, cfg) or item_only and item_only != 'Medicine':
+        from .spending import first_day_purchase_reserve
+        reserve = max(reserve, first_day_purchase_reserve(turn, mem, ledger))
+        if item_only and item_only != 'Medicine':
             ledger.supply_reports.setdefault(hero.id, {'reasons': []})['reasons'].append(
                 {'reason': 'first_day_boss_priority'})
             return None
@@ -780,6 +780,10 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
     for _, _, _, index, target, route in build_options(
             turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell):
         name = name_for(index)
+        if name in WEAPONS:
+            from .spending import first_day_purchase_reserve
+            if ledger.gold - first_day_purchase_reserve(turn, mem, ledger) < cfg.weapon_cost:
+                continue
         if name == "wall" and not wall_keeps_access(turn, nav, ledger, target):
             continue
         action = command("move", route[1]) if route[1] is not None else command("build", target, name=name)

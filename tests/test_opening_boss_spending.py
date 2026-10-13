@@ -28,12 +28,12 @@ class OpeningBossSpendingTests(unittest.TestCase):
             ('WallFixer', 15), ('Medicine', 10))]
         return data
 
-    def test_first_day_vouchers_are_not_planned_or_reserved(self):
+    def test_first_day_reserves_only_the_base_heal_before_robot_shopping(self):
         turn, cfg, nav, ledger = fortified_case(self.data())
         self.assertIsNone(supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0],
                                    item_only='WeaponUpgradeVoucher1'))
         _, reserve = plan_day_spending(turn, cfg, Memory(), nav, ledger, TOWERS)
-        self.assertEqual(reserve, 0)
+        self.assertEqual(reserve, 100)
         self.assertFalse(ledger.spending_plan['purchases'])
 
     def test_first_day_owned_weapon_voucher_waits_until_day_two(self):
@@ -51,16 +51,16 @@ class OpeningBossSpendingTests(unittest.TestCase):
                     self.assertEqual(ledger.commands['1'], command('use', (3, 9),
                                                                   name='WeaponUpgradeVoucher1'))
 
-    def test_opening_boss_waits_for_three_built_guns(self):
+    def test_opening_boss_purchase_does_not_wait_for_three_built_guns(self):
         data = self.data()
         data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] != 22]
         turn, cfg, nav, ledger = fortified_case(data)
         _, reserve = plan_day_spending(turn, cfg, Memory(), nav, ledger, TOWERS)
-        self.assertEqual(reserve, cfg.weapon_cost)
-        self.assertFalse(summon_best_robot(turn, cfg, Memory(), nav, ledger, TOWERS, WALLS,
+        self.assertEqual(reserve, 100)
+        self.assertTrue(summon_best_robot(turn, cfg, Memory(), nav, ledger, TOWERS, WALLS,
                                           reserve=reserve))
-        self.assertEqual(ledger.spending_plan['robot_blocked'], 'first_day_tower_construction')
-        self.assertFalse(ledger.commands)
+        self.assertEqual(ledger.commands['1'], command('buy', name='BossRobotSummonOrder', num=3))
+        self.assertGreaterEqual(ledger.gold, 100)
 
     def test_first_day_668_gold_buys_three_boss_orders_with_level_one_defenses(self):
         turn, cfg, nav, ledger = fortified_case(self.data())

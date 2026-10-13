@@ -115,7 +115,7 @@ class FirstDayOffenseTests(unittest.TestCase):
         self.assertEqual(response['10'], command('buy', name=BOSS, num=3))
         self.assertEqual(response['12'], command('build', (8, 21), name='rocket'))
 
-    def test_fixed_tick_25_chain_overrides_a_longer_optional_mining_window(self):
+    def test_orders_are_bought_before_tick_25_and_wall_denial_still_starts_at_25(self):
         data = case(24)
         data['teamOur']['roles'][1]['pos'] = {'x': 14, 'y': 20}
         for role in data['teamOur']['roles']:
@@ -125,10 +125,13 @@ class FirstDayOffenseTests(unittest.TestCase):
         config.economy_rounds = 60
         agent = Agent(config)
         response = agent.decide(data)['roleCommandMap']
-        self.assertFalse(any(c['action'] == 'buy' and c.get('name') == BOSS for c in response.values()))
-        data['roundNo'] = 25
-        response = agent.decide(data)['roleCommandMap']
         self.assertEqual(response['10'], command('buy', name=BOSS, num=3))
+        data['roundNo'] = 25
+        data['teamOur']['roles'][1]['backpack'] = [BOSS] * 3
+        data['teamOur']['goldNum'] -= 360
+        data['lastRoundRoleActionResults'] = {'10': True}
+        response = agent.decide(data)['roleCommandMap']
+        self.assertFalse(any(c['action'] == 'buy' and c.get('name') == BOSS for c in response.values()))
         self.assertEqual(next(iter(agent.sessions.values())).first_day_offense['worker_id'], 10)
 
     def test_sale_and_shop_movement_keep_their_accepted_job_context(self):
@@ -143,17 +146,17 @@ class FirstDayOffenseTests(unittest.TestCase):
                 self.assertEqual(memory.daytime_jobs[10]['kind'], kind)
                 self.assertEqual(memory.daytime_jobs[10]['target'], target)
 
-    def test_purchase_preserves_missing_gun_gold(self):
-        data = case(35, ready=False, gold=144)
+    def test_robot_purchase_precedes_missing_gun_gold(self):
+        data = case(35, ready=False, gold=119)
         data['teamOur']['roles'][1]['pos'] = {'x': 14, 'y': 20}
         _, ledger = step(data, Memory(), walls=[])
         self.assertFalse(any(c['action'] == 'buy' for c in ledger.commands.values()))
         self.assertEqual(ledger.notes[10]['reason'], 'first_day_offense_wait_gold')
-        self.assertEqual(ledger.notes[10]['conditions']['reserved_construction_gold'], 25)
-        data['teamOur']['goldNum'] = 145
+        self.assertEqual(ledger.notes[10]['conditions']['reserved_station_gold'], 0)
+        data['teamOur']['goldNum'] = 120
         _, ledger = step(data, Memory(), walls=[])
         self.assertEqual(ledger.commands['10'], command('buy', name=BOSS, num=1))
-        self.assertEqual(ledger.gold, 25)
+        self.assertEqual(ledger.gold, 0)
 
     def test_actual_occupation_allows_same_worker_to_use_three_orders_and_hold(self):
         agent = Agent(cfg(walls=[]))

@@ -91,10 +91,12 @@ def prepare_watch(turn, cfg, mem, nav, ledger, hero, sites):
     wall_budget = min(wall_prices, default=0)
     previous = mem.wall_watch.history[-1] if mem.wall_watch.history else None
     safety_stock = max(3, previous.used + 2) if previous and previous.unmet else 3
+    from .spending import first_day_purchase_reserve
+    available = max(0, ledger.gold - first_day_purchase_reserve(turn, mem, ledger))
     if price is not None and price > 0:
         minimum = max(0, min(safety_stock, target) - held)
-        quota = min(need, ledger.gold // price,
-                    max(minimum, max(0, ledger.gold - core_budget - wall_budget) // price))
+        quota = min(need, available // price,
+                    max(minimum, max(0, available - core_budget - wall_budget) // price))
     else:
         quota = need if price == 0 else 0
     funds = quota * price if price is not None and price > 0 else 0
