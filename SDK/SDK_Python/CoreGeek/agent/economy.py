@@ -292,6 +292,11 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
     upgrades = []
     pioneer_emergency = hero.kind == 'pioneer' and pioneer_needs_night_relief(turn)
     for building in turn.ours:
+        if (building.kind == 'wall' and mem and turn.is_day
+                and hero.id == mem.wall_watch_id):
+            from .wall_supply import active
+            if active(turn, mem):
+                continue
         if building.kind == 'station' and hero.kind != 'pioneer':
             continue
         station_heal = (building.kind == 'station' and building.level < 3
@@ -429,7 +434,7 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
         for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
             if (building.kind == 'station' and hero.kind != 'pioneer'
-                    or dedicated and building.kind == 'wall' and hero.id != mem.wall_watch_id):
+                    or dedicated and building.kind == 'wall'):
                 continue
             if building.kind == 'station':
                 for level in (1, 2):

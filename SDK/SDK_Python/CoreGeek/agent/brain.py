@@ -780,6 +780,12 @@ class Agent:
                         emit_event('income_preempted', dict(actor=watcher.id, reason='wall_watch'), 'economy')
                         ledger.income_worker_id = None
                 ledger.gold -= min(watch_gold, ledger.gold)
+                from .wall_supply import active as split_wall_day, other_worker
+                if split_wall_day(turn, mem):
+                    for builder in turn.workers:
+                        if builder.id != mem.wall_watch_id and builder.id not in returning and builder.id not in ledger.used:
+                            builder_gold = other_worker(turn, self.cfg, mem, nav, ledger, builder, towers, walls)
+                            ledger.gold -= min(builder_gold, ledger.gold)
                 scout_excluded = returning | ({watcher.id} if watcher else set()) | opening_scout_excluded
                 staged_scout = scout
                 enemy_station = enemy_base(turn)
