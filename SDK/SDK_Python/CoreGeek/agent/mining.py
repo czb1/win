@@ -31,6 +31,7 @@ class MineOption:
     return_steps: int = 0
     cell: tuple | None = None
     material: MaterialPlan | None = None
+    run: dict | None = None
 
 
 def remaining_ore(turn, mem, target):
@@ -355,16 +356,22 @@ def wall_material_plan(turn, cfg, mem, nav, ledger, hero, cell, steps, amount, g
 
 def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
          deadline=None, stockpile=False, dedicated=False, target_only=None, stone_goal=None,
-         stone_sites=None):
+         stone_sites=None, cashout_today=False, run=None):
     hero = reserve_watch_space(turn, mem, hero, ledger)
     if not hero.space:
         LOG.debug("round=%s worker=%s mining=backpack_full", turn.round, hero.id)
         return False
-    vendors = [] if stockpile else [p for p, kind in turn.zones.items() if kind == "vendor"]
-    home = mining_home(turn, nav, hero, ledger.reserved)
+    sale_mode = run['mode'] == 'sell_today' if run else not stockpile or cashout_today
+    selling = bool(not want_stone and turn.is_day and sale_mode)
+    vendors = [p for p, kind in turn.zones.items() if kind == "vendor"] if selling else []
+    if run and selling:
+        vendors = [p for p in vendors if p == run['vendor']]
+        if not vendors:
+            return False
+    home, exact = return_destination(turn, nav, ledger, hero, mem)
     # Pick one reachable sale-and-return corridor. Using the worst home walk
     # over every vendor would let a distant enemy-side vendor stop local mining.
-    home_dist = (nav.distances_to(home, {hero.pos}, ledger.reserved)
+    home_dist = (nav.distances_to(home, {hero.pos}, ledger.reserved, exact=exact)
                  if home and not want_stone else {})
     wave_budget = min((turn.base_distance(r.pos) - r.attack_range - cfg.return_margin
                        for r in turn.robots if turn.threatens_us(r)), default=None)
@@ -382,8 +389,9 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         _, vendor, vendor_home = min(corridors)
         vendors = [vendor]
     sale_dist = nav.distances_to(vendors, {hero.pos}, ledger.reserved) if vendors and not want_stone else {}
-    end = min(70 - cfg.return_margin - vendor_home,
-              deadline if deadline is not None and turn.tick < deadline else 70)
+    finish_tick = (run['end_tick'] if run else
+                   deadline if deadline is not None and turn.tick < deadline else 70)
+    end = min(70 - cfg.return_margin - vendor_home, finish_tick - cfg.return_margin)
     options, skipped = [], Counter()
     ore_only = first_day_ore_only(turn, cfg, mem, hero)
     for p, kind in turn.zones.items():
@@ -409,7 +417,8 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         if local_only and not turn.adjacent(hero.pos, p):
             skipped["not_adjacent"] += 1
             continue
-        value = 1 if want_stone else max(1 if stockpile else 0, turn.prices.get(kind, 0))
+        value = 1 if want_stone else max(1 if stockpile and not selling else 0,
+                                        turn.prices.get(kind, 0))
         if not value:
             skipped["no_positive_price"] += 1
             continue
@@ -419,6 +428,8 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
             continue
         route, cell = arrival[:2], arrival[2]
         capacity = hero.space
+        if run:
+            capacity = min(capacity, max(0, run['collect_goal'] - hero.inventory[kind]))
         if want_stone and stone_goal is not None:
             capacity = min(capacity, max(0, stone_goal - hero.inventory['stone']))
         amount, claimants = mining_yield(turn, mem, nav, ledger, hero, p, route[0], capacity)
@@ -439,10 +450,12 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         if stockpile and home and not dedicated and (turn.is_day or wave_budget is not None):
             home_walk = home_dist.get(cell)
             if home_walk is None:
+                skipped['no_return_route'] += 1
                 continue
-            budget = turn.day_left - cfg.return_margin if turn.is_day else wave_budget
+            budget = finish_tick - turn.tick - cfg.return_margin if turn.is_day else wave_budget
             amount = min(amount, budget - route[0] - home_walk)
             if amount <= 0:
+                skipped['return_deadline'] += 1
                 continue
         if not want_stone and vendors:
             if sale_walk is None:
@@ -463,7 +476,13 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         else:
             score = value * amount / (amount + route[0] +
                                      (amount * (sale_walk + 1) / max(1, batch) if sale_walk is not None else 0))
-        options.append(MineOption(p, route, score, amount, claimants, cell=cell, material=material))
+        plan = None
+        if turn.is_day and not want_stone:
+            plan = dict(run) if run else dict(
+                day=turn.day, mode='sell_today' if vendors else 'carry_for_later',
+                vendor=vendors[0] if vendors else None, end_tick=finish_tick,
+                collect_goal=hero.inventory[kind] + amount)
+        options.append(MineOption(p, route, score, amount, claimants, cell=cell, material=material, run=plan))
     if not options:
         ledger.explain(hero.id, "no_mining_candidate", skipped=dict(skipped),
                        day_left=turn.day_left, deadline=deadline, free_space=hero.space)
@@ -496,6 +515,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
                        return_margin=cfg.return_margin, mining_sector=mining_sector(turn, hero),
                        target_sector=target_sector(turn, target), remaining_ore=remaining_ore(turn, mem, target),
                        expected_units=chosen.amount, claimed_by=chosen.claimants,
+                       mining_run=chosen.run,
                        collection_cell=chosen.cell,
                        construction_steps=chosen.material.construction_steps if chosen.material else None,
                        return_steps=chosen.material.return_steps if chosen.material else None,
@@ -510,6 +530,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
                              want_stone=want_stone, stockpile=stockpile,
                              deadline=deadline,
                              stone_goal=chosen.material.goal if chosen.material else stone_goal,
+                             **({'run': chosen.run} if chosen.run else {}),
                              **material_details)
         record_target(turn, hero, target, route,
                       "wall_material" if want_stone else "carry_for_later" if stockpile else "sell_today", changed)
@@ -527,7 +548,8 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
             return False
         mem.sale_workers.discard(hero.id)
         mem.sale_targets.pop(hero.id, None)
-        if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True):
+        if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True,
+                cashout_today=hero.id not in mem.sold_workers):
             return True
         return allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero)
     counts = sale_inventory(turn, mem, hero)

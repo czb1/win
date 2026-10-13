@@ -50,6 +50,9 @@ class WallWatchState:
     inventory: dict = field(default_factory=dict)
     damage: dict = field(default_factory=dict)
     signatures: dict = field(default_factory=dict)
+    patrol_key: tuple | None = None
+    patrol_target: int | None = None
+    patrol_post: tuple | None = None
 
     def stock_target(self, turn):
         if self.plan_day == turn.day:
@@ -97,6 +100,10 @@ class WallWatchState:
         healing = {w.pos for uid, w in walls.items() if uid in self.previous_walls
                    and (w.level != self.previous_walls[uid].level
                         or w.health > self.previous_walls[uid].health)}
+        if (turn.is_day or self.patrol_key != (turn.day, mem.wall_watch_id)
+                or self.patrol_target not in walls
+                or walls[self.patrol_target].pos in healing):
+            self.patrol_target, self.patrol_post = None, None
         if self.night and self.previous_tick >= 70:
             results = turn.raw.get("lastRoundRoleActionResults") or {}
             for actor, action in mem.last_commands.items():

@@ -40,7 +40,7 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()
                    or kind == 'buy' and job.get('name', '').startswith('Wall')):
         return False, 'income_worker_reserved'
     if kind in ('mine', 'spare') and not job.get('want_stone'):
-        if (not income and turn.tick >= min(cfg.economy_rounds, mem.preparation_tick)
+        if (not job.get('run') and not income and turn.tick >= min(cfg.economy_rounds, mem.preparation_tick)
                 and development_pending(turn, cfg, mem, towers, walls)):
             return False, 'development_phase_started'
         if cashout_ores(turn, cfg, mem, hero, sale_inventory(turn, mem, hero)):
@@ -114,23 +114,36 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()
         if turn.mine_remain.get(target) is not None and turn.mine_remain[target] <= 0:
             return False, 'mine_exhausted'
         deadline = job['deadline']
-        if not job['want_stone'] and not job['stockpile']:
+        run = job.get('run')
+        if run:
+            if run['day'] != turn.day:
+                return False, 'mining_run_expired'
+            if hero.inventory[job['ore']] >= run['collect_goal']:
+                if run['mode'] == 'sell_today':
+                    ok = earn(turn, cfg, mem, nav, ledger, hero, force_sale=True,
+                              allow_spare=False, vendor_only=run['vendor'])
+                    if ok:
+                        return True, 'planned_collection_complete'
+                return False, 'planned_collection_complete'
+            if turn.tick >= run['end_tick']:
+                return False, 'mining_run_deadline'
+        if not run and not job['want_stone'] and not job['stockpile']:
             deadline = 70 if income else min(deadline if deadline is not None else 70, mem.preparation_tick)
             if turn.tick >= deadline or batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
                 return False, 'farming_batch_or_phase_complete'
-        if job['stockpile'] and turn.tick >= cfg.economy_rounds and batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
+        if not run and job['stockpile'] and turn.tick >= cfg.economy_rounds and batch_sale_ready(turn, cfg, mem, nav, ledger, hero):
             return False, 'stockpile_batch_complete'
         if job['want_stone']:
             goal = job.get('stone_goal') or cfg.stone_batch
             missing = [p for p in walls if p not in turn.blocked and p not in mem.build_failures]
             if not missing or hero.inventory['stone'] >= min(goal, len(missing) * cfg.wall_stones):
                 return False, 'material_batch_complete'
-        if not job['want_stone'] and not _fits_return(turn, cfg, mem, nav, ledger, hero, target):
+        if not run and not job['want_stone'] and not _fits_return(turn, cfg, mem, nav, ledger, hero, target):
             return False, 'mining_return_deadline'
         ok = mine(turn, cfg, mem, nav, ledger, hero, want_stone=job['want_stone'],
                   stockpile=job['stockpile'], deadline=deadline,
                   target_only=target, stone_goal=job.get('stone_goal'),
-                  stone_sites=job.get('stone_sites'))
+                  stone_sites=job.get('stone_sites'), run=run)
     elif kind == 'spare':
         ok = spare_mine(turn, cfg, mem, nav, ledger, hero, target_only=target)
     elif kind == 'recovery':
