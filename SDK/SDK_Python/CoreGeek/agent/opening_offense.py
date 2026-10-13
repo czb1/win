@@ -7,7 +7,8 @@ from .economy_plan import via
 from .model import DEFENCE_RETURN_TICK, ORES, SUMMON_ORDERS
 from .robot_assault import enemy_base, enemy_entries
 from .scouting import FIRST_DAY_SCOUT_TICK, prepare_first_day_wall_blocker
-from .spending import FIRST_DAY_ROBOT_PURCHASE_LIMIT, first_day_guns_built, first_day_purchase_reserve
+from .spending import (FIRST_DAY_ROBOT_PURCHASE_LIMIT, first_day_guns_built,
+                       first_day_purchase_reserve, first_day_pioneer_plan_active)
 
 
 FIRST_DAY_OFFENSE_TICK = FIRST_DAY_SCOUT_TICK
@@ -43,7 +44,8 @@ def _tail_steps(turn, mem, nav, ledger, hero, point, base, sell=True, buy=True):
     vendors = {p for p, k in turn.zones.items() if k == 'vendor'}
     shops = {p for p, k in turn.zones.items() if k == 'weaponShop'}
     counts = counts if vendors else {}
-    buying = (buy and not held and shops and turn.shop.get(BOSS_ORDER, -1) >= 0
+    buying = (buy and not first_day_pioneer_plan_active(turn)
+              and not held and shops and turn.shop.get(BOSS_ORDER, -1) >= 0
               and mem.robot_summon_state.get('purchased', 0) < FIRST_DAY_ROBOT_PURCHASE_LIMIT)
     groups, actions = [], len(counts) + held
     if counts:
@@ -127,6 +129,8 @@ def _sell(turn, mem, nav, ledger, hero, base):
 def _buy(turn, cfg, mem, nav, ledger, hero, base, towers):
     from .brain import summon_best_robot
 
+    if first_day_pioneer_plan_active(turn):
+        return False, 'pioneer_owns_post_task_purchase'
     if any(hero.inventory[n] for n in SUMMON_ORDERS):
         return False, 'carried_order_ready'
     state = mem.robot_summon_state

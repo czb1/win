@@ -28,7 +28,8 @@ from .gate_guard import prepare_gate_guard
 from .robot_assault import RobotAssaultMemory, act_robots, choose_summon_position, enemy_base
 from .spending import (first_day_guns_built, first_day_purchase_reserve, plan_day_spending, robot_purchase_plan,
                        prepare_paid_upgrades, prepare_defense_purchase, FIRST_DAY_ROBOT_PURCHASE_LIMIT,
-                       heal_station_with_pioneer, prepare_station_reserve)
+                       heal_station_with_pioneer, prepare_station_reserve,
+                       first_day_pioneer_plan_active, first_day_tasks_finished, prepare_first_day_pioneer)
 from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scout,
                        yield_wall_entry)
 from .task_schedule import task_options
@@ -120,7 +121,10 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     ledger.summon_daily_count = state["count"]
     ledger.robot_summon_anchor = state["anchor"] if turn.day == 1 else None
     excluded = set(excluded)
-    if turn.pioneer and (turn.phase_task or treasure_active(turn, mem)):
+    pioneer_plan = first_day_pioneer_plan_active(turn)
+    pioneer_summoning = (pioneer_plan and mem.first_day_pioneer.get('phase') == 'robots'
+                         and first_day_tasks_finished(turn))
+    if turn.pioneer and (turn.phase_task or (treasure_active(turn, mem) and not pioneer_summoning)):
         excluded.add(turn.pioneer.id)
     free = [hero for hero in turn.heroes
             if hero.id not in ledger.used and hero.id not in excluded]
@@ -128,10 +132,11 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     free = [hero for hero in free if hero.id not in ledger.used]
     carriers = sorted(((-rank, hero.kind != 'worker', hero.id, hero, name)
                        for hero in free for rank, name in enumerate(SUMMON_ORDERS)
-                       if hero.inventory[name]), key=lambda row: row[:3])
+                       if hero.inventory[name] and not (pioneer_plan and hero.kind == 'pioneer'
+                                                       and not pioneer_summoning)), key=lambda row: row[:3])
     can_use = (turn.is_day and state["count"] < DAILY_SUMMON_LIMIT
                and not (state["pending"] and state["pending"][0] == turn.round))
-    if turn.day == 1:
+    if turn.day == 1 and not pioneer_summoning:
         scout = mem.night_scout
         base = enemy_base(turn)
         entry = None
@@ -161,6 +166,9 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         elif ledger.robot_summon_anchor is not None:
             ledger.spending_plan['robot_use_blocked'] = 'first_day_summon_cluster_full'
     if use_only:
+        return False
+    if pioneer_plan:
+        ledger.spending_plan['robot_blocked'] = 'first_day_pioneer_after_tasks'
         return False
     if turn.day > cfg.robot_purchase_last_day:
         state["buyer"] = None
@@ -592,6 +600,7 @@ class Agent:
                     ledger.weapon_diagnostics[weapon.id] = current.copy()
             if turn.is_day:
                 ledger.daytime_gunner_post = mem.gunner_post if shared is not None else None
+                prepare_first_day_pioneer(turn, self.cfg, mem, nav, ledger)
             returning = set()
             for hero, tower in pairs:
                 route = (nav.search(hero, {posts[hero.id][0]}, ledger.reserved) if hero.id in posts
