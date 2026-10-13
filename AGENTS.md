@@ -8,7 +8,7 @@
 
 ## Competition documents and design versions
 
-- The current stage is v2.0 / 32进16. Read `比赛文档/v2.0-32进16/README.md`, then the v2.0 task book and interface specification before designing or changing behavior. The change summary and samples supplement those specifications; unresolved contradictions must be recorded rather than guessed.
+- The current stage is v2.0 / 32进16, with task-book revision v2.1 (2026-10-12); the interface specification remains v2.0 (2026-09-30). Read `比赛文档/v2.0-32进16/README.md`, then the v2.1 task book and v2.0 interface specification before designing or changing behavior. The archived v2.0 task book is for comparison, not the current role-action permissions. The change summary and samples supplement those specifications; unresolved contradictions must be recorded rather than guessed.
 - Maintain current design decisions and verification in `2.0版本设计文档/`. Its initial documents describe requirements and pending adaptation; they do not establish implementation or match validation.
 - `比赛文档/v1.0-初赛/` and `1.0版本设计文档/` are historical archives. Use them for traceability and review of inherited behavior, not as current competition rules or evidence of v2.0 correctness.
 - Preserve archived source documents, samples and test records. Do not copy historical test results into the current version as new verification. `examples/` remains the existing v1.0-derived replay/test fixture directory.
