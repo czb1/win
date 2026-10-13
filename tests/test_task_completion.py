@@ -89,14 +89,14 @@ class TaskCompletionTests(unittest.TestCase):
             self.assertIsNone(mem.python)
             self.assertIn('残留协议标记', mem.history[-1]['error'])
 
-    def test_judger_rejection_blocks_reordered_json_but_allows_correction(self):
+    def test_judger_rejection_blocks_identical_text_but_allows_correction(self):
         p = task_payload(19, 'query')
         p['errors'] = [{'errorCode': 2, 'description': 'world_heritage_count: 数值不符'}]
         mem = Memory(task_text='query', task_started=10, bootstrap_done=True,
                      submitted=(18, '{"city":"北京","world_heritage_count":0}'))
         t, cfg, _, ledger = setup_case(p)
         mem.observe(t, cfg)
-        mem.answer = '{ "world_heritage_count": 0, "city": "北京" }'
+        mem.answer = '{"city":"北京","world_heritage_count":0}'
         prompt, cmd = Intelligence(t, cfg, mem).task(ledger)
         self.assertIsNone(mem.answer)
         self.assertIsNone(mem.submitted)
@@ -285,7 +285,7 @@ class TaskCompletionTests(unittest.TestCase):
                 self.assertFalse(prompt or cmd)
                 self.assertEqual(ledger.commands['11']['taskAnswer'], answer)
 
-    def test_submission_shape_rejects_document_or_extra_keys_and_allows_partial_credit(self):
+    def test_submission_example_is_only_a_hint_not_an_enforced_format(self):
         docs = [{'kind': 'read', 'path': 'task.md', 'output': '''## API 返回示例
 ```json
 {"data": [1,2]}
@@ -297,7 +297,8 @@ class TaskCompletionTests(unittest.TestCase):
 '''}]
         contract = answer_contract(docs)
         self.assertEqual(contract['example'], {'city': '北京', 'temperature': 21})
-        self.assertTrue(answer_error('# 任务规范正文', contract))
+        self.assertNotIn('format', contract)
+        self.assertFalse(answer_error('# 任务规范正文', contract))
         # An example does not prove a closed schema or constrain dynamic keys.
         for answer in ('{"other":2}', '{"city":null}', '{}'):
             self.assertFalse(answer_error(answer, contract), answer)

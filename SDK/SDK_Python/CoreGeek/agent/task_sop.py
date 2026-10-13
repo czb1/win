@@ -26,7 +26,6 @@ def answer_contract(documents):
         for sample in re.findall(r'^[ \t]*```(?:json)?[ \t]*\r?\n(.*?)^[ \t]*```[ \t]*\r?$', section[1] if section else text, re.S | re.M | re.I):
             try:
                 contract['example'] = json.loads(sample)
-                contract['format'] = 'json'
                 break
             except ValueError:
                 continue

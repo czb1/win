@@ -126,7 +126,7 @@ class EvolutionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         p.update(roundNo=4, llmResp="", lastCmdResult=f"[exitCode:{result.returncode}]\n{result.stdout}")
         response = agent.decide(p)
-        self.assertEqual(response["roleCommandMap"]["11"], {"action": "submitAnswer", "taskAnswer": "21"})
+        self.assertEqual(response["roleCommandMap"]["11"], {"action": "submitAnswer", "taskAnswer": "21\n"})
         self.assertFalse(response["prompt"])
         mem = next(iter(agent.sessions.values()))
         self.assertEqual(mem.task_started, 1)
@@ -233,8 +233,8 @@ class EvolutionTests(unittest.TestCase):
                 self.assertFalse(mem.skills)
 
     def test_weak_model_format_variants(self):
-        for text, answer in (("answer: 42", "42"), ("ANSWER：\n42", "42"),
-                             ('{"city":"北京"}', {"city": "北京"}), ("[1,2]", [1, 2]), ("42", 42)):
+        for text, answer in (("answer: 42", " 42"), ("ANSWER：\n42", "42"),
+                             ('{"city":"北京"}', '{"city":"北京"}'), ("[1,2]", "[1,2]"), ("42", "42")):
             self.assertEqual(parse_task_reply(text), {"answer": answer})
         self.assertIsNone(parse_task_reply("随便猜一个"))
 

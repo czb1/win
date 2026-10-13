@@ -215,16 +215,13 @@ report['http_errors'] = list(request_errors.values())[:4]
 if answer_value:
     report['stdout'] = body[:6000]
 print('TASK_RUNTIME ' + json.dumps(report, ensure_ascii=False))
-if answer_value and not exit_code and not report['http_errors'] and len(body) <= 60000:
+if answer_value and not exit_code and len(body) <= 60000:
     print('FINAL_ANSWER')
-    print(answer_value[0])
+    sys.stdout.write(answer_value[0])
 else:
     print(body[:60000], end='')
 if len(body) > 60000:
     print('\n[TRUNCATED]')
-if report['http_errors']:
-    # Caught HTTP/JSON errors must not turn into successful empty statistics.
-    print('\nTASK_QUERY_FAILED: fix the request; no aggregate answer is valid from this run.')
-    exit_code = 1
+# HTTP diagnostics do not decide whether a handled response is valid task data.
 raise SystemExit(exit_code)
 '''

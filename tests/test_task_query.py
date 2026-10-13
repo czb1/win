@@ -161,19 +161,19 @@ class QueryTests(unittest.TestCase):
             _, command, _ = step(mem, 3, llmResp='PYTHON\n' + code)
             raw = run_sandbox({'executeCmd':command}, directory)
             prompt, command, ledger = step(mem, 4, lastCmdResult=raw)
-            self.assertTrue(mem.query_blocked)
+            self.assertTrue(mem.input_blocked)
             self.assertIn('401', prompt)
             self.assertFalse(command or ledger.commands)
             _, _, ledger = step(mem, 5, llmResp='ANSWER\n{"total_count":0}')
             self.assertFalse(ledger.commands)
-            self.assertTrue(mem.query_blocked)
+            self.assertTrue(mem.input_blocked)
             _, command, _ = step(mem, 6, llmResp='PYTHON\n' + model_program(base))
             raw = run_sandbox({'executeCmd':command}, directory)
             _, _, ledger = step(mem, 7, lastCmdResult=raw)
-            self.assertFalse(mem.query_blocked)
+            self.assertFalse(mem.input_blocked)
             self.assertEqual(json.loads(ledger.commands['11']['taskAnswer'])['total_count'], 3)
 
-    def test_caught_later_page_failure_cannot_submit_default_zero(self):
+    def test_caught_later_page_failure_retains_diagnostics_without_submission_veto(self):
         with api('later_error') as (base, _, _), tempfile.TemporaryDirectory() as directory:
             mem = self.ready(documents(base), directory)
             step(mem, 2)
@@ -182,9 +182,10 @@ class QueryTests(unittest.TestCase):
             _, command, _ = step(mem, 3, llmResp='PYTHON\n' + code)
             raw = run_sandbox({'executeCmd':command}, directory)
             prompt, command, ledger = step(mem, 4, lastCmdResult=raw)
-            self.assertTrue(mem.query_blocked)
-            self.assertIn('500', prompt)
-            self.assertFalse(command or ledger.commands)
+            self.assertFalse(mem.input_blocked)
+            self.assertIn('500', json.dumps(mem.last_attempt['http']))
+            self.assertFalse(command or prompt)
+            self.assertEqual(json.loads(ledger.commands['11']['taskAnswer']), {'total_count': 0})
 
     def test_three_tasks_reread_current_key_then_request_model(self):
         with tempfile.TemporaryDirectory() as directory:

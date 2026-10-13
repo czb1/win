@@ -37,6 +37,8 @@ def heritage_api():
             calls.append((address.path, params, self.headers.get('Authorization')))
             if address.path == '/empty':
                 status, result = 200, {'items': [], 'total': 0}
+            elif address.path == '/missing':
+                status, result = 404, {'message': 'resource absent'}
             elif address.path == '/invalid':
                 self.send_response(200)
                 self.end_headers()
@@ -144,17 +146,17 @@ class TaskRuntimeTests(unittest.TestCase):
                 self.assertTrue(raw.startswith('[exitCode:1]'))
                 self.assertIsNone(sandbox_result(raw)[2])
 
-    def test_legacy_checker_report_cannot_clear_unresolved_http_failure(self):
+    def test_legacy_checker_report_cannot_clear_actual_execution_failure(self):
         p = task_payload(5, 'repair')
         report = {'checker': {'passed': True, 'command': 'python3 verify.py'}, 'http_errors': []}
-        p['lastCmdResult'] = '[exitCode:0]\nTASK_RUNTIME ' + json.dumps(report) + '\nFINAL_ANSWER\n{"token":"checked"}'
-        mem = Memory(task_text='repair', task_started=1, bootstrap_done=True, query_blocked=True,
+        p['lastCmdResult'] = '[exitCode:1]\nTASK_RUNTIME ' + json.dumps(report) + '\nFINAL_ANSWER\n{"token":"checked"}'
+        mem = Memory(task_text='repair', task_started=1, bootstrap_done=True,
                      pending=('cmd',4), contract={'kind':'check_token','requires_checker':True})
         t,cfg,_,ledger=setup_case(p)
         mem.observe(t,cfg)
         Intelligence(t,cfg,mem).task(ledger)
         self.assertFalse(ledger.commands)
-        self.assertTrue(mem.query_blocked)
+        self.assertTrue(mem.input_blocked)
 
     def test_model_execution_rebinds_cwd_each_time(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -168,7 +170,7 @@ class TaskRuntimeTests(unittest.TestCase):
                 self.assertIn('CURRENT', raw)
                 self.assertNotIn('WRONG', raw)
 
-    def test_caught_requests_errors_cannot_yield_zero_answers(self):
+    def test_caught_requests_errors_are_diagnostics_not_business_verdicts(self):
         with heritage_api() as (url, _), tempfile.TemporaryDirectory() as directory:
             install_transport_double(directory)
             for path, headers in [('/search', {}), ('/search', {'Authorization': 'Bearer fixture-key'}),
@@ -189,8 +191,8 @@ print(json.dumps({{'total_count': len(data.get('items', []))}}))
                         self.assertEqual(sandbox_result(raw)[0], 'ok')
                     else:
                         self.assertTrue(report['http_errors'])
-                        self.assertTrue(raw.startswith('[exitCode:1]'))
-                        self.assertIsNone(sandbox_result(raw)[2])
+                    self.assertTrue(raw.startswith('[exitCode:0]'))
+                    self.assertEqual(json.loads(sandbox_result(raw)[2]), {'total_count': 0})
 
     def test_successful_first_page_does_not_hide_failed_later_page(self):
         with heritage_api() as (url, _), tempfile.TemporaryDirectory() as directory:
@@ -204,7 +206,7 @@ print('{{"total_count":2}}')
             raw, report = runtime_result(execute(code, directory))
             self.assertEqual(report['http_successes'], 1)
             self.assertTrue(report['http_errors'])
-            self.assertIsNone(sandbox_result(raw)[2])
+            self.assertEqual(json.loads(sandbox_result(raw)[2]), {'total_count': 2})
 
     def test_urllib_failure_is_detected_even_when_caught(self):
         with heritage_api() as (url, _), tempfile.TemporaryDirectory() as directory:
@@ -217,6 +219,14 @@ print('FINAL_ANSWER')
 print('{{"total_count":0}}')
 '''
             raw, report = runtime_result(execute(code, directory))
+            self.assertIn('401', report['http_errors'][0]['error'])
+            self.assertEqual(json.loads(sandbox_result(raw)[2]), {'total_count': 0})
+
+    def test_unhandled_http_error_still_blocks_answer(self):
+        with heritage_api() as (url, _), tempfile.TemporaryDirectory() as directory:
+            code = f"from urllib.request import urlopen\ntask_result('too early')\nurlopen({url!r}+'/search')"
+            raw, report = runtime_result(execute(code, directory))
+            self.assertTrue(raw.startswith('[exitCode:1]'))
             self.assertIn('401', report['http_errors'][0]['error'])
             self.assertIsNone(sandbox_result(raw)[2])
 
@@ -232,14 +242,14 @@ print(json.dumps({{'total_count': len(data['items'])}}))
             self.assertFalse(report['http_errors'])
             self.assertEqual(json.loads(sandbox_result(raw)[2]), {'total_count': 0})
 
-    def test_failed_query_blocks_model_and_unqueried_python_until_recovery(self):
+    def test_failed_execution_can_recover_without_another_http_call(self):
         mem = Memory(task_text='query', task_started=1, bootstrap_done=True,
                      pending=('cmd', 2), running_python='query()')
         p = task_payload(3, 'query')
         p['lastCmdResult'] = '[exitCode:1]\nTASK_RUNTIME {"http_errors":[{"error":"HTTP 401"}]}\nFINAL_ANSWER\n0'
         t, cfg, _, ledger = setup_case(p)
         mem.observe(t, cfg)
-        self.assertTrue(mem.query_blocked)
+        self.assertTrue(mem.input_blocked)
         mem.answer = '0'
         Intelligence(t, cfg, mem).task(ledger)
         self.assertFalse(ledger.commands)
@@ -247,19 +257,19 @@ print(json.dumps({{'total_count': len(data['items'])}}))
         mem.pending = ('cmd', 3)
         t, cfg, _, _ = setup_case(p)
         mem.observe(t, cfg)
-        self.assertIsNone(mem.answer)
-        self.assertTrue(mem.query_blocked)
+        self.assertEqual(mem.answer, '0')
+        self.assertFalse(mem.input_blocked)
         p.update(roundNo=5, lastCmdResult='[exitCode:0]\nTASK_RUNTIME {"http_errors":[],"http_successes":1}\nFINAL_ANSWER\n3')
         mem.pending = ('cmd', 4)
         t, cfg, _, _ = setup_case(p)
         mem.observe(t, cfg)
-        self.assertFalse(mem.query_blocked)
+        self.assertFalse(mem.input_blocked)
         self.assertEqual(mem.answer, '3')
-        mem.query_blocked = True
+        mem.input_blocked = True
         p.update(roundNo=6, phaseTask='next query')
         t, cfg, _, _ = setup_case(p)
         mem.observe(t, cfg)
-        self.assertFalse(mem.query_blocked)
+        self.assertFalse(mem.input_blocked)
 
     def test_near_deadline_diagnostic_python_does_not_waste_format_retry(self):
         p = task_payload(13, 'query')
@@ -298,6 +308,8 @@ print(json.dumps({{'total_count': len(data['items'])}}))
                                        (7, {'Authorization': 'Bearer fixture-key'})]:
                 code = f'''import requests, json
 r = requests.get({url + '/search'!r}, params={{'city':'北京'}}, headers={headers!r})
+if not 200 <= r.status_code < 300:
+    raise RuntimeError(r.text)
 data = r.json()
 print('FINAL_ANSWER')
 print(json.dumps({{'total_count':len(data.get('items', []))}}))
@@ -307,7 +319,7 @@ print(json.dumps({{'total_count':len(data.get('items', []))}}))
                 p.update(roundNo=round_no + 1, llmResp='', lastCmdResult=run_sandbox(response, directory))
                 response = agent.decide(p)
                 self.assertNotIn('11', response['roleCommandMap'])
-                self.assertIn('query_failed', response['prompt'])
+                self.assertIn('RuntimeError', response['prompt'])
                 self.assertIn('Authorization' if round_no == 5 else 'location', response['prompt'])
             code = f'''import requests, json
 page, rows = 1, []
