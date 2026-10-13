@@ -32,10 +32,13 @@ class VehiclePriorityTests(unittest.TestCase):
         target = pos(l.commands['11']['targetPos'][-1])
         self.assertEqual(target[1], 6)  # heads toward the car, not the goal
 
-    def test_tight_budget_and_urgent_trip_keep_direct_walk(self):
-        for options in ({'max_rounds': 4}, {'prefer_vehicle': False}):
-            t, c, n, l = self.move(case(car=(1, 13)), (5, 5), **options)
-            self.assertEqual(l.commands['11'], command('move', n.search(t.pioneer, {(5, 5)})[1]))
+    def test_explicit_deadline_keeps_direct_walk(self):
+        t, c, n, l = self.move(case(car=(1, 13)), (5, 5), max_rounds=4)
+        self.assertEqual(l.commands['11'], command('move', n.search(t.pioneer, {(5, 5)})[1]))
+
+    def test_urgent_trip_prefers_car_within_daylight(self):
+        t, c, n, l = self.move(case(car=(1, 13)), (5, 5), prefer_vehicle=False)
+        self.assertEqual(pos(l.commands['11']['targetPos'][-1])[1], 6)
 
     def test_end_of_day_does_not_fetch_remote_car(self):
         t, c, n, l = self.move(case(car=(1, 13), round_no=67), (5, 5))
@@ -129,10 +132,36 @@ class VehiclePriorityTests(unittest.TestCase):
         chosen = plan_route(n, l, t.pioneer, goals, n.search(t.pioneer, goals))
         self.assertNotIn(chosen.parking, home_area(t, l))
 
-    def test_home_destination_on_foot_does_not_fetch_car(self):
+    def test_home_destination_on_foot_fetches_car_and_parks_outside(self):
         t, c, n, l = self.setup(case(), wall_cells=[(6, 3), (10, 7)])
         route = n.search(t.pioneer, {(8, 5)})
-        self.assertIsNone(plan_route(n, l, t.pioneer, {(8, 5)}, route))
+        chosen = plan_route(n, l, t.pioneer, {(8, 5)}, route)
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen.target, (2, 5))
+        self.assertNotIn(chosen.parking, home_area(t, l))
+
+    def test_defence_recall_fetches_car_even_when_slower_than_walking(self):
+        t, c, n, l = self.setup(case(start=(5, 5), car=(2, 5), round_no=60),
+                                wall_cells=[(6, 3), (10, 7)])
+        goal = (8, 5)
+        l.plans[11] = {'reason': 'defence_recall'}
+        l.operator_posts[11] = goal
+        route = n.search(t.pioneer, {goal})
+        chosen = plan_route(n, l, t.pioneer, {goal}, route)
+        self.assertIsNotNone(chosen)
+        self.assertGreater(chosen.rounds, route[0])
+        self.assertTrue(n.move_along(t.pioneer, l, route, {goal}))
+        self.assertEqual(pos(l.commands['11']['targetPos'][-1]), chosen.target)
+        self.assertNotEqual(chosen.target, route[1])
+
+    def test_defence_recall_without_car_keeps_walking(self):
+        t, c, n, l = self.setup(case(car=None, round_no=60),
+                                wall_cells=[(6, 3), (10, 7)])
+        goal = (8, 5)
+        l.plans[11] = {'reason': 'defence_recall'}
+        route = n.search(t.pioneer, {goal})
+        self.assertTrue(n.move_along(t.pioneer, l, route, {goal}))
+        self.assertEqual(l.commands['11'], command('move', route[1]))
 
     def test_idle_pickup_and_onboard_wait(self):
         for driving in (False, True):
