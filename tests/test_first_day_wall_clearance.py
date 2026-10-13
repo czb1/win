@@ -3,7 +3,7 @@ import copy
 import unittest
 
 from test_agent import setup_case, unit
-from test_first_day_attack_side import mirror, turret
+from test_first_day_attack_side import assert_base_attack, mirror, turret
 from test_first_day_wall_block import ENTRY, block_case, memory_for
 from agent.model import distance, pos
 from agent.robot_assault import (RobotAssaultMemory, act_robots,
@@ -39,8 +39,11 @@ class FirstDayWallClearanceTests(unittest.TestCase):
                         self.assertEqual(data, before)
                         ledger.robot_assault_entry = expected
                         spawn = choose_summon_position(turn, ledger)
-                        self.assertEqual(spawn, (expected[0], 18 if flip_y else 13))
+                        # An open rear can now bypass the selected worker gap;
+                        # it must still use this unsealed face and shoot the base.
+                        self.assertEqual(spawn[1], 18 if flip_y else 13)
                         self.assertTrue(turn.summon_position_legal(spawn))
+                        assert_base_attack(self, data, spawn)
 
     def test_log_geometry_moves_away_from_10_20_rocket(self):
         data = mirror(turret(block_case(38)), True, True)
