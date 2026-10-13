@@ -77,6 +77,7 @@ class RobotAssaultMemory:
     approach_stalls: dict = field(default_factory=dict)
     robot_ids: set = field(default_factory=set)
     entry_crossed: set = field(default_factory=set)
+    yielded_rounds: dict = field(default_factory=dict)
     day: int | None = None
     base_id: int | None = None
     base_pos: tuple | None = None
@@ -90,6 +91,7 @@ class RobotAssaultMemory:
             self.buildings.clear()
         if self.day != turn.day or changed_base:
             self.entry_crossed.clear()
+            self.yielded_rounds.clear()
             self.focus_target_id = None
             self.objectives.clear()
             self.pending.clear()
@@ -112,6 +114,8 @@ class RobotAssaultMemory:
         alive = turn.summon_robot_ids
         self.robot_ids = alive.copy()
         self.entry_crossed.intersection_update(alive)
+        self.yielded_rounds = {uid: when for uid, when in self.yielded_rounds.items()
+                              if uid in alive and when >= turn.round - 1}
         self.objectives = {uid: goal for uid, goal in self.objectives.items() if uid in alive}
         self.failed_shots = {key for key in self.failed_shots if key[0] in alive}
         self.shot_contexts = {key: value for key, value in self.shot_contexts.items()
@@ -742,19 +746,23 @@ def _advance_toward_base(turn, memory, ledger, robot, base):
     return False
 
 
-def _make_room_inside(turn, memory, nav, ledger, base, occupied):
+def _make_room_inside(turn, memory, nav, ledger, base, occupied, *, require_ingress_gain=False):
     """Open inner firing stances when our own frontage blocks the queue.
 
     Vacating controlled robots is a planning comparison only. Every submitted
     move still uses observed occupancy, and followers wait for the next view.
     """
     movable = [r for r in turn.summon_robots
-               if r.id not in ledger.used and r.abnormal_state != 'dizzy']
+               if r.id not in ledger.used and r.abnormal_state != 'dizzy'
+               and (not require_ingress_gain
+                    or memory.yielded_rounds.get(r.id) != turn.round - 1)]
     if len(movable) < 2:
         return False
     aims = {r.id: _firing_point(r.pos, r, base, memory, occupied)
             for r in turn.summon_robots if r.abnormal_state != 'dizzy'}
-    waiting = [r for r in movable if aims[r.id] is None]
+    waiting = [r for r in movable if aims[r.id] is None
+               and (not require_ingress_gain
+                    or _direct_base_point(r, base, memory, occupied) is None)]
     if not waiting:
         return False
     inner = {p for cell in base.cells for p in neighbours(cell)
@@ -786,7 +794,7 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
                          - (turn.blocked - {robot.pos}) - avoided
                          if _firing_point(p, robot, base, memory, occupied) is not None}
         current = nav.search(robot, current_goals, avoided | firing_lanes)
-        if current is None or current[0] >= future + 2:
+        if require_ingress_gain or current is None or current[0] >= future + 2:
             queue.append(robot)
     if not queue:
         return False
@@ -871,11 +879,17 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
             next_footprint = ((positions - {robot.pos}) | {step} | next_lanes) & free_inner
             space_gain = len(current_footprint) - len(next_footprint)
             next_routes = queue_routes(moved, {robot.pos}, next_lanes, {step})
-            relief = sum(length is not None and (current_routes[uid] is None
-                         or length < current_routes[uid]) for uid, length in next_routes.items())
+            helped = {uid for uid, length in next_routes.items()
+                      if length is not None and (current_routes[uid] is None
+                                                 or length < current_routes[uid])}
+            relief = len(helped)
             worse_route = any(length is not None and (next_routes[uid] is None
                               or next_routes[uid] > length)
                               for uid, length in current_routes.items())
+            if require_ingress_gain and (relief == 0 or worse_route or space_gain < 0):
+                # Depth alone is not a benefit: require an observed follower's
+                # route to become reachable/shorter, without worsening others.
+                continue
             # A corner-to-straight shot can release the aisle at equal depth.
             # Neither route access nor space may worsen, and one must improve
             # there, so neutral sideways moves cannot oscillate. Prefer relief over packing a
@@ -884,15 +898,19 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
                                                   or relief == 0 and space_gain == 0):
                 continue
             rank = (-relief, -space_gain, -depth[step], -depth[robot.pos], robot.id, step)
-            choices.append((rank, step, robot, relief, space_gain))
-    for _, step, robot, relief, space_gain in sorted(choices, key=lambda row: row[0]):
+            choices.append((rank, step, robot, relief, space_gain, helped))
+    for _, step, robot, relief, space_gain, helped in sorted(choices, key=lambda row: row[0]):
         if ledger.add(robot.id, command('move', step)):
             memory.remember(turn, robot, 'move', step)
+            memory.yielded_rounds[robot.id] = turn.round
             ledger.explain(robot.id, 'robot_make_room_inside', target_id=base.id,
                            from_pos=robot.pos, next_pos=step, inner_depth=depth[robot.pos],
-                           next_depth=depth[step], waiting_robots=[r.id for r in queue],
+                           next_depth=depth[step], waiting_robots=[r.id for r in queue
+                               if not require_ingress_gain or r.id in helped],
                            ingress_routes_improved=relief, inner_space_gain=space_gain)
             for follower in queue:
+                if require_ingress_gain and follower.id not in helped:
+                    continue
                 if follower.id not in ledger.used:
                     ledger.used.add(follower.id)
                     ledger.reserved.add(follower.pos)
@@ -947,7 +965,13 @@ def act_robots(turn, memory, nav, ledger):
         # it no longer forces robots to visit an entry before they may shoot.
         memory.entry_crossed.update(r.id for r in turn.summon_robots
                                     if r.pos == entry or base_distance(base, r.pos) < 2)
-    # Lock current-position base attacks before any cooperative repositioning.
+    # Only a legal move with measured follower-route relief may precede base
+    # attacks. A robot that yielded last turn gets its attack opportunity now.
+    if base is not None and not turn.is_day:
+        _make_room_inside(turn, memory, nav, ledger, base, occupied,
+                          require_ingress_gain=True)
+
+    # Lock all remaining current-position base attacks before clearing enemies.
     previous_focus = memory.focus_target_id
     memory.focus_target_id = None
     for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
@@ -987,8 +1011,6 @@ def act_robots(turn, memory, nav, ledger):
             previous_focus = focus.id
             early_focus = focus
     memory.focus_target_id = None
-    if base is not None and not turn.is_day:
-        _make_room_inside(turn, memory, nav, ledger, base, occupied)
 
     # A found route is not evidence that repeatedly following it is useful.
     # After correlated failures/backtracking, jointly clear an observed enemy
