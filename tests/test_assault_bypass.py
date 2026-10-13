@@ -5,7 +5,6 @@ import unittest
 from test_agent import payload, setup_case, unit
 from test_robot_assault import assault_payload, controlled_robot
 from test_robot_path_blockers import decide
-from robot_feedback import reject_base_aims
 from agent.model import distance, pos
 from agent.projectiles import line_cells
 from agent.robot_assault import RobotAssaultMemory, act_robots, enemy_entries, enemy_base
@@ -63,29 +62,34 @@ class AssaultBypassTests(unittest.TestCase):
         self.assertEqual(pos(action['targetPos'][0])[0], 6)
         self.assertEqual(ledger.notes[30000]['reason'], 'robot_advance_when_routes_blocked')
 
-    def test_reported_frontage_tries_base_for_all_three_bosses(self):
+    def test_reported_frontage_uses_open_routes_for_all_three_bosses(self):
         for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
             with self.subTest(flip_x=flip_x, flip_y=flip_y):
                 data = reported_frontage()
                 reflect(data, flip_x, flip_y)
                 before = copy.deepcopy(data)
                 ledger, memory = decide(data)
+                destinations = set()
                 for robot in data['teamOur']['summonRobotList']:
                     action = ledger.commands[str(robot['id'])]
-                    self.assertEqual(action['action'], 'attack')
-                    self.assertLessEqual(distance(pos(robot['pos']), pos(action['targetPos'][0])), 3)
+                    self.assertEqual(action['action'], 'move')
+                    step = pos(action['targetPos'][0])
+                    self.assertEqual(distance(pos(robot['pos']), step), 1)
+                    self.assertNotIn(step, destinations)
+                    destinations.add(step)
                     facts = ledger.notes[robot['id']]['conditions']
                     self.assertEqual(facts['target_id'], 99)
                     self.assertEqual(facts['assault_choice'], 'base_route')
+                    self.assertLessEqual(facts['route_steps'], 7)
                 self.assertIsNone(memory.focus_target_id)
                 self.assertEqual(data, before)
 
-    def test_even_a_low_health_blocker_does_not_preempt_a_base_probe(self):
+    def test_even_a_low_health_optional_blocker_is_bypassed(self):
         for kind in ('wall', 'rocket', 'pioneer'):
             data = assault_payload(robot=controlled_robot(x=7))
             data['teamEnemy']['roles'].append(unit(50, kind, 8, 4, health=1))
             ledger, _ = decide(data)
-            self.assertEqual(ledger.commands['30000']['action'], 'attack')
+            self.assertEqual(ledger.commands['30000']['action'], 'move')
             self.assertEqual(ledger.notes[30000]['conditions']['target_id'], 99)
 
     def test_closed_frontage_repositions_second_robot_to_share_first_wall(self):
@@ -96,9 +100,6 @@ class AssaultBypassTests(unittest.TestCase):
                 # stands adjacent to the wall instead, its own body can make
                 # sharing impossible; that separate case is checked below.
                 data['teamOur']['summonRobotList'][0]['pos']['y'] = 4
-                # Both are outside base range: preserve the existing approach
-                # and shared-clearance fallback independently of new probes.
-                data['teamOur']['summonRobotList'][1]['pos']['y'] = 3
                 reflect(data, flip_x, flip_y)
                 ledger, memory = decide(data)
                 self.assertEqual(memory.focus_target_id, 107)
@@ -110,8 +111,7 @@ class AssaultBypassTests(unittest.TestCase):
                 self.assertFalse(facts['focus_unreachable'])
 
     def test_unreachable_shared_stance_explains_local_clearance(self):
-        data = reported_frontage(closed=True)
-        ledger, memory = decide(data, reject_base_aims(data))
+        ledger, memory = decide(reported_frontage(closed=True))
         self.assertEqual(memory.focus_target_id, 107)
         facts = ledger.notes[30036]['conditions']
         self.assertEqual(facts['target_id'], 112)
@@ -121,7 +121,6 @@ class AssaultBypassTests(unittest.TestCase):
     def test_supporting_move_preserves_lead_shot_then_both_fire(self):
         data = reported_frontage(closed=True)
         data['teamOur']['summonRobotList'][0]['pos']['y'] = 4
-        data['teamOur']['summonRobotList'][1]['pos']['y'] = 3
         first, memory = decide(data)
         step = first.commands['30036']['targetPos'][0]
         self.assertNotIn(pos(step), line_cells((30, 4), (30, 7)))
@@ -142,22 +141,22 @@ class AssaultBypassTests(unittest.TestCase):
         aim = pos(ledger.commands['30001']['targetPos'][0])
         self.assertNotIn(pos(ledger.commands['30000']['targetPos'][0]), line_cells((7, 4), aim))
 
-    def test_unrelated_opening_does_not_interrupt_in_range_clearance_after_rejections(self):
+    def test_observed_opening_overrides_previous_shared_clearance(self):
         data = reported_frontage(closed=True)
-        _, memory = decide(data, reject_base_aims(data))
+        _, memory = decide(data)
         self.assertIsNotNone(memory.focus_target_id)
         data['roundNo'] += 1
         data['teamEnemy']['roles'] = [r for r in data['teamEnemy']['roles'] if r['id'] < 200]
         ledger, memory = decide(data, memory)
-        self.assertEqual(memory.focus_target_id, 107)
+        self.assertIsNone(memory.focus_target_id)
         for uid in (30035, 30036):
-            self.assertEqual(ledger.commands[str(uid)]['action'], 'attack')
-            self.assertIn(ledger.notes[uid]['conditions']['target_id'], {107, 112})
+            self.assertEqual(ledger.commands[str(uid)]['action'], 'move')
+            self.assertEqual(ledger.notes[uid]['conditions']['target_id'], 99)
 
     def test_direct_base_shot_does_not_move_or_join_clearance(self):
         data = reported_frontage(closed=True)
         data['teamOur']['summonRobotList'].append(controlled_robot(30037, 29, 10))
-        ledger, memory = decide(data, reject_base_aims(data, ids={30035, 30036}))
+        ledger, memory = decide(data)
         self.assertIsNotNone(memory.focus_target_id)
         self.assertEqual(ledger.commands['30037']['action'], 'attack')
         self.assertEqual(ledger.notes[30037]['conditions']['target_id'], 99)
