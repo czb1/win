@@ -47,7 +47,7 @@ def assert_base_attack(test, data, spawn):
 
 
 class FirstDayAttackSideTests(unittest.TestCase):
-    def test_every_turret_type_and_entire_upper_face_outweigh_shorter_route(self):
+    def test_every_turret_type_prefers_unarmed_faces_over_shorter_armed_route(self):
         for kind in ('gatling', 'railgun', 'rocket'):
             for column in (29, 30, 31, 32):
                 with self.subTest(kind=kind, column=column):
@@ -55,7 +55,7 @@ class FirstDayAttackSideTests(unittest.TestCase):
                     memory = ScoutMemory()
                     scout = prepare_first_day_wall_blocker(turn, memory, nav, ledger)
                     self.assertEqual(scout.id, 10)
-                    self.assertEqual(memory.wall_entry, LOWER_ENTRY)
+                    self.assertEqual(memory.wall_entry, (28, 10) if column == 32 else LOWER_ENTRY)
                     self.assertEqual(first_day_clear_sides(turn, turn.enemies[0]), {7})
 
     def test_worker_and_summon_mirror_together_on_both_axes(self):
@@ -90,6 +90,10 @@ class FirstDayAttackSideTests(unittest.TestCase):
                 if armed:
                     turret(data)
                     data['teamEnemy']['roles'].append(unit(20041, 'railgun', 31, 8))
+                    # Compare equal horizontal faces; an open unarmed front
+                    # face is now a better candidate and is tested separately.
+                    data['teamEnemy']['roles'] += [unit(41000 + y, 'wall', 28, y)
+                                                   for y in range(8, 12)]
                 entry = (32, 12) if armed else ENTRY
                 data['teamOur']['roles'][1]['pos'] = {'x': entry[0], 'y': entry[1]}
                 turn, _, nav, ledger = setup_case(data)
@@ -157,7 +161,7 @@ class FirstDayAttackSideTests(unittest.TestCase):
                 turn, _, nav, ledger = setup_case(data)
                 memory = ScoutMemory()
                 self.assertIsNotNone(prepare_first_day_wall_blocker(turn, memory, nav, ledger))
-                entry = (32, 12)
+                entry = (28, 8) if sealed else (28, 10)
                 self.assertEqual(memory.wall_entry, entry)
                 ledger.robot_assault_entry = memory.wall_entry
                 spawn = choose_summon_position(turn, ledger)

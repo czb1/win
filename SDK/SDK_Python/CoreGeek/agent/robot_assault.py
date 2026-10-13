@@ -278,23 +278,40 @@ def enemy_entries(turn, base):
             if base_distance(base, (x, y)) == 2]
 
 
-def first_day_clear_sides(turn, base, known_enemies=()):
-    """Upper/lower wall rows with no observed weapon in the inner face.
+def wall_entry_axis(base, entry):
+    """Normal axis of a wall face; corners retain their horizontal face."""
+    ys = [p[1] for p in base.cells]
+    return 1 if entry[1] in (min(ys) - 2, max(ys) + 2) else 0
+
+
+def first_day_wall_entries(turn, base):
+    """Both horizontal faces plus the vertical face toward our base."""
+    xs = [p[0] for p in base.cells]
+    home_x = (min(p[0] for p in turn.station.cells) + max(p[0] for p in turn.station.cells)
+              if turn.station else turn.width - 1)
+    centre_x = min(xs) + max(xs)
+    return [p for p in enemy_entries(turn, base)
+            if wall_entry_axis(base, p) == 1 or
+            (2 * p[0] - centre_x) * (home_x - centre_x) > 0]
+
+
+def first_day_clear_sides(turn, base, known_enemies=(), *, axis=1):
+    """Wall rows (or columns) with no observed weapon in the inner face.
 
     Unseen weapons remain unknown. Remembered stationary weapons count until
     ordinary shared sight or an explicit death disproves their occupancy.
     """
     if turn.day != 1:
         return set()
-    ys = [p[1] for p in base.cells]
-    lower, upper = min(ys) - 2, max(ys) + 2
+    coordinates = [p[axis] for p in base.cells]
+    lower, upper = min(coordinates) - 2, max(coordinates) + 2
     armed = set()
     for weapon in (*known_enemies, *turn.enemies):
         if weapon.kind not in WEAPONS or base_distance(base, weapon.pos) != 1:
             continue
-        if weapon.pos[1] < min(ys):
+        if weapon.pos[axis] < min(coordinates):
             armed.add(lower)
-        elif weapon.pos[1] > max(ys):
+        elif weapon.pos[axis] > max(coordinates):
             armed.add(upper)
     return {lower, upper} - armed
 
@@ -341,9 +358,9 @@ def _entry_walls(turn, base):
     return [(point, walls.get(point)) for point in enemy_entries(turn, base) if point not in fixed]
 
 
-def _on_entry_side(base, point, side_row):
+def _on_entry_side(base, point, side_row, axis=1):
     return (side_row is None or
-            (point[1] >= side_row if side_row > base.pos[1] else point[1] <= side_row))
+            (point[axis] >= side_row if side_row > base.pos[axis] else point[axis] <= side_row))
 
 
 def _spawn_at_entry(turn, ledger, base, entry, wall, deadline, rear_only=False, side_row=None):
@@ -442,26 +459,27 @@ def _summon_in_cluster(turn, ledger, base, entry, deadline):
     anchor = ledger.robot_summon_anchor
     if entry is not None and distance(entry, anchor) > FIRST_DAY_SUMMON_RADIUS + 1:
         entry = None
-    ys = [p[1] for p in base.cells]
-    side_row = entry[1] if entry and entry[1] in (min(ys) - 2, max(ys) + 2) else None
+    axis = wall_entry_axis(base, entry) if entry else 1
+    side_row = entry[axis] if entry else None
     blocked = turn.blocked | ledger.reserved | ledger.summon_pending_positions
     options = [(x, y)
                for x in range(anchor[0] - FIRST_DAY_SUMMON_RADIUS, anchor[0] + FIRST_DAY_SUMMON_RADIUS + 1)
                for y in range(anchor[1] - FIRST_DAY_SUMMON_RADIUS, anchor[1] + FIRST_DAY_SUMMON_RADIUS + 1)
                if (x, y) not in blocked and turn.summon_position_legal((x, y))
-               and _on_entry_side(base, (x, y), side_row)]
+               and _on_entry_side(base, (x, y), side_row, axis)]
     return min(options, key=lambda p: (distance(p, entry or anchor),
-               abs(p[0] - entry[0]) if entry else 0, distance(p, anchor), p)) if options else None
+               abs(p[1 - axis] - entry[1 - axis]) if entry else 0,
+               distance(p, anchor), p)) if options else None
 
 
 def _summon_at_gap(turn, ledger, base, entry, deadline):
     # The held wall cell is in the no-summon construction ring. Search outward
-    # from it, preferring the same column, and keep every reserved spawn unique.
+    # from it along the face normal, keeping every reserved spawn unique.
     blocked = turn.blocked | ledger.reserved
-    ys = [p[1] for p in base.cells]
-    side_row = entry[1] if entry[1] in (min(ys) - 2, max(ys) + 2) else None
+    axis = wall_entry_axis(base, entry)
+    side_row = entry[axis]
     starts = {p for p in neighbours(entry) if turn.inside(p) and p not in blocked
-              and base_distance(base, p) >= 3 and _on_entry_side(base, p, side_row)}
+              and base_distance(base, p) >= 3 and _on_entry_side(base, p, side_row, axis)}
     queue = deque((p, 0) for p in sorted(starts))
     seen, options = set(starts), []
     while queue:
@@ -471,11 +489,12 @@ def _summon_at_gap(turn, ledger, base, entry, deadline):
         if deadline is not None:
             check_time(deadline)
         if (turn.summon_position_legal(point) and point not in ledger.summon_pending_positions):
-            options.append((steps, distance(point, entry), abs(point[0] - entry[0]), point))
+            options.append((steps, distance(point, entry),
+                            abs(point[1 - axis] - entry[1 - axis]), point))
             continue
         for step in neighbours(point):
             if (step not in seen and turn.inside(step) and step not in blocked
-                    and base_distance(base, step) >= 3 and _on_entry_side(base, step, side_row)):
+                    and base_distance(base, step) >= 3 and _on_entry_side(base, step, side_row, axis)):
                 seen.add(step)
                 queue.append((step, steps + 1))
     return min(options)[-1] if options else None

@@ -369,7 +369,8 @@ class FirstDayOffenseTests(unittest.TestCase):
         data['roundNo'] = 54
         data['mapInfo']['zones'] = [z for z in data['mapInfo']['zones'] if z['neutralType'] != 'weaponShop']
         data['teamEnemy']['roles'] += [unit(300 + x * 32 + y, 'wall', x, y, health=1000)
-            for x in range(28, 34) for y in (7, 12)]
+            for x, y in ([(x, y) for x in range(28, 34) for y in (7, 12)]
+                         + [(28, y) for y in range(8, 12)])]
         response = agent.decide(data)
         self.assertNotIn('10', response['roleCommandMap'])
         self.assertEqual(memory.first_day_offense['phase'], 'block')

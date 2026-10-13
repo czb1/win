@@ -55,7 +55,8 @@ class FirstDayWallClearanceTests(unittest.TestCase):
         turn, _, nav, ledger = setup_case(data)
         memory = ScoutMemory((1, 99, (9, 22)), 10, (10, 19), (10, 19))
         prepare_first_day_wall_blocker(turn, memory, nav, ledger, worker_id=10)
-        self.assertEqual(memory.wall_entry, (8, 19))
+        # The newly eligible front face is unarmed and closer than the south row.
+        self.assertEqual(memory.wall_entry, (12, 21))
         self.assertGreater(distance(memory.wall_entry, (10, 20)),
                            distance((10, 19), (10, 20)))
         self.assertFalse(ledger.notes[10]['conditions']['turret_in_front'])

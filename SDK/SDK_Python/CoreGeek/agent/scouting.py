@@ -5,9 +5,9 @@ from .commands import command
 from .model import distance, neighbours, SUMMON_ORDERS, WEAPONS
 from .navigation import check_time
 from .projectiles import line_cells
-from .robot_assault import (base_distance, enemy_base, enemy_entries,
+from .robot_assault import (base_distance, enemy_base, first_day_wall_entries,
                             first_day_clear_sides, in_summon_cluster,
-                            open_assault_entry, rear_approach)
+                            open_assault_entry, rear_approach, wall_entry_axis)
 
 
 FIRST_DAY_SCOUT_TICK = 25
@@ -33,7 +33,7 @@ def _sync_scout(turn, memory, base):
 def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=None,
                                    worker_id=None, departure_tick=FIRST_DAY_SCOUT_TICK,
                                    reserve_hold=True):
-    """Occupy an unbuilt upper/lower enemy wall cell after the departure tick."""
+    """Occupy an unbuilt horizontal or front-side wall cell after departure."""
     base = enemy_base(turn)
     _sync_scout(turn, memory, base)
     if memory.cancelled or not turn.is_day or turn.day != 1 or turn.tick < departure_tick or base is None:
@@ -41,19 +41,23 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
     if memory.worker_id is not None and not any(w.id == memory.worker_id for w in turn.workers):
         memory.worker_id, memory.post, memory.wall_entry = None, None, None
     xs, ys = zip(*base.cells)
-    entries = [p for p in enemy_entries(turn, base)
-               if p[1] in (min(ys) - 2, max(ys) + 2)]
+    entries = first_day_wall_entries(turn, base)
+    axes = {entry: wall_entry_axis(base, entry) for entry in entries}
     corners = {(x, y) for x in (min(xs) - 2, max(xs) + 2)
                for y in (min(ys) - 2, max(ys) + 2)}
-    clear_sides = first_day_clear_sides(turn, base, ledger.robot_known_enemies)
+    clear_sides = {axis: first_day_clear_sides(turn, base, ledger.robot_known_enemies, axis=axis)
+                   for axis in (0, 1)}
     weapon_cells = {u.pos for u in (*ledger.robot_known_enemies, *turn.enemies)
                     if u.kind in WEAPONS}
     # Compare the nearest known turret, then avoid an immediately adjacent
-    # turret in the entry's inward column when Chebyshev distances tie.
-    entry_clearance = {entry: (
-        -min((distance(entry, p) for p in weapon_cells), default=0),
-        (entry[0], entry[1] + (1 if entry[1] < min(ys) else -1)) in weapon_cells,
-    ) for entry in entries}
+    # turret one cell inward from the face when Chebyshev distances tie.
+    entry_clearance = {}
+    for entry, axis in axes.items():
+        inward = list(entry)
+        inward[axis] += 1 if entry[axis] < base.pos[axis] else -1
+        entry_clearance[entry] = (
+            -min((distance(entry, p) for p in weapon_cells), default=0),
+            tuple(inward) in weapon_cells)
     jobs = jobs or {}
     candidates = []
     for scout in turn.workers:
@@ -69,6 +73,7 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
             continue
         for entry in entries:
             check_time(nav.deadline)
+            axis = axes[entry]
             if entry in (turn.blocked - {scout.pos}) | ledger.reserved:
                 continue
             route = nav.search(scout, {entry}, ledger.reserved)
@@ -78,7 +83,8 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
             if not any(turn.summon_position_legal(p) and base_distance(base, p) >= 3
                        and p not in (turn.blocked - {scout.pos}) | ledger.reserved
                         and in_summon_cluster(ledger, p)
-                       and (p[1] >= entry[1] if entry[1] > max(ys) else p[1] <= entry[1])
+                       and (p[axis] >= entry[axis] if entry[axis] > base.pos[axis]
+                            else p[axis] <= entry[axis])
                        for p in neighbours(entry)):
                 continue
             # Reconsider an armed face before committing any summons. Once
@@ -86,11 +92,12 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
             # Keep corners as fallbacks when no straight wall entry is feasible.
             candidates.append((bool(ledger.summon_pending_positions) and entry != memory.wall_entry,
                                entry in corners,
-                               entry[1] not in clear_sides,
+                               entry[axis] not in clear_sides[axis],
                                *entry_clearance[entry],
                                not incumbent, entry != memory.wall_entry,
                                jobs.get(scout.id, {}).get('kind') == 'build',
-                               entry[0] not in xs, route[0], scout.id, entry, scout, route))
+                               entry[1 - axis] not in (xs, ys)[1 - axis],
+                               route[0], scout.id, entry, scout, route))
     if not candidates:
         # A passing character/robot does not invalidate the unbuilt wall cell.
         entry = open_assault_entry(turn, base, memory.wall_entry)
@@ -109,6 +116,7 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
     memory.worker_id, memory.post, memory.wall_entry = scout.id, entry, entry
     clearance, turret_in_front = entry_clearance[entry]
     selection = dict(entry=entry, corner_entry=entry in corners,
+                     entry_axis='x' if axes[entry] == 0 else 'y',
                      nearest_turret_distance=-clearance if weapon_cells else None,
                      turret_in_front=turret_in_front)
     if route[1] is None:
