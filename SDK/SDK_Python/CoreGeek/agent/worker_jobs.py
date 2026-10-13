@@ -237,6 +237,8 @@ def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
     for hero in sorted(turn.workers, key=lambda h: (
             {'buy': 0, 'robot_buy': 2}.get(mem.daytime_jobs.get(h.id, {}).get('kind'), 1), h.id)):
         job = mem.daytime_jobs.get(hero.id)
+        if hero.id in ledger.traffic_holds:
+            continue
         if not job:
             continue
         if hero.id in ledger.used or hero.id in returning:

@@ -42,6 +42,8 @@ class GateGuard:
     def _traffic(self):
         traffic = {}
         for helper in self.turn.heroes:
+            if self.ledger.notes.get(helper.id, {}).get('reason') == 'off_route_standby':
+                continue
             action = self.ledger.commands.get(str(helper.id), {})
             target = (pos(action['targetPos'][0]) if action.get('action') == 'move' else None)
             # An accepted collection/use/attack is not a request to pass.

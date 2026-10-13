@@ -7,6 +7,7 @@ from .economy import use_inventory
 from .mining import spare_mine, return_destination, sale_inventory
 from .model import distance, neighbours
 from .wall_watch import geometry
+from .economy_plan import late_logistics_ready, late_economy_allowed
 
 LOG = logging.getLogger(__name__)
 
@@ -27,7 +28,10 @@ def park_idle_pioneer(turn, cfg, mem, nav, ledger, hero):
                                                min(turn.width, r.pos[0] + r.attack_range + 3))
                                 for y in range(max(0, r.pos[1] - r.attack_range - 2),
                                                min(turn.height, r.pos[1] + r.attack_range + 3)))}
+    from .traffic import transit_cells
     forbidden = ledger.tower_cells | ledger.wall_cells | ledger.reserved | danger
+    if late_logistics_ready(turn, cfg):
+        forbidden |= transit_cells(turn, nav, ledger) | set(ledger.traffic_forbidden.get(hero.id, ()))
     forbidden.update(ledger.operator_posts.values())
     options = []
     for x in range(max(0, rear - 3), min(turn.width, rear + 4)):
@@ -141,6 +145,9 @@ def finish_daytime_work(turn, cfg, mem, nav, ledger, returning):
                          'day_left=%s return_steps=%s', turn.round, hero.id, role, outcome,
                          turn.day_left, back[0])
                 continue
+        if hero.id not in returning and late_economy_allowed(turn, cfg, mem, ledger, hero):
+            from .traffic import park_idle_worker
+            park_idle_worker(turn, nav, ledger, hero)
         LOG.info('round=%s worker=%s daytime_role=%s idle_reason=%s lock_reason=%s '
                  'day_left=%s return_steps=%s packs=%s free_space=%s',
                  turn.round, hero.id, role, outcome, reason, turn.day_left,
@@ -153,7 +160,7 @@ def yield_idle_worker_for_traffic(turn, mem, nav, ledger, returning):
     Recheck the occupied map before submitting the move. This is a one-turn
     cooperative yield, not permission to walk through an occupied cell.
     """
-    if not turn.is_day:
+    if not turn.is_day or late_logistics_ready(turn, ledger.cfg):
         return
     for blocker in turn.workers:
         if (blocker.id in ledger.used or blocker.id in returning
