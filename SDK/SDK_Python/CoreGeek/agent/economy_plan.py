@@ -93,6 +93,9 @@ def reserve_income_worker(turn, mem, nav, ledger, excluded=()):
     while it remains available; a night-watch identity alone is not a recall.
     """
     from .model import SUMMON_ORDERS
+    from .wall_supply import active
+    if active(turn, mem):
+        excluded = set(excluded) | {mem.wall_watch_id}
     ledger.income_worker_id = None
     if (not turn.is_day or turn.day < 4 or not turn.weapons
             or not all(w.level >= 3 for w in turn.weapons)):

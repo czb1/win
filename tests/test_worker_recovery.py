@@ -25,7 +25,7 @@ class WorkerRecoveryTests(unittest.TestCase):
         p['weaponShopList'] = [{'name': 'StationUpgradeVoucher1', 'price': 20}]
         return p
 
-    def test_paid_station_voucher_precedes_sale_trip(self):
+    def test_worker_station_stock_does_not_preempt_sale_trip(self):
         p = self.case(backpack=['StationUpgradeVoucher1', 'copper'])
         p['teamOur']['roles'][1]['health'] = 499
         # Not next to the shop, and the station is within use range.
@@ -33,9 +33,10 @@ class WorkerRecoveryTests(unittest.TestCase):
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(sale_workers={1})
         workers(t, cfg, mem, nav, ledger, [], [])
-        self.assertEqual(ledger.commands['1'], command('use', (4, 5), name='StationUpgradeVoucher1'))
+        self.assertFalse(any(c.get('name', '').startswith('StationUpgradeVoucher')
+                             for c in ledger.commands.values()))
 
-    def test_recovery_cannot_spend_a_healthy_station_reserve(self):
+    def test_worker_recovery_cannot_spend_station_stock(self):
         for level in (1, 2):
             for health in (499, 500, 1500, 3000):
                 with self.subTest(level=level, health=health):
@@ -45,22 +46,23 @@ class WorkerRecoveryTests(unittest.TestCase):
                     turn, cfg, nav, ledger = setup_case(data)
                     action = Recovery().action((1, 'use', turn.station.pos), turn, cfg,
                                                Memory(), nav, ledger)
-                    self.assertEqual(action, command('use', (4, 5), name=name) if health < 500 else None)
+                    self.assertIsNone(action)
 
     def test_preparation_buys_affordable_base_when_weapon_too_expensive(self):
         p = self.case()
         p['roundNo'] += 130
         p['teamOur']['roles'][2]['level'] = 1
+        p['teamOur']['roles'][0]['roleType'] = 'pioneer'
         p['teamOur']['goldNum'] = 25
         p['weaponShopList'].append({'name': 'WeaponUpgradeVoucher1', 'price': 100})
         t, cfg, nav, ledger = setup_case(p)
-        self.assertEqual(supplies(t, cfg, Memory(), nav, ledger, t.workers[0])[0],
+        self.assertEqual(supplies(t, cfg, Memory(), nav, ledger, t.pioneer)[0],
                          'StationUpgradeVoucher1')
         ledger.gold = 25
-        self.assertIsNone(supplies(t, cfg, Memory(), nav, ledger, t.workers[0], reserve=25))
+        self.assertIsNone(supplies(t, cfg, Memory(), nav, ledger, t.pioneer, reserve=25))
         p['roundNo'] = 10
         t, cfg, nav, ledger = setup_case(p)
-        self.assertIsNone(supplies(t, cfg, Memory(), nav, ledger, t.workers[0]))
+        self.assertIsNone(supplies(t, cfg, Memory(), nav, ledger, t.pioneer))
 
     def test_base_only_upgrade_reserves_shop_travel(self):
         p = self.case(1)
@@ -79,11 +81,12 @@ class WorkerRecoveryTests(unittest.TestCase):
     def test_delivery_keeps_target_and_loop_releases_it(self):
         p = self.case(backpack=['StationUpgradeVoucher1', 'WeaponUpgradeVoucher1'])
         p['teamOur']['roles'][1]['health'] = 499
+        p['teamOur']['roles'][0]['roleType'] = 'pioneer'
         p['teamOur']['roles'][0]['pos'] = {'x': 9, 'y': 5}
         p['teamOur']['roles'][2]['level'] = 1
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(upgrade_targets={1: (3, 5)})
-        self.assertTrue(use_inventory(t, nav, ledger, t.workers[0], mem=mem))
+        self.assertTrue(use_inventory(t, nav, ledger, t.pioneer, mem=mem))
         self.assertEqual(mem.upgrade_targets[1], (3, 5))
         mem.last_round = t.round - 1
         mem.last_commands = {'1': command('move', (9, 5))}

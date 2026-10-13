@@ -276,6 +276,7 @@ class Memory:
     gunner_observation: tuple | None = None
     gunner_stalled: int = 0
     wall_watch_id: int | None = None
+    wall_supply_trip: dict = field(default_factory=dict)
     wall_watch: WallWatchState = field(default_factory=WallWatchState)
     gunner_id: int | None = None
     gunner_post: tuple | None = None
@@ -466,6 +467,7 @@ class Memory:
             self.mine_targets.clear()
             self.daytime_jobs.clear()
             self.wall_batches.clear()
+            self.wall_supply_trip.clear()
             self.supply_worker = None
             self.income_worker_id = None
             self.build_targets.clear()

@@ -59,8 +59,11 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         for r in p["teamOur"]["roles"][3:]:
             r["level"] = 3
         t, c, n, l = self.setup(p)
-        self.assertEqual(supplies(t, c, Memory(), n, l, t.workers[0])[0], "StationUpgradeVoucher1")
-        self.assertIsNone(supplies(t, c, Memory(wall_rebuild_levels={(7, 4): 3}), n, l, t.workers[0]))
+        self.assertIsNone(supplies(t, c, Memory(), n, l, t.workers[0]))
+        p["teamOur"]["roles"][0]["roleType"] = "pioneer"
+        t, c, n, l = self.setup(p)
+        self.assertEqual(supplies(t, c, Memory(), n, l, t.pioneer)[0], "StationUpgradeVoucher1")
+        self.assertIsNone(supplies(t, c, Memory(wall_rebuild_levels={(7, 4): 3}), n, l, t.pioneer))
 
     def test_flank_can_purchase_use_and_recover_to_three_after_front_done(self):
         for tick in (40, 65, 440):
@@ -84,7 +87,9 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
             t, c, n, l = self.setup(p)
             mem.observe(t, c)
             self.assertFalse(mem.wall_rebuild_levels)
-            plan = supplies(t, c, mem, n, l, t.workers[0])
+            p["teamOur"]["roles"][0]["roleType"] = "pioneer"
+            t, c, n, l = self.setup(p)
+            plan = supplies(t, c, mem, n, l, t.pioneer)
             self.assertEqual(plan[0], "StationUpgradeVoucher1")
 
     def test_destroyed_front_does_not_promote_surviving_flank(self):
@@ -415,5 +420,4 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
             self.assertEqual(p["teamOur"]["roles"][3]["level"], 3)
             self.assertEqual(p["teamOur"]["roles"][1]["level"], 1)
             self.assertEqual(p["teamOur"]["roles"][1]["health"], 1500)
-            self.assertCountEqual(p["teamOur"]["roles"][0]["backpack"],
-                                  ['StationUpgradeVoucher1', 'StationUpgradeVoucher2'])
+            self.assertEqual(p["teamOur"]["roles"][0]["backpack"], [])

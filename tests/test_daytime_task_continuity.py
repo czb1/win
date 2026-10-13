@@ -192,13 +192,13 @@ class DaytimeTaskContinuityTests(unittest.TestCase):
         save_daytime_jobs(l.turn, mem, l)
         self.assertFalse(mem.daytime_jobs)
 
-    def test_critical_station_preempts_an_ordinary_delivery(self):
+    def test_worker_keeps_weapon_delivery_when_base_needs_pioneer(self):
         p = self.case(backpack=['StationUpgradeVoucher1', 'WeaponUpgradeVoucher1'])
         p['teamOur']['roles'][0].update(level=1, health=300)
         mem = Memory(daytime_jobs={1: dict(kind='use', target=(10, 11), name='WeaponUpgradeVoucher1')})
         _, _, _, l = self.resume(p, mem)
-        self.assertEqual(l.work_jobs[1]['target'], (0, 12))
-        self.assertEqual(l.work_jobs[1]['name'], 'StationUpgradeVoucher1')
+        self.assertEqual(l.work_jobs[1]['target'], (10, 11))
+        self.assertEqual(l.work_jobs[1]['name'], 'WeaponUpgradeVoucher1')
 
     def test_observed_breach_borrows_one_worker_from_income(self):
         p = self.case(backpack=['stone'])

@@ -545,6 +545,11 @@ class Agent:
             if pioneer_gunner and not mixed:
                 excluded.update(worker.id for worker in turn.workers
                                 if not relief or worker.id != relief[0].id)
+            if turn.is_day and turn.day >= 4 and h and not mixed:
+                # The pioneer resumes the night gunner role after its task.
+                # A busy daytime pioneer must not recall a material worker
+                # to a temporary cannon assignment during the stock phase.
+                excluded.update(worker.id for worker in turn.workers)
             mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items() if uid not in excluded}
             mem.return_posts = {uid: post for uid, post in mem.return_posts.items() if uid not in excluded}
             shared = shared_crew(turn, self.cfg, mem, nav, towers, walls, excluded=excluded,

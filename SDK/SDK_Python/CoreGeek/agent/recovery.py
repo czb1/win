@@ -40,6 +40,9 @@ class Recovery:
     def action(self, goal, turn, cfg, mem, nav, ledger):
         uid, kind, target = goal
         hero = turn.units.get(uid)
+        from .wall_supply import active
+        if active(turn, mem):
+            return None
         if (not turn.is_day or not hero or hero.kind != "worker" or uid in ledger.used
                 or uid == mem.wall_repair_worker
                 or mem.movement.avoids(uid, target)):
@@ -57,6 +60,8 @@ class Recovery:
         else:
             from .economy import voucher_for, wall_upgrade_allowed, replacement_work_pending, critical_station
             building = next((b for b in turn.ours if b.pos == target), None)
+            if building and building.kind == 'station':
+                return None
             name = voucher_for(building) if building else None
             if turn.day == 1 and name and name.startswith('WeaponUpgradeVoucher'):
                 return None

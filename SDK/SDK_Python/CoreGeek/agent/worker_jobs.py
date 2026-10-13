@@ -179,6 +179,11 @@ def finish_wall_work(turn, cfg, mem, nav, ledger, hero, sites):
 def resume_daytime_jobs(turn, cfg, mem, nav, ledger, towers, walls, returning):
     if not turn.is_day:
         return
+    from .wall_supply import active
+    if active(turn, mem):
+        # The watch trip and material builder resume their own jobs. Old
+        # face-maintenance/buy jobs cannot steal either actor's new assignment.
+        return
     from .commands import command
     from .economy import (supplies, buy_supply, use_inventory, repair_walls,
                           refresh_stone_reserves, critical_station)

@@ -97,7 +97,7 @@ class DaylightSpendingTests(unittest.TestCase):
         ledger.operator_posts[2]=(7,5)
         self.assertEqual(delivery_destination(turn,nav,ledger,turn.workers[1]), ([(7,5)],True))
 
-    def test_stock_trip_starts_after_mining_and_only_buys_night_reserve(self):
+    def test_stock_trip_buys_night_reserve_and_keeps_wall_order_funded(self):
         data,cfg=case(tick=35,packs=1)
         data['teamOur']['roles'][1]['pos']={'x':6,'y':10}
         for p,hp in (((8,4),1440),((8,5),1545)):
@@ -106,18 +106,19 @@ class DaylightSpendingTests(unittest.TestCase):
         mem=Memory(wall_watch_id=1)
         locked,funds=prepare_watch(turn,cfg,mem,nav,ledger,turn.workers[0],list(ledger.wall_cells))
         self.assertTrue(locked)
-        self.assertEqual(funds,0)
+        self.assertEqual(funds,420)
         self.assertEqual(ledger.commands['1'],command('buy',name='WallFixer',num=8))
         self.assertEqual(ledger.gold,461)
 
-    def test_fully_stocked_watcher_can_work_before_actual_recall_deadline(self):
+    def test_fully_stocked_watcher_still_collects_wall_vouchers(self):
         data,cfg=case(tick=40,packs=9)
         next(r for r in data['teamOur']['roles'] if r['roleType']=='wall' and pos(r['pos'])==(8,5))['health']=1
         turn,cfg,nav,ledger=setup(data,cfg)
         locked,funds=prepare_watch(turn,cfg,Memory(wall_watch_id=1),nav,ledger,
                                     turn.workers[0],list(ledger.wall_cells))
-        self.assertEqual((locked,funds),(False,0))
-        self.assertFalse(ledger.commands)
+        self.assertEqual((locked,funds),(True,420))
+        self.assertEqual(ledger.work_jobs[1]['kind'], 'buy')
+        self.assertEqual(ledger.work_jobs[1]['name'], 'WallUpgradeVoucher2')
 
     def test_daytime_damage_does_not_trigger_fixer_purchase(self):
         data,cfg=case()
@@ -155,7 +156,7 @@ class DaylightSpendingTests(unittest.TestCase):
         data,cfg=case(tick=35)
         turn,cfg,nav,ledger=setup(data,cfg)
         self.assertTrue(station_purchase_allowed(turn,turn.station,Memory()))
-        plan=supplies(turn,cfg,Memory(),nav,ledger,turn.workers[1],item_only='StationUpgradeVoucher1')
+        plan=supplies(turn,cfg,Memory(),nav,ledger,turn.pioneer,item_only='StationUpgradeVoucher1')
         self.assertEqual(plan[0],'StationUpgradeVoucher1')
 
     def test_defense_diagnostic_tracks_front_levels_and_breaches(self):
