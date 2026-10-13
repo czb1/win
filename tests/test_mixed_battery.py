@@ -4,16 +4,17 @@ import unittest
 
 from test_agent import ROOT, payload, setup_case, unit
 from agent.brain import Agent
-from agent.combat import select_targets
+from agent.combat import select_targets, shared_crew
+from agent.commands import command
 from agent.config import Config
 from agent.economy import build
 from agent.intelligence import Memory
-from agent.model import Turn, pos
+from agent.model import Turn, distance, neighbours, pos
 from agent.navigation import layout
 
 
 def mixed_config(**options):
-    return Config(loadout=['rocket', 'rocket', 'gatling'], **options)
+    return Config(**options)
 
 
 def mixed_case(round_no=80, walls=False):
@@ -40,8 +41,8 @@ def enemy_walls(data, count=6):
 
 
 class MixedBatteryTests(unittest.TestCase):
-    def test_explicit_mixed_configuration_builds_two_rockets_and_one_gatling(self):
-        for cfg in (mixed_config(),):
+    def test_defaults_build_two_rockets_and_one_gatling(self):
+        for cfg in (Config(), Config.load(ROOT / 'config/default.json')):
             self.assertEqual(cfg.loadout, ['rocket', 'rocket', 'gatling'])
             data = payload(10, [unit(13, 'station', 5, 11), unit(1, 'worker', 4, 11)])
             sites = layout(Turn(data, cfg), cfg)[0]
@@ -56,6 +57,51 @@ class MixedBatteryTests(unittest.TestCase):
                                       sites, lambda i: cfg.loadout[i]))
                 self.assertEqual(ledger.commands['1']['name'], expected)
                 self.assertEqual(pos(ledger.commands['1']['targetPos'][0]), sites[index])
+
+    def test_adjacent_rockets_and_independent_posts_survive_partial_builds_in_four_corners(self):
+        for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
+            data = payload(roles=[unit(13, 'station', x, y)])
+            turn, cfg, _, _ = setup_case(data)
+            sites, walls = layout(turn, cfg)
+            self.assertEqual(distance(sites[0], sites[1]), 1)
+            blocked = set(sites) | set(walls) | turn.station.cells
+            common = (set(neighbours(sites[0])) & set(neighbours(sites[1]))) - blocked
+            independent = set(neighbours(sites[2])) - blocked - common
+            self.assertTrue(common)
+            self.assertTrue(independent)
+            for mask in range(8):
+                case = copy.deepcopy(data)
+                case['teamOur']['roles'] += [unit(20+i, kind, *site)
+                    for i, (kind, site) in enumerate(zip(cfg.loadout, sites)) if mask & (1 << i)]
+                self.assertEqual(layout(Turn(case, cfg), cfg)[0], sites)
+
+    def test_partial_rocket_pair_does_not_require_adjacency_to_unbuilt_gatling(self):
+        data = payload(80, [unit(13, 'station', 1, 12),
+            unit(11, 'pioneer', 5, 6, health=500), unit(1, 'worker', 10, 9),
+            unit(20, 'rocket', 5, 5), unit(21, 'rocket', 6, 5)])
+        turn, cfg, nav, ledger = setup_case(data, layout_mode='explicit',
+            weapon_cells=[[5, 5], [6, 5], [10, 10]])
+        sites, walls = layout(turn, cfg)
+        pairs, posts = shared_crew(turn, cfg, Memory(), nav, sites, walls)
+        self.assertEqual([(h.id, w.id) for h, w in pairs], [(11, 20)])
+        self.assertEqual(posts, {11: ((5, 6), 0)})
+
+    def test_only_gatling_built_uses_worker_and_leaves_pioneer_free(self):
+        data = mixed_case()
+        data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['roleType'] != 'rocket']
+        commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
+        self.assertEqual(commands['22']['controllerId'], '1')
+        self.assertFalse(any(c.get('controllerId') == '11' for c in commands.values()))
+
+    def test_default_worker_fires_at_highest_health_robot_while_pioneer_uses_rocket(self):
+        data = mixed_case()
+        data['robot']['roles'].append(unit(91, 'smallRobot', 2, 11, health=40,
+                                          attackRange=1, targetTeam='challenger'))
+        # Both rays are clear and in range, including the worker's position.
+        commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
+        self.assertEqual(commands['22'], dict(action='attack', controllerId='1',
+                                             targetPos=[dict(x=2, y=10)]))
+        self.assertEqual(commands['20']['controllerId'], '11')
 
     def test_pioneer_and_worker_fire_separate_weapons_on_every_night(self):
         for round_no in (80, 210, 340, 470):
@@ -222,6 +268,83 @@ class MixedBatteryTests(unittest.TestCase):
         self.assertIn(commands['1']['action'], ('move', 'collect'))
         self.assertNotIn('22', commands)
         self.assertEqual(commands['20']['controllerId'], '11')
+
+
+class FirstDayGatlingConstructionTests(unittest.TestCase):
+    def case(self, round_no=10, gold=25, worker=(4, 13), **settings):
+        data = payload(round_no, [unit(13, 'station', 5, 11),
+                                  unit(1, 'worker', *worker, health=500)])
+        data['teamOur']['goldNum'] = gold
+        turn, cfg, nav, ledger = setup_case(data, **settings)
+        return turn, cfg, nav, ledger, Memory(), layout(turn, cfg)[0]
+
+    def construct(self, context, worker_id=1):
+        turn, cfg, nav, ledger, mem, sites = context
+        return build(turn, cfg, mem, nav, ledger, turn.units[worker_id],
+                     sites, lambda i: cfg.loadout[i])
+
+    def test_day_one_prefers_gatling_even_when_a_rocket_is_closer(self):
+        for cfg in (Config(), Config.load(ROOT / 'config/default.json')):
+            context = self.case(loadout=cfg.loadout)
+            turn, _, _, ledger, mem, sites = context
+            self.assertTrue(self.construct(context))
+            self.assertEqual(ledger.commands['1']['action'], 'move')
+            self.assertEqual(mem.build_targets[1], sites[2])
+            self.assertEqual(ledger.build_claims[sites[2]], (1, 'gatling'))
+
+    def test_build_priority_does_not_reassign_explicit_site_types(self):
+        context = self.case(worker=(4, 6), layout_mode='explicit',
+            loadout=['rocket', 'gatling', 'rocket'],
+            weapon_cells=[[5, 5], [3, 5], [6, 5]])
+        self.assertTrue(self.construct(context))
+        self.assertEqual(context[3].commands['1'], command('build', (3, 5), name='gatling'))
+
+    def test_walking_gatling_builder_prevents_other_worker_building_rocket_first(self):
+        for gold in (25, 75):
+            context = self.case(gold=gold)
+            turn, cfg, _, _, _, _ = context
+            data = copy.deepcopy(turn.raw)
+            data['teamOur']['roles'].append(unit(2, 'worker', 5, 13, health=500))
+            turn, cfg, nav, ledger = setup_case(data)
+            context = (turn, cfg, nav, ledger, Memory(), layout(turn, cfg)[0])
+            self.assertTrue(self.construct(context))
+            self.assertFalse(self.construct(context, 2))
+            self.assertEqual(ledger.gold, gold)
+            self.assertNotIn('2', ledger.commands)
+
+    def test_same_turn_gatling_build_allows_affordable_rocket_next(self):
+        data = payload(10, [unit(13, 'station', 5, 11),
+                           unit(1, 'worker', 4, 11), unit(2, 'worker', 5, 13)])
+        data['teamOur']['goldNum'] = 50
+        turn, cfg, nav, ledger = setup_case(data)
+        context = (turn, cfg, nav, ledger, Memory(), layout(turn, cfg)[0])
+        self.assertTrue(self.construct(context))
+        self.assertTrue(self.construct(context, 2))
+        self.assertEqual(ledger.commands['1']['name'], 'gatling')
+        self.assertEqual(ledger.commands['2']['name'], 'rocket')
+        self.assertEqual(ledger.gold, 0)
+
+    def test_failed_or_blocked_gatling_site_allows_another_feasible_tower(self):
+        for failed in (True, False):
+            context = self.case()
+            turn, _, _, _, mem, sites = context
+            if failed:
+                mem.build_failures[sites[2]] = turn.round
+            else:
+                turn.blocked.add(sites[2])
+            self.assertTrue(self.construct(context))
+            self.assertEqual(context[3].commands['1']['name'], 'rocket')
+
+    def test_second_day_keeps_nearest_reachable_weapon_order(self):
+        context = self.case(round_no=140)
+        self.assertTrue(self.construct(context))
+        self.assertEqual(context[3].commands['1']['name'], 'rocket')
+
+    def test_insufficient_budget_never_starts_a_gatling_build_trip(self):
+        context = self.case(gold=24)
+        self.assertFalse(self.construct(context))
+        self.assertFalse(context[3].commands)
+        self.assertFalse(context[3].build_claims)
 
 
 class GatlingTargetTests(unittest.TestCase):

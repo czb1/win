@@ -71,8 +71,8 @@ def advance(data, commands):
 
 
 class ThreeRocketTests(unittest.TestCase):
-    def test_defaults_build_three_rockets(self):
-        for cfg in (Config(), Config.load(ROOT / 'config/default.json')):
+    def test_explicit_configuration_can_still_build_three_rockets(self):
+        for cfg in (Config(loadout=['rocket'] * 3),):
             self.assertEqual(cfg.loadout, ['rocket'] * 3)
             for missing in range(3):
                 data = payload(10, [unit(13, 'station', 5, 11), unit(1, 'worker', 4, 11),
@@ -83,7 +83,7 @@ class ThreeRocketTests(unittest.TestCase):
                 self.assertEqual(ledger.commands['1'], command('build', TOWERS[missing], name='rocket'))
 
     def test_pioneer_rotates_three_rockets_and_workers_keep_mining(self):
-        data, agent = gate_case(70), Agent(Config(llm_enabled=False))
+        data, agent = gate_case(70), Agent(Config(loadout=['rocket'] * 3, llm_enabled=False))
         data['teamOur']['roles'].append(unit(2, 'worker', 13, 2, health=500))
         data['robot']['roles'] = [unit(90, 'largeRobot', 8, 10, health=500,
                                       targetTeam='challenger', attackRange=3)]

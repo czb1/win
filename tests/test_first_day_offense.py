@@ -236,7 +236,7 @@ class FirstDayOffenseTests(unittest.TestCase):
         data['teamOur']['roles'][2]['pos'] = {'x': 9, 'y': 20}
         response = Agent(cfg(walls=[])).decide(data)['roleCommandMap']
         self.assertEqual(response['10'], command('buy', name=BOSS, num=3))
-        self.assertEqual(response['12'], command('build', (8, 21), name='rocket'))
+        self.assertEqual(response['12'], command('build', (8, 21), name='gatling'))
 
     def test_orders_are_bought_before_tick_25_and_wall_denial_still_starts_at_25(self):
         data = case(24)

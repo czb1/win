@@ -244,12 +244,12 @@ def layout(turn, cfg):
     def world(p):
         return origin[0] + sx * p[0], origin[1] + sy * p[1]
 
-    # Rear corner: all three guns touch the free control cell (-1, 0).
+    # Rear corner: the adjacent rocket pair shares the control cell (-1, 0).
     # Keep the original one-cell weapon ring inside the two-cell wall perimeter.
     tower_order = [(-1, -1), (0, -1), (-1, 1)]
     towers = [world(p) for p in tower_order[:len(cfg.loadout)] if turn.inside(world(p))]
     # Preserve the original six-cell front and flanks, then close the rear.
-    # The sole gate (-2, 1) faces the third rocket at (-1, 1): an inward
+    # The sole gate (-2, 1) faces the gatling at (-1, 1): an inward
     # advance meets a tower before the base. Legal diagonal steps keep the
     # shared control post (-1, 0) and the inner aisle accessible to workers.
     # It is absent from the blueprint, including breach repairs.

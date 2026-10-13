@@ -3,7 +3,7 @@
 Defaults preserve the inherited weapon-centre/character-blocking assumptions.
 The official engine must settle those assumptions before configuring alternatives.
 """
-from .model import CHARACTERS, WEAPONS, neighbours
+from .model import CHARACTERS, WEAPONS, distance, neighbours
 
 
 def line_cells(start, end):
@@ -103,6 +103,9 @@ def mixed_layout(turn, cfg, sites, walls):
         obstacles = static | (set(order) - {point})
         rockets = [p for i, p in enumerate(order) if cfg.loadout[i] == "rocket"]
         common = set(neighbours(rockets[0])) & set(neighbours(rockets[1]))
+        if distance(*rockets) != 1 or not any(
+                turn.inside(p) and p not in static | set(order) for p in common):
+            continue
         posts = {p for p in neighbours(point) if turn.inside(p) and p not in obstacles | common}
         # A clear entrance must have an independent post that does not cut its ray.
         lanes = 0
