@@ -62,8 +62,10 @@ class Navigator:
                 limit = min(limit if limit is not None else self.turn.day_left,
                             DEFENCE_RETURN_TICK - self.turn.tick)
             else:
-                # Urgent trips and recall must not arrive later because of pickup.
-                limit = min(limit if limit is not None else self.turn.day_left, route[0])
+                # Recall also prefers a usable car; retain explicit deadlines
+                # and daylight, without treating walking time as a deadline.
+                limit = min(limit if limit is not None else self.turn.day_left,
+                            self.turn.day_left)
             if state.walking and not hero.is_driving:
                 reason = 'finish_on_foot'
             else:

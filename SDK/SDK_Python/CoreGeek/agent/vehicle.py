@@ -109,9 +109,7 @@ def plan_route(nav, ledger, hero, goals, walking, reserved=(), *, prefer=True, m
     if not goals:
         return None
     interior = home_area(turn, ledger)
-    # Return trips must not fetch a remote car, but may keep an existing one.
-    if not driving and goals <= interior:
-        return None
+    # Home-bound pedestrians may also board; driving and parking stay outside.
     walls = ledger.wall_cells | {u.pos for u in turn.ours if u.kind == 'wall'}
     gates = wall_gates(turn, walls)
     no_parking = (interior | ledger.tower_cells | set(ledger.operator_posts.values())
