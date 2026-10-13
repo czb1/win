@@ -1,15 +1,88 @@
 """First-day priority and blocked-site fallback without hero reservations."""
 import unittest
 from test_agent import payload, unit, setup_case
-from agent.economy import first_day_front, build
+from agent.economy import first_day_front, build, wall_keeps_access
 from agent.intelligence import Memory
 from agent.brain import Agent
 from agent.config import Config
-from agent.model import pos
+from agent.model import distance, pos
 from agent.worker_jobs import resume_daytime_jobs
 
 
 class FirstDayFrontTests(unittest.TestCase):
+    def front_gap_case(self, round_no=40, position=(27, 12), mirror=False):
+        # Reduced geometry from the reported day-one gap at (28, 10).
+        p = payload(round_no, roles=[
+            unit(20013, 'station', 30, 10),
+            unit(20012, 'worker', *position, backpack=['stone'] * 5),
+        ] + [unit(41000+y, 'wall', 28, y) for y in (7, 8, 9, 11, 12)])
+        p['mapInfo'].update(width=41, height=32)
+        p['teamOur'].update(type='defender', goldNum=7)
+        if mirror:
+            p['teamOur']['type'] = 'challenger'
+            for role in p['teamOur']['roles']:
+                # A station position is the left edge of its two-cell width.
+                role['pos']['x'] = (39 if role['roleType'] == 'station' else 40) - role['pos']['x']
+        return p
+
+    def test_front_gap_target_survives_approach_with_unbuilt_guns(self):
+        for mirror in (False, True):
+            with self.subTest(mirror=mirror):
+                mem = Memory()
+                target = (12 if mirror else 28, 10)
+                snapshots = (((28, 13), (27, 12)), ((27, 12), (27, 11)),
+                             ((27, 11), None))
+                for tick, (point, step) in enumerate(snapshots, 40):
+                    t, c, n, l = setup_case(self.front_gap_case(tick, point, mirror))
+                    first_day_front(t, c, mem, n, l, list(l.wall_cells))
+                    self.assertIn(20012, l.used, (tick, point, l.commands))
+                    self.assertEqual(mem.build_targets[20012], target)
+                    action = l.commands['20012']
+                    if step is None:
+                        self.assertEqual(action['action'], 'build')
+                        self.assertEqual(action['name'], 'wall')
+                        self.assertEqual(pos(action['targetPos'][0]), target)
+                    else:
+                        self.assertEqual(action['action'], 'move')
+                        next_pos = pos(action['targetPos'][0])
+                        self.assertEqual(distance(next_pos, target),
+                                         distance(t.workers[0].pos, target) - 1)
+                        if not mirror:
+                            self.assertEqual(next_pos, step)
+
+    def test_day_one_front_can_lengthen_but_not_disconnect_future_gun_access(self):
+        t, c, n, l = setup_case(self.front_gap_case())
+        hero = t.workers[0]
+        before = n.approach(hero, [(31, 8)])[0]
+        original = t.blocked.copy()
+        t.blocked.add((28, 10))
+        after = n.approach(hero, [(31, 8)])[0]
+        t.blocked = original
+        self.assertGreater(after, before)
+        self.assertTrue(wall_keeps_access(t, n, l, (28, 10)))
+        self.assertTrue(build(t, c, Memory(), n, l, hero, list(l.wall_cells), lambda _: 'wall'))
+        self.assertIn((28, 10), l.build_claims)
+
+        p = payload(40, [unit(13, 'station', 0, 5),
+                         unit(10, 'worker', 2, 3, backpack=['stone'])]
+                    + [unit(100+y, 'wall', 3, y) for y in range(7) if y != 3])
+        p['mapInfo'].update(width=7, height=7)
+        t, _, n, l = setup_case(p, layout_mode='explicit',
+                                wall_cells=[[3, 3]], weapon_cells=[[5, 3]])
+        self.assertIsNotNone(n.approach(t.workers[0], [(5, 3)]))
+        self.assertFalse(wall_keeps_access(t, n, l, (3, 3)))
+
+    def test_future_gun_shortcut_protection_remains_for_day_two_and_flanks(self):
+        t, _, n, l = setup_case(self.front_gap_case(round_no=170))
+        self.assertFalse(wall_keeps_access(t, n, l, (28, 10)))
+
+        p = payload(40, [unit(13, 'station', 30, 10),
+                         unit(10, 'worker', 31, 13, backpack=['stone']),
+                         unit(50, 'wall', 30, 12), unit(51, 'wall', 32, 12)])
+        p['mapInfo'].update(width=41, height=32)
+        t, _, n, l = setup_case(p)
+        self.assertFalse(wall_keeps_access(t, n, l, (31, 12)))
+
     def case(self, round_no=1):
         p = payload(round_no, roles=[unit(13, 'station', 3, 11),
                                     unit(10, 'worker', 5, 10, backpack=['stone'] * 6),

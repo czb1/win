@@ -711,9 +711,14 @@ def wall_keeps_access(turn, nav, ledger, target):
         gun_routes = [(h, p, r[0]) for h in heroes for p in unfinished_guns
                       if (r := nav.approach(h, {p})) is not None]
         turn.blocked = turn.blocked | {target}
-        # A wall must not lengthen access to a gun still under construction.
-        # Reachability alone allows huge detours and courier/builder oscillation.
-        if any((r := nav.approach(h, {p})) is None or r[0] > length
+        # Day-one front closure takes priority over shortcuts to future guns.
+        # Otherwise the builder can approach a gap, make its route through the
+        # gap shorter, then reject that same wall and turn back toward a flank.
+        # All future guns must still be reachable; retain the stricter detour
+        # guard for other walls and later days.
+        front_priority = (turn.day == 1 and turn.station is not None
+                          and target in front_sites(turn, ledger.wall_cells))
+        if any((r := nav.approach(h, {p})) is None or (not front_priority and r[0] > length)
                for h, p, length in gun_routes):
             return False
         if not all(nav.approach(h, ds) is not None for h, ds in reachable):
