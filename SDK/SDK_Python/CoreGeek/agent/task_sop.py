@@ -10,17 +10,16 @@ import re
 def answer_contract(documents):
     """Extract source-backed submission hints, never a business task category.
 
-    Examples describe examples, not a closed schema. Ambiguous checker commands
-    stay unresolved and can be selected explicitly through task_check.
+    Examples describe examples, not a closed schema. Validation steps belong
+    to the task document and model program, not a host-side task category.
     """
-    import shlex
     for document in documents:
         if document.get('kind') not in ('read', 'discover'):
             continue
         text = document.get('output', '').partition('\nTASK_INPUTS ')[0]
         section = re.search(r'(?:^|\n)#{1,4}\s*(?:提交规则|提交格式|提交形式|答案格式|答案输出格式)[^\n]*\n'
                             r'(.*?)(?=\n#{1,4} |\Z)', text, re.S)
-        if not section and not re.search(r'checker|TOKEN|提交', text, re.I):
+        if not section and not re.search(r'提交', text):
             continue
         source = document.get('resolved_path') or document.get('path', '')
         contract = {'source': source, 'submission_text': section[1] if section else text, 'example_only': True}
@@ -35,29 +34,6 @@ def answer_contract(documents):
             name = PurePosixPath(source)
             contract['family'] = name.parent.name + '/' + re.sub(r'\d+', '#', name.name)
             contract['workspace'] = str(name.parent)
-        tokens = (isinstance(contract.get('example'), dict) and set(contract['example']) == {'token'}) or bool(re.search(r'提交[^。\n]*TOKEN', text, re.I))
-        candidates = []
-        for line in text.splitlines():
-            if not re.search(r'checker|验证|校验|检查|TOKEN', line, re.I):
-                continue
-            for command in re.findall(r'`([^`\n]+)`', line):
-                try:
-                    words = shlex.split(command)
-                except ValueError:
-                    continue
-                if words and (words[0].startswith(('./', '/')) or words[0] in ('python', 'python3', 'bash', 'sh')):
-                    # A bare input/output path is not an executable instruction.
-                    if len(words) == 1 and words[0].endswith(('.json', '.log', '.md', '.txt', '.csv')):
-                        continue
-                    if command not in candidates:
-                        candidates.append(command)
-        contract['requires_checker'] = tokens or bool(re.search(r'checker', text, re.I)) or bool(candidates)
-        if tokens:
-            contract['kind'] = 'check_token'
-        if len(candidates) == 1:
-            contract['checker_command'] = candidates[0]
-        contract['checker_candidates'] = candidates
-        contract['validation_source'] = '\n'.join(d.get('output', '') for d in documents)
         cd = re.search(r'`cd\s+([^`\n]+)`', text)
         if cd and contract.get('workspace'):
             workspace = PurePosixPath(cd[1].strip())
@@ -67,7 +43,6 @@ def answer_contract(documents):
                 contract['workspace'] = str(workspace)
             else:
                 contract.pop('workspace', None)
-                contract.pop('checker_command', None)
         return contract
     return {}
 

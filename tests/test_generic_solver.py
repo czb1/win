@@ -49,6 +49,21 @@ def checker_task(root, command='python3 verify.py', extra=''):
     return documents, answer_contract(documents)
 
 
+MODEL_VALIDATION = """
+import subprocess
+import sys
+import re
+import json
+checked = subprocess.run([sys.executable, 'verify.py'], capture_output=True, text=True)
+print(checked.stdout, end='')
+print(checked.stderr, end='')
+checked.check_returncode()
+tokens = re.findall(r'^TOKEN: (\\S+)$', checked.stdout, re.M)
+assert len(tokens) == 1, 'expected one token per this question'
+task_result(json.dumps({'token': tokens[0]}))
+"""
+
+
 @contextmanager
 def retry_api():
     class Handler(BaseHTTPRequestHandler):
@@ -167,10 +182,11 @@ class GenericSolverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             docs, contract = checker_task(root)
             original = Path(root, 'verify.py').read_bytes()
-            self.assertEqual(contract['checker_command'], 'python3 verify.py')
+            self.assertNotIn('checker_command', contract)
             mem = Memory(task_text='query', task_started=1, bootstrap_done=True, documents=docs,
                          contract=contract, pending=('task', 1))
             code = "import json\nfrom pathlib import Path\nrows=json.loads(Path('input.json').read_text())\nPath('result.json').write_text(json.dumps({'sum':sum(x for x in rows if x>2)}))"
+            code += MODEL_VALIDATION.rstrip()
             _, command, _ = step(mem, 2, llmResp='PYTHON\n' + code)
             raw = run_sandbox({'executeCmd': command}, root)
             _, _, ledger = step(mem, 3, lastCmdResult=raw)
@@ -178,43 +194,63 @@ class GenericSolverTests(unittest.TestCase):
             self.assertEqual(Path(root, 'verify.py').read_bytes(), original)
             self.assertEqual(mem.submitted_method['python'], code)
 
-    def test_checker_failure_duplicate_token_and_wrong_artifact_block_submission(self):
+    def test_model_validation_failure_returns_feedback_for_repair(self):
         with tempfile.TemporaryDirectory() as root:
             for extra, value in [('', 10), ('raise SystemExit(1)', 13), ("print('TOKEN: another')", 13)]:
                 _, contract = checker_task(root, extra=extra)
-                raw, result, report = execute(f"open('result.json','w').write('{{\"sum\":{value}}}')\nimport json\ntask_result(json.dumps({{'token':'invented'}}))", root, contract)
+                code = "import json\nopen('result.json','w').write(json.dumps({'sum': %d}))" % value
+                raw, result, report = execute(code + MODEL_VALIDATION, root, contract)
                 self.assertNotEqual(result[0], 'ok', raw)
-                self.assertFalse(report['checker']['passed'])
+                self.assertIsNone(result[2])
+                self.assertNotIn('checker', report)
+                mem = Memory(task_text='query', task_started=1, bootstrap_done=True,
+                             contract=contract, pending=('cmd', 1), running_python=code + MODEL_VALIDATION)
+                prompt, _, ledger = step(mem, 2, lastCmdResult=raw)
+                self.assertFalse(ledger.commands)
+                self.assertTrue(mem.input_blocked)
+                self.assertIn('Traceback', prompt)
+                mem.pending = ('task', 2)
+                checker_task(root)
+                fixed = "open('result.json','w').write('{\"sum\":13}')" + MODEL_VALIDATION
+                _, command, _ = step(mem, 3, llmResp='PYTHON\n' + fixed)
+                _, _, ledger = step(mem, 4, lastCmdResult=run_sandbox({'executeCmd': command}, root))
+                self.assertEqual(json.loads(ledger.commands['11']['taskAnswer']), {'token': 'fixture-confirmed'})
 
-    def test_direct_and_printed_guessed_token_do_not_bypass_checker(self):
+    def test_token_text_and_objects_follow_generic_submission_path(self):
         with tempfile.TemporaryDirectory() as root:
-            docs, contract = checker_task(root)
-            mem = Memory(task_text='query', task_started=1, bootstrap_done=True,
-                         documents=docs, contract=contract, pending=('task', 1))
-            _, _, ledger = step(mem, 2, llmResp='ANSWER\n{"token":"invented"}')
-            self.assertFalse(ledger.commands)
-            raw, result, report = execute("print('FINAL_ANSWER\\n{\"token\":\"invented\"}')", root, contract)
-            self.assertIsNone(result[2], raw)
-            self.assertFalse(report['checker']['passed'])
+            for text in ('fixture-token', '{"token":"fixture-token"}', '{"receipt":"fixture-token"}'):
+                docs = [{'kind': 'read', 'path': str(Path(root, 'question.md')),
+                         'output': '无 checker，提交 token 文本，按题面指定格式。'}]
+                contract = answer_contract(docs)
+                mem = Memory(task_text='query', task_started=1, bootstrap_done=True,
+                             documents=docs, contract=contract, pending=('task', 1))
+                _, _, ledger = step(mem, 2, llmResp='ANSWER\n' + text)
+                self.assertEqual(ledger.commands['11']['taskAnswer'], text)
+                raw, result, report = execute('task_result(' + repr(text) + ')', root, contract)
+                self.assertEqual(result[2], text, raw)
+                self.assertNotIn('checker', report)
 
-    def test_new_program_invalidates_previous_verified_result(self):
+    def test_existing_artifact_can_be_repaired_and_revalidated(self):
         with tempfile.TemporaryDirectory() as root:
-            docs, contract = checker_task(root)
-            raw, result, report = execute("open('result.json','w').write('{\"sum\":13}')", root, contract)
-            self.assertTrue(report['checker']['passed'], raw)
-            raw, result, report = execute("open('result.json','w').write('{\"sum\":0}')", root, contract)
-            self.assertFalse(report['checker']['passed'])
+            _, contract = checker_task(root, command='python3 verify.py result.json')
+            Path(root, 'result.json').write_text('{"sum":0}')
+            # Explicitly include the output argument in the model-selected command.
+            validation = MODEL_VALIDATION.replace("'verify.py']", "'verify.py', 'result.json']")
+            raw, result, report = execute("open('result.json','w').write('{\"sum\":13}')" + validation, root, contract)
+            self.assertEqual(json.loads(result[2]), {'token': 'fixture-confirmed'}, raw)
+            self.assertNotIn('checker_files', report)
+            raw, result, report = execute("open('result.json','w').write('{\"sum\":0}')" + validation, root, contract)
+            self.assertNotEqual(result[0], 'ok', raw)
             self.assertIsNone(result[2])
 
-    def test_ambiguous_checker_needs_explicit_documented_selection(self):
+    def test_runtime_neither_autoruns_validation_nor_injects_task_check(self):
         with tempfile.TemporaryDirectory() as root:
-            docs, contract = checker_task(root)
-            contract['checker_command'] = None
-            code = "open('result.json','w').write('{\"sum\":13}')\ntask_check('python3 verify.py')"
-            raw, result, report = execute(code, root, contract)
-            self.assertTrue(report['checker']['passed'], raw)
-            raw, result, report = execute("task_check('true')", root, contract)
-            self.assertNotEqual(result[0], 'ok', raw)
+            _, contract = checker_task(root)
+            Path(root, 'verify.py').write_text("from pathlib import Path\nPath('unexpected-run').touch()\nraise SystemExit(1)")
+            raw, result, report = execute("task_result(str('task_check' in globals()))", root, contract)
+            self.assertEqual(result[2], 'False', raw)
+            self.assertFalse(Path(root, 'unexpected-run').exists())
+            self.assertNotIn('checker', report)
 
     def test_schema_example_is_not_closed_keys_or_nullability(self):
         docs = [{'kind': 'discover', 'path': '/q.md', 'output': '## 提交格式\n```json\n{"a":1}\n```'}]
@@ -316,17 +352,15 @@ task_result(json.dumps(sum(value['records'])))'''
         self.assertEqual(context['lastAttempt']['python'],'failing complete program')
         self.assertEqual(context['lastToolResult']['sandbox'],'supplement')
 
-    def test_checker_mutation_stays_blocked_on_next_attempt(self):
+    def test_model_handles_json_validation_output_without_token_protocol(self):
         with tempfile.TemporaryDirectory() as root:
-            _, contract = checker_task(root)
-            code = "open('verify.py','w').write(\"print('TOKEN: forged')\")"
-            raw,result,report=execute(code,root,contract)
-            self.assertNotEqual(result[0],'ok',raw)
-            self.assertIn('checker source changed',report['checker']['feedback'])
-            contract['checker_files']=report['checker_files']
-            raw,result,report=execute('pass',root,contract)
-            self.assertIsNone(result[2],raw)
-            self.assertFalse(report['checker']['passed'])
+            doc = {'kind': 'read', 'path': str(Path(root, 'task.md')),
+                   'output': '运行验证 `python3 receipt.py`，提交返回的 receipt 原文。'}
+            Path(root, 'receipt.py').write_text('print(\'{"receipt":"真实凭据"}\')')
+            code = "import subprocess, sys, json\nchecked=subprocess.run([sys.executable, 'receipt.py'], check=True, capture_output=True, text=True)\ntask_result(json.loads(checked.stdout)['receipt'])"
+            raw, result, report = execute(code, root, answer_contract([doc]))
+            self.assertEqual(result[2], '真实凭据', raw)
+            self.assertNotIn('checker', report)
 
     def test_failed_page_not_cleared_by_success_of_different_page(self):
         from test_task_runtime import heritage_api, install_transport_double
@@ -340,10 +374,20 @@ task_result(str(0))'''
             self.assertIsNone(result[2],raw)
             self.assertTrue(report['http_errors'])
 
-    def test_direct_question_extracts_checker_requirement_without_file_bootstrap(self):
-        payload=task_payload(2,'运行 checker `python3 verify.py`，提交 TOKEN。')
-        turn,cfg,_,ledger=setup_case(payload)
-        mem=Memory()
-        mem.observe(turn,cfg)
-        self.assertTrue(mem.contract['requires_checker'])
-        self.assertEqual(mem.contract['checker_command'],'python3 verify.py')
+    def test_question_keywords_do_not_create_validation_contract_or_prompt_rules(self):
+        for question in ('无 checker，直接提交答案。', '运行 checker `python3 verify.py`，提交 TOKEN。',
+                         '## 提交格式\n```json\n{"token":"sample"}\n```'):
+            payload = task_payload(2, question)
+            turn, cfg, _, _ = setup_case(payload)
+            mem = Memory()
+            mem.observe(turn, cfg)
+            for key in ('requires_checker', 'kind', 'checker_command', 'checker_candidates', 'validation_source'):
+                self.assertNotIn(key, mem.contract)
+            prompt = render_prompt(mem, 8, [])
+            context = json.loads(prompt.split('上下文：\n')[1])
+            self.assertNotIn('validation', context)
+            rules = prompt.split('上下文：\n')[0]
+            self.assertNotIn('checker', rules)
+            self.assertNotIn('TOKEN', rules)
+            self.assertNotIn('task_check', rules)
+            self.assertIn('按当前题目要求完成操作、验证和提交', rules)

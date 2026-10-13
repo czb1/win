@@ -714,7 +714,7 @@ class Memory:
             if not tool:
                 if report.get('http_errors'):
                     self.query_blocked = True
-                elif report.get('http_successes') or report.get('checker', {}).get('passed'):
+                elif report.get('http_successes'):
                     self.query_blocked = False
                 self.input_blocked = status != 'ok'
                 self.supported_output = self.supported_python = ''
@@ -730,8 +730,6 @@ class Memory:
                     if call not in self.method_calls:
                         self.method_calls.append(call)
                 self.method_calls = self.method_calls[-12:]
-                if report.get('checker_files'):
-                    self.contract.setdefault('checker_files', {}).update(report['checker_files'])
                 self.last_attempt['http'] = report
                 self.last_attempt['jsonShapes'] = report.get('json_shapes', [])
             if status != 'ok':
@@ -768,7 +766,6 @@ class Memory:
                     self.documents = pages + [record]
                     extracted = answer_contract(self.documents)
                     if extracted:
-                        extracted['checker_files'] = self.contract.get('checker_files', {})
                         self.contract = extracted
                     if self.task_point is not None:
                         saved = {'point': self.task_point, **record, 'evidence': 'sandbox_exit_0_only'}
@@ -778,9 +775,6 @@ class Memory:
                     self.supported_output, self.supported_python = body, self.running_python
                     self.successful_python, self.successful_output = self.running_python, body
                     self.task_failures = 0
-                    if (self.contract.get('requires_checker') or self.contract.get('kind') == 'check_token') and not report.get('checker', {}).get('passed'):
-                        answer = None
-                        self.reject('本题需要官方验证；按当前文档运行 checker，不能提交猜测结果。')
                     if self.query_blocked:
                         answer = None
                         self.reject('查询错误尚未解决，先成功查询；失败不等于空数据。')
@@ -908,11 +902,6 @@ class Memory:
                 if error:
                     self.reject(error)
                     return
-                if self.contract.get('requires_checker') or self.contract.get('kind') == 'check_token':
-                    checker = self.last_attempt.get('http', {}).get('checker', {})
-                    if not checker.get('passed') or not output_supports(answer, self.supported_output):
-                        self.reject('必须通过本题官方 checker 并使用本次验证结果；请修复完整程序。')
-                        return
                 proposal = "answer:" + answer
             signature = hashlib.sha256(proposal.encode()).hexdigest()
             attempts = self.proposal_counts.get(signature, 0) + 1
@@ -1170,7 +1159,7 @@ class Intelligence:
             return '', 'python3 -c ' + shlex.quote(executed)
         if not self.can_call():
             return '', ''
-        if remaining <= 2 and (self.mem.contract.get('requires_checker') or self.mem.contract.get('kind') == 'check_token' or self.mem.input_blocked or self.mem.query_blocked):
+        if remaining <= 2 and (self.mem.input_blocked or self.mem.query_blocked):
             return self.budget_wait(remaining, 3, 'insufficient_rounds_for_model_execute_submit')
         history = previous_tasks(self.mem)
         prompt = render_prompt(self.mem, remaining, history)

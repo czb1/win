@@ -99,14 +99,23 @@ class WeakModelTests(unittest.TestCase):
             self.assertEqual(page['case_samples'][0]['case'],next_index)
 
 
-    def test_token_budget_gate_distinguishes_wait_from_no_time(self):
+    def test_generic_budget_gate_distinguishes_wait_from_no_time(self):
         mem=Memory(task_text='query',task_started=1,task_timeout=15,bootstrap_done=True,
-                   task_failures=5, contract={'kind':'check_token','repair_spec':False})
+                   task_failures=5)
         # Rejection count does not block a request with enough time.
         prompt,cmd,_=step(mem,13)
         self.assertTrue(prompt)
         self.assertFalse(cmd)
         mem.pending=None
+        # The question's token wording no longer adds a special budget gate.
+        mem.task_text = '运行验证，提交 TOKEN'
+        prompt, cmd, ledger = step(mem, 14)
+        self.assertTrue(prompt)
+        self.assertFalse(cmd or ledger.commands)
+        self.assertIn('"allowedActions": ["ANSWER"]', prompt)
+        mem.pending = None
+        # Unresolved execution errors still need a model/execute/submit cycle.
+        mem.input_blocked = True
         for turn, remaining, required in [(14,2,3),(15,1,2)]:
             with self.assertLogs('agent.intelligence', 'INFO') as logs:
                 prompt,cmd,ledger=step(mem,turn)

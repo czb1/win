@@ -84,15 +84,16 @@ class EvolutionV2Tests(unittest.TestCase):
             response = agent.decide(payload)
             mem = next(iter(agent.sessions.values()))
             self.assertEqual(mem.task_directory(), str(base))
-            self.assertEqual(mem.contract['checker_command'], './check_s2')
+            self.assertNotIn('checker_command', mem.contract)
             self.assertNotIn('repair_spec', mem.contract)
             cases = next(f for f in mem.inputs['files'] if f['path'].startswith('test_cases/'))
             self.assertEqual(cases['type'], 'dict')
             self.assertEqual(cases['keys'], ['cases'])
             self.assertIn('expected', cases['sample'])
             self.assertIn('inputPreview', response['prompt'])
-            # Recognized pair-based tasks now validate and check in one sandbox call.
+            # The model program follows this question and validates in the same sandbox call.
             code = "import json\nfrom pathlib import Path\nrows=json.loads(Path('work/input_s2.json').read_text())\nPath('work/result_s2.json').write_text(str(sum(rows)))"
+            code += "\nimport subprocess\nchecked=subprocess.run(['./check_s2'], check=True, capture_output=True, text=True)\nlines=checked.stdout.splitlines()\nassert len(lines)==1 and lines[0].startswith('TOKEN: ')\ntask_result(json.dumps({'token':lines[0][7:]}))"
             payload.update(roundNo=3, lastCmdResult='', llmResp='PYTHON\n'+code)
             execution = agent.decide(payload)
             payload.update(roundNo=4, llmResp='', lastCmdResult=v2_result(execution, '/'))
@@ -112,7 +113,7 @@ class EvolutionV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             base, doc, checker = file_task(Path(directory))
             contract = answer_contract([{'kind':'read', 'resolved_path':str(doc), 'output':doc.read_text()}])
-            self.assertEqual(contract['checker_command'], './check_s2')
+            self.assertNotIn('checker_command', contract)
             for suffix in ('raise SystemExit(1)', "print('TOKEN: second')"):
                 checker.write_text(f'#!{sys.executable}\nprint("TOKEN: misleading")\n'+suffix)
                 raw = v2_result({'executeCmd':'python3 -c '+shlex.quote(

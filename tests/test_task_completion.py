@@ -270,20 +270,20 @@ class TaskCompletionTests(unittest.TestCase):
                 self.assertTrue(result.startswith('[exitCode:1]'))
                 self.assertNotIn('\nFINAL_ANSWER\n', result)
 
-    def test_model_token_and_printed_token_require_independent_check(self):
+    def test_model_and_program_token_answers_use_generic_submission(self):
         for purpose in ('task', 'cmd'):
             with self.subTest(purpose=purpose):
-                p = task_payload(3, 'repair')
-                p['llmResp' if purpose == 'task' else 'lastCmdResult'] = ('ANSWER\n' if purpose == 'task' else '[exitCode:0]\nFINAL_ANSWER\n') + '{"token":"invented"}'
-                mem = Memory(task_text='repair', task_started=1, bootstrap_done=True,
-                             pending=(purpose,2), contract={'kind':'check_token','requires_checker':True})
-                t,cfg,_,ledger=setup_case(p)
-                mem.observe(t,cfg)
-                self.assertIsNone(mem.answer)
-                prompt,cmd=Intelligence(t,cfg,mem).task(ledger)
-                self.assertTrue(prompt)
-                self.assertFalse(cmd or ledger.commands)
-                self.assertIn('checker',prompt)
+                p = task_payload(3, 'submit the requested text')
+                answer = '{"token":"fixture-answer"}'
+                p['llmResp' if purpose == 'task' else 'lastCmdResult'] = ('ANSWER\n' if purpose == 'task' else '[exitCode:0]\nFINAL_ANSWER\n') + answer
+                mem = Memory(task_text=p['phaseTask'], task_started=1, bootstrap_done=True,
+                             pending=(purpose, 2), contract={'format': 'json'})
+                t, cfg, _, ledger = setup_case(p)
+                mem.observe(t, cfg)
+                self.assertEqual(mem.answer, answer)
+                prompt, cmd = Intelligence(t, cfg, mem).task(ledger)
+                self.assertFalse(prompt or cmd)
+                self.assertEqual(ledger.commands['11']['taskAnswer'], answer)
 
     def test_submission_shape_rejects_document_or_extra_keys_and_allows_partial_credit(self):
         docs = [{'kind': 'read', 'path': 'task.md', 'output': '''## API 返回示例
@@ -354,13 +354,13 @@ class TaskCompletionTests(unittest.TestCase):
         mem.observe(Turn(p, Config()), Config())
         self.assertEqual(mem.contract['example'], {'city': '北京'})
 
-    def test_checker_workspace_must_be_explicit_and_within_current_task(self):
+    def test_task_workspace_must_be_explicit_and_within_current_task(self):
         with tempfile.TemporaryDirectory() as directory:
             _, document, _ = deployment(directory, 'alpha')
             text = document.read_text().replace(str(document.parent), '/unrelated')
             contract = answer_contract([{'kind': 'read', 'path': str(document),
                                          'resolved_path': str(document), 'output': text}])
-            self.assertEqual(contract['kind'], 'check_token')
+            self.assertNotIn('kind', contract)
             self.assertNotIn('workspace', contract)
 
     def test_unrelated_successful_code_is_not_saved_as_submitted_solution(self):

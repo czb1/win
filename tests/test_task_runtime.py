@@ -144,7 +144,7 @@ class TaskRuntimeTests(unittest.TestCase):
                 self.assertTrue(raw.startswith('[exitCode:1]'))
                 self.assertIsNone(sandbox_result(raw)[2])
 
-    def test_independent_checker_can_finish_after_unrelated_model_http_failure(self):
+    def test_legacy_checker_report_cannot_clear_unresolved_http_failure(self):
         p = task_payload(5, 'repair')
         report = {'checker': {'passed': True, 'command': 'python3 verify.py'}, 'http_errors': []}
         p['lastCmdResult'] = '[exitCode:0]\nTASK_RUNTIME ' + json.dumps(report) + '\nFINAL_ANSWER\n{"token":"checked"}'
@@ -153,8 +153,8 @@ class TaskRuntimeTests(unittest.TestCase):
         t,cfg,_,ledger=setup_case(p)
         mem.observe(t,cfg)
         Intelligence(t,cfg,mem).task(ledger)
-        self.assertEqual(json.loads(ledger.commands['11']['taskAnswer']), {'token':'checked'})
-        self.assertFalse(mem.query_blocked)
+        self.assertFalse(ledger.commands)
+        self.assertTrue(mem.query_blocked)
 
     def test_model_execution_rebinds_cwd_each_time(self):
         with tempfile.TemporaryDirectory() as directory:

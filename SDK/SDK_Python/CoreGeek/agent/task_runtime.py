@@ -14,7 +14,6 @@ def command_output(raw):
 
 def runtime_code(code, directory=None, rounding=None, log_task=False, parser=None, contract=None):
     return (f"TASK_CODE = {code!r}\nTASK_DIRECTORY = {directory!r}\n"
-            + f"TASK_CONTRACT = {contract or {}!r}\n"
             + _RUNTIME)
 
 
@@ -191,39 +190,6 @@ else:
     requests.models.Response.json = checked_json
 
 
-# Checker runs after model code, with captured output and a shared time budget.
-import subprocess
-import time
-import shlex
-import hashlib
-from pathlib import Path
-started = time.monotonic()
-checker_selection = TASK_CONTRACT.get('checker_command')
-# Record documented checker file identities before model code can write anything.
-checker_files = dict(TASK_CONTRACT.get('checker_files', {}))
-for documented in TASK_CONTRACT.get('checker_candidates', []):
-    try:
-        words = shlex.split(documented)
-    except ValueError:
-        continue
-    for word in words:
-        path = Path(word)
-        path = path if path.is_absolute() else Path(TASK_DIRECTORY or os.getcwd()) / path
-        if path.is_file() and path.stat().st_size <= 1048576:
-            checker_files.setdefault(str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest())
-
-def task_check(command):
-    global checker_selection
-    if not isinstance(command, str) or not command or len(command) > 2000:
-        raise ValueError('checker command must be a documented string')
-    if command not in re.findall(r'`([^`\n]+)`', TASK_CONTRACT.get('validation_source', '')):
-        raise ValueError('checker command not observed in current documentation; READ its source first')
-    checker_selection = command
-    # Actual check is deliberately deferred until all current file writes finish.
-
-if checker_files:
-    report['checker_files'] = checker_files
-
 answer_value = []
 def task_result(text):
     if not isinstance(text, str):
@@ -236,7 +202,7 @@ with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
         try:
             if TASK_DIRECTORY:
                 os.chdir(TASK_DIRECTORY)
-            scope = {'__name__': '__main__', 'task_result': task_result, 'task_check': task_check}
+            scope = {'__name__': '__main__', 'task_result': task_result}
             exec(compile(TASK_CODE, '<task>', 'exec'), scope)
         except SystemExit as error:
             exit_code = error.code if isinstance(error.code, int) else (1 if error.code else 0)
@@ -246,39 +212,6 @@ with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
     output.seek(0)
     body = output.read(60001)
 report['http_errors'] = list(request_errors.values())[:4]
-if not exit_code and not report['http_errors'] and TASK_CONTRACT.get('requires_checker'):
-    report['checker'] = {'passed': False}
-    if checker_selection:
-        try:
-            for filename, fingerprint in checker_files.items():
-                if hashlib.sha256(Path(filename).read_bytes()).hexdigest() != fingerprint:
-                    raise ValueError('checker source changed; cannot authorize a token')
-            timeout = min(8, 14 - (time.monotonic() - started))
-            if timeout <= 0:
-                raise TimeoutError('no checker time left')
-            with tempfile.TemporaryFile() as check_output:
-                # Command is from current documentation; execution stays in the official sandbox.
-                checked = subprocess.run(checker_selection, shell=True, stdout=check_output,
-                                         stderr=subprocess.STDOUT, timeout=timeout)
-                check_output.seek(0)
-                raw_check = check_output.read(16001)
-            feedback = raw_check.decode('utf-8', errors='replace')
-            passed = checked.returncode == 0 and len(raw_check) <= 16000
-            tokens = re.findall(r'^TOKEN:[ \t]*(\S+)[ \t]*$', feedback, re.M)
-            if TASK_CONTRACT.get('kind') == 'check_token':
-                passed = passed and len(tokens) == 1
-                if passed:
-                    answer_value[:] = [json.dumps({'token': tokens[0]}, ensure_ascii=False, allow_nan=False)]
-            report['checker'] = {'passed': passed, 'command': checker_selection,
-                                 'exitCode': checked.returncode, 'feedback': feedback[:16000]}
-            if not passed:
-                exit_code = 1
-        except Exception as error:
-            report['checker']['feedback'] = str(error)
-            exit_code = 1
-    else:
-        report['checker']['feedback'] = '未确认验证命令；READ 说明后用 task_check 选择题面原命令。'
-        exit_code = 1
 if answer_value:
     report['stdout'] = body[:6000]
 print('TASK_RUNTIME ' + json.dumps(report, ensure_ascii=False))
