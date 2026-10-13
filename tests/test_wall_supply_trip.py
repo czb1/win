@@ -101,25 +101,20 @@ class WallSupplyTripTests(unittest.TestCase):
         self.assertEqual(report['order'], {PACK: 3, V1: 1})
         self.assertNotIn(V2, report['order'])
 
-    def test_shop_stays_for_all_item_types_before_delivery(self):
+    def test_watcher_buys_only_packs_then_closes_its_visit(self):
         data, mem = self.case(), Memory(wall_watch_id=1)
-        purchases = []
-        for _ in range(3):
-            t, cfg, nav, l = self.setup(data)
-            locked, reserve = prepare(t, cfg, mem, nav, l, t.units[1], l.wall_cells)
-            self.assertTrue(locked)
-            action = l.commands['1']
-            self.assertEqual(action['action'], 'buy')
-            purchases.append((action['name'], action['num']))
-            data['teamOur']['roles'][1]['backpack'] += [action['name']] * action['num']
-            data['teamOur']['goldNum'] -= t.shop[action['name']] * action['num']
-            self.assertLessEqual(reserve, l.gold)
-            data['roundNo'] += 1
-        self.assertEqual(purchases, [(PACK, 4), (V1, 2), (V2, 3)])
+        t, cfg, nav, l = self.setup(data)
+        locked, reserve = prepare(t, cfg, mem, nav, l, t.units[1], l.wall_cells)
+        self.assertTrue(locked)
+        self.assertEqual(l.commands['1'], command('buy', name=PACK, num=4))
+        self.assertEqual(reserve, 0)
+        data['teamOur']['roles'][1]['backpack'] += [PACK] * 4
+        data['teamOur']['goldNum'] -= 60
+        data['roundNo'] += 1
         t, cfg, nav, l = self.setup(data)
         prepare(t, cfg, mem, nav, l, t.units[1], l.wall_cells)
-        self.assertEqual(mem.wall_supply_trip['phase'], 'deliver')
-        self.assertNotEqual(l.commands['1']['action'], 'buy')
+        self.assertTrue(mem.wall_supply_trip['closed'])
+        self.assertNotEqual(l.commands.get('1', {}).get('action'), 'buy')
 
     def test_failed_buy_retries_from_observed_inventory(self):
         data, mem = self.case(), Memory(wall_watch_id=1)
@@ -131,19 +126,19 @@ class WallSupplyTripTests(unittest.TestCase):
         self.assertEqual(l.commands['1'], command('buy', name=PACK, num=4))
         self.assertEqual(mem.wall_supply_trip['phase'], 'shop')
 
-    def test_new_gold_at_shop_extends_order_without_delivery_detour(self):
+    def test_new_gold_after_pack_batch_does_not_launch_wall_voucher_trip(self):
         data, mem = self.case(gold=85), Memory(wall_watch_id=1)
-        for extra in (0, 500):
-            t, cfg, nav, l = self.setup(data)
-            prepare(t, cfg, mem, nav, l, t.units[1], l.wall_cells)
-            action = l.commands['1']
-            data['teamOur']['roles'][1]['backpack'] += [action['name']] * action['num']
-            data['teamOur']['goldNum'] += extra - t.shop[action['name']] * action['num']
-            data['roundNo'] += 1
         t, cfg, nav, l = self.setup(data)
         prepare(t, cfg, mem, nav, l, t.units[1], l.wall_cells)
-        self.assertEqual(l.commands['1']['action'], 'buy')
-        self.assertEqual(mem.wall_supply_trip['phase'], 'shop')
+        action = l.commands['1']
+        self.assertEqual(action['name'], PACK)
+        data['teamOur']['roles'][1]['backpack'] += [PACK] * action['num']
+        data['teamOur']['goldNum'] = 500
+        data['roundNo'] += 1
+        t, cfg, nav, l = self.setup(data)
+        prepare(t, cfg, mem, nav, l, t.units[1], l.wall_cells)
+        self.assertNotEqual(l.commands.get('1', {}).get('action'), 'buy')
+        self.assertTrue(mem.wall_supply_trip['closed'])
 
     def test_first_35_rounds_mine_despite_carried_upgrade(self):
         t, cfg, nav, l = self.setup(self.case(tick=34, backpack=[V1]))
@@ -185,20 +180,19 @@ class WallSupplyTripTests(unittest.TestCase):
         prepare(t, cfg, mem, nav, l, t.units[1], l.wall_cells)
         self.assertEqual(l.commands['1']['action'], 'buy')
 
-    def test_wall_upgrades_continue_on_same_wall_without_global_tier_gate(self):
-        data = self.case(backpack=[PACK]*4 + [V1]*2 + [V2]*3)
-        data['teamOur']['roles'][1]['pos'] = dict(x=5, y=8)
+    def test_builder_upgrades_same_wall_with_both_paid_tiers(self):
+        data = self.case(gold=0)
+        data['teamOur']['roles'][2].update(pos=dict(x=5, y=8), backpack=[V1]*2 + [V2]*3)
         data['mapInfo']['zones'] = []
         mem = Memory(wall_watch_id=1)
-        t, cfg, nav, l = self.setup(data)
-        prepare(t, cfg, mem, nav, l, t.units[1], l.wall_cells)
-        self.assertEqual(l.commands['1'], command('use', (6, 8), name=V1))
-        data['roundNo'] += 1
-        data['teamOur']['roles'][1]['backpack'].remove(V1)
-        data['teamOur']['roles'][5].update(level=2, health=1500)
-        t, cfg, nav, l = self.setup(data)
-        prepare(t, cfg, mem, nav, l, t.units[1], l.wall_cells)
-        self.assertEqual(l.commands['1'], command('use', (6, 8), name=V2))
+        for name in (V1, V2):
+            t, cfg, nav, l = self.setup(data)
+            with patch('agent.economy.repair_walls', return_value=set()):
+                other_worker(t, cfg, mem, nav, l, t.units[2], l.tower_cells, l.wall_cells)
+            self.assertEqual(l.commands['2'], command('use', (6, 8), name=name))
+            data['roundNo'] += 1
+            data['teamOur']['roles'][2]['backpack'].remove(name)
+            data['teamOur']['roles'][5].update(level=2, health=1500)
 
     def test_active_task_keeps_worker_stock_purchase_running(self):
         data = self.case()
@@ -242,7 +236,7 @@ class WallSupplyTripTests(unittest.TestCase):
         self.assertEqual(repair.call_args.args[5], [t.units[2]])
 
     def test_helper_delivers_legacy_stock_without_buying_another_batch(self):
-        data = self.case()
+        data = self.case(gold=0)
         data['teamOur']['roles'][2].update(pos=dict(x=5, y=8), backpack=[V1])
         t, cfg, nav, l = self.setup(data)
         mem = Memory(wall_watch_id=1)

@@ -151,7 +151,7 @@ def finish_daytime_work(turn, cfg, mem, nav, ledger, returning):
         role = ('watch' if watcher else 'returning' if hero.id in returning
                 else 'preparation' if hero.id in mem.preparation_workers else 'economy')
         reason = ledger.daytime_waits.get(hero.id, 'no_primary_action')
-        home, exact = return_destination(turn, nav, ledger, hero)
+        home, exact = return_destination(turn, nav, ledger, hero, mem)
         reserved = set(ledger.reserved)
         if watcher:
             inside, _ = geometry(turn, ledger.wall_cells)

@@ -144,15 +144,14 @@ class DaytimeWorkerIdleTests(unittest.TestCase):
             result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
             self.assertNotIn('2', result)
 
-    def test_local_paid_use_precedes_stockpile_for_locked_watcher(self):
+    def test_legacy_wall_vouchers_cannot_preempt_locked_watcher(self):
         p = self.watch_case()
         p['teamOur']['roles'][2]['backpack'] = ['WallUpgradeVoucher1']
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(wall_watch_id=2)
         prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         finish_daytime_work(t, cfg, mem, nav, ledger, {2})
-        self.assertEqual(ledger.commands['2']['action'], 'use')
-        self.assertEqual(ledger.commands['2']['name'], 'WallUpgradeVoucher1')
+        self.assertEqual(ledger.commands['2'], command('collect', (6, 9)))
 
     def test_blocked_operator_only_collects_adjacent_without_releasing_return(self):
         t, cfg, nav, ledger = setup_case(self.mine_case(), layout_mode='explicit')

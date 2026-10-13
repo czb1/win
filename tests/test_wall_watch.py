@@ -263,7 +263,7 @@ class WallWatchTests(unittest.TestCase):
         prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertEqual(ledger.commands['2']['name'], 'WallFixer')
 
-    def test_fixed_cutoff_starts_shop_but_skips_overlong_sale_detour(self):
+    def test_fixed_cutoff_sells_when_sale_and_inside_return_fit(self):
         p = self.case(day=7, tick=35, packs=0, damaged=False)
         p['teamOur']['roles'][2].update(pos={'x': 0, 'y': 0}, backpack=['copper'] * 3)
         p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 13, 'y': 3}})
@@ -273,11 +273,11 @@ class WallWatchTests(unittest.TestCase):
         locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertTrue(locked)
         self.assertEqual(ledger.commands['2']['action'], 'move')
-        self.assertNotIn(2, mem.sale_workers)
-        self.assertEqual(mem.wall_supply_trip['phase'], 'shop')
-        self.assertEqual(ledger.work_jobs[2]['kind'], 'buy')
+        self.assertIn(2, mem.sale_workers)
+        self.assertEqual(mem.wall_supply_trip['phase'], 'sell')
+        self.assertEqual(ledger.work_jobs[2]['kind'], 'sell')
 
-    def test_late_long_sale_cannot_miss_the_perimeter_return_deadline(self):
+    def test_late_sale_does_not_require_procurement_to_fit(self):
         p = self.case(day=7, tick=39, packs=0, damaged=False)
         p['teamOur']['roles'][2].update(pos={'x': 0, 'y': 0}, backpack=['copper'] * 3)
         p['mapInfo']['zones'].append({'neutralType': 'vendor', 'pos': {'x': 13, 'y': 3}})
@@ -287,7 +287,7 @@ class WallWatchTests(unittest.TestCase):
         locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertTrue(locked)
         self.assertEqual(ledger.commands['2']['action'], 'move')
-        self.assertNotIn(2, mem.sale_workers)
+        self.assertIn(2, mem.sale_workers)
 
     def test_empty_watcher_can_mine_on_quiet_night_while_stocked_watch_stays(self):
         for packs in (0, 4):
@@ -321,7 +321,8 @@ class WallWatchTests(unittest.TestCase):
         mem = Memory(wall_watch_id=2)
         locked, reserved = prepare_watch(t, cfg, mem, nav, ledger, t.workers[1], layout(t, cfg)[1])
         self.assertTrue(locked)
-        self.assertEqual(reserved, 20)
+        self.assertEqual(reserved, 0)
+        self.assertEqual(ledger.wall_orders[1], {'WallUpgradeVoucher1': 1})
         self.assertEqual(ledger.commands['2'], {'action': 'buy', 'name': 'WallFixer', 'num': 3})
         self.assertEqual(ledger.gold, t.shop['WallUpgradeVoucher1'])
         self.assertTrue(any(wall_purchase_allowed(t, w, mem)
