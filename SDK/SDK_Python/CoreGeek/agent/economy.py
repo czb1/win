@@ -4,7 +4,7 @@ from .task_schedule import task_options, choose_task
 from collections import Counter
 from dataclasses import replace
 from .commands import command
-from .model import ORES, WEAPONS, HEROES, CHARACTERS, DEFENCE_RETURN_TICK, pos, distance, neighbours
+from .model import ORES, WEAPONS, HEROES, CHARACTERS, DEFENCE_RETURN_TICK, FIRST_DAY_PIONEER_SHOP_TICK, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
 from .mining import mine, earn, spare_mine, sale_inventory, return_destination
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit, delivery_destination, development_pending, reserve_income_worker
@@ -83,12 +83,13 @@ def dusk_batch(turn, nav, ledger, hero, candidates, count, elapsed, require_home
 
 
 def walk(nav, ledger, hero, targets):
+    targets = set(targets)
     route = nav.approach(hero, targets, ledger.reserved, with_endpoint=True)
     if route is None:
         ledger.explain(hero.id, "route_unavailable", targets=list(targets))
         return False
     if route[1] is not None:
-        accepted = nav.move_along(hero, ledger, route, {route[2]})
+        accepted = nav.move_along(hero, ledger, route, {route[2]}, targets=targets)
         if accepted:
             ledger.explain(hero.id, "approach_destination", targets=list(targets), route_steps=route[0])
         return accepted
@@ -111,10 +112,10 @@ def visit(turn, nav, ledger, hero, kind, action):
                if (route := nav.approach(hero, [p], ledger.reserved, with_endpoint=True)) is not None]
     if not options:
         return False
-    _, _, route = min(options)
+    _, target, route = min(options)
     if route[1] is None:
         return ledger.add(hero.id, action)
-    return nav.move_along(hero, ledger, route, {route[2]})
+    return nav.move_along(hero, ledger, route, {route[2]}, targets={target})
 
 
 def wall_sector(turn, wall):
@@ -1314,6 +1315,10 @@ def treasure_purchase_plan(turn, cfg, mem, nav, ledger, hero):
                         final_exact=exact if home else False, future_return=bool(home))
             if total is None or total + len(missing) + cfg.return_margin > turn.day_left:
                 continue
+            slack = turn.day_left - total - len(missing) - cfg.return_margin
+            if t:
+                slack = min(slack, t['endRound'] - turn.round - travel - len(missing) - wait)
+            nav.vehicle_budgets[('treasure_shop', route[2])] = (route[0] + slack, shop)
             candidate = (travel, shop, route)
             if best is None or candidate[:2] < best[:2]:
                 best = candidate
@@ -1340,7 +1345,9 @@ def prepare_treasure(turn, cfg, mem, nav, ledger, hero):
     missing, route, _ = plan
     name = next(iter(missing))
     if route[1] is not None:
-        return nav.move_along(hero, ledger, route, {route[2]})
+        limit, shop = nav.vehicle_budgets.get(('treasure_shop', route[2]), (route[0], None))
+        return nav.move_along(hero, ledger, route, {route[2]}, max_rounds=limit,
+                              targets={shop} if shop else ())
     return ledger.add(hero.id, command("buy", name=name, num=missing[name]))
 
 
@@ -1390,7 +1397,9 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
                     return
             elif turn.round + route[0] + cfg.return_margin >= t["startRound"]:
                 if route[1] is not None:
-                    nav.move_along(hero, ledger, route, {route[2]})
+                    nav.move_along(hero, ledger, route, {route[2]},
+                                   targets={tuple(t['position'])},
+                                   max_rounds=t['endRound'] - turn.round)
                 elif turn.round >= t["startRound"]:
                     if ledger.add(hero.id, command("summonTreasure", tuple(t["position"]), item=t["items"])):
                         mem.treasure_attempted = True
@@ -1421,7 +1430,16 @@ def pioneer(turn, cfg, mem, nav, ledger, hero, shopping=True):
         # One compact scheduling record; task contents never enter this planner.
         emit_event('task_plan', dict(reason=reason, **details), 'evolution')
         if route[1] is not None:
-            if nav.move_along(hero, ledger, route, {selected['cell']}, selected['travel_forbidden']):
+            limit = turn.day_left - selected['budget']['rounds'] - selected['return_steps'] - cfg.return_margin - 1
+            cutoff = (FIRST_DAY_PIONEER_SHOP_TICK - turn.tick - 1 if turn.day == 1 else
+                      DEFENCE_RETURN_TICK - turn.tick - selected['budget']['rounds'])
+            limit = min(limit, cutoff)
+            if t and treasure_active(turn, mem):
+                # The task/altar sequence was checked with pedestrian costs.
+                # Keep that arrival bound while a treasure window is active.
+                limit = min(limit, route[0])
+            if nav.move_along(hero, ledger, route, {selected['cell']}, selected['travel_forbidden'],
+                              journey=('task', point), max_rounds=limit):
                 ledger.explain(hero.id, reason, **details)
         elif selected['cooldown'] or not task.get('isValid'):
             ledger.used.add(hero.id)

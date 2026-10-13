@@ -22,6 +22,10 @@ class Navigator:
         self._distances = {}
         self.diagnostics = {}
         self.gate_guard = None
+        from .vehicle import VehicleMemory
+        self.vehicle = memory.vehicle if memory else VehicleMemory()
+        self.vehicle_detours = True
+        self.vehicle_budgets = {}
 
     def record_search(self, uid, outcome, **facts):
         record = self.diagnostics.setdefault(uid, {"outcomes": {}, "last_failure": None})
@@ -29,26 +33,60 @@ class Navigator:
         if outcome not in ("route_found", "route_found_after_collision", "at_goal"):
             record["last_failure"] = {"reason": outcome, **facts}
 
-    def move_along(self, hero, ledger, route, goals, reserved=()):
-        """Optimize only an already authorized trip; budgets stay pedestrian."""
+    def move_along(self, hero, ledger, route, goals, reserved=(), *, journey=None,
+                   max_rounds=None, prefer_vehicle=True, targets=()):
+        """Change transport only, after the caller has selected its business goal."""
         from .commands import command
         from .logging_system import emit_event
-        from .vehicle import faster_route
+        from .model import DEFENCE_RETURN_TICK
+        from .vehicle import plan_route, driving_segment
         if not route or route[1] is None:
             return False
-        reason = 'no_safe_saving'
-        try:
-            faster = faster_route(self, ledger, hero, goals, route, reserved)
-        except DeadlineExceeded:
-            # Optional acceleration must not discard an already valid action.
-            faster, reason = None, 'search_budget_exhausted'
-        selected = faster or route
-        accepted = ledger.add(hero.id, command('move', selected[1]))
-        if hero.kind == 'pioneer' and self.turn.is_day and self.turn.vehicle_cells:
+        if targets:
+            targets = set(targets)
+            goals = {p for t in targets for p in neighbours(t)} - targets
+            journey = ('approach', tuple(sorted(targets)))
+        key = journey if journey is not None else tuple(sorted(goals))
+        state = self.vehicle
+        if hero.kind == 'pioneer' and state.journey != key:
+            state.journey, state.walking, state.pending_exit = key, False, None
+        vehicle, reason = None, 'no_available_route'
+        eligible = hero.kind == 'pioneer' and self.turn.is_day and self.turn.vehicle_cells
+        if eligible:
+            prefer = (prefer_vehicle and self.vehicle_detours and not self.turn.phase_task
+                      and self.turn.tick < DEFENCE_RETURN_TICK and hero.health > 150
+                      and ledger.plans.get(hero.id, {}).get('reason') != 'defence_recall')
+            limit = max_rounds
+            if prefer:
+                limit = min(limit if limit is not None else self.turn.day_left,
+                            DEFENCE_RETURN_TICK - self.turn.tick)
+            else:
+                # Urgent trips and recall must not arrive later because of pickup.
+                limit = min(limit if limit is not None else self.turn.day_left, route[0])
+            if state.walking and not hero.is_driving:
+                reason = 'finish_on_foot'
+            else:
+                try:
+                    vehicle = plan_route(self, ledger, hero, goals, route, reserved,
+                                         prefer=True, max_rounds=limit)
+                    reason = vehicle.mode if vehicle else 'unavailable_or_deadline'
+                except DeadlineExceeded:
+                    reason = 'search_budget_exhausted'
+        selected = vehicle.target if vehicle else route[1]
+        accepted = ledger.add(hero.id, command('move', selected))
+        if not accepted and vehicle:
+            vehicle, reason = None, 'vehicle_command_rejected'
+            selected = route[1]
+            accepted = ledger.add(hero.id, command('move', selected))
+        if eligible and accepted:
+            state.day, state.actor = self.turn.day, hero.id
+            if hero.is_driving and driving_segment(hero.pos, selected) is None:
+                state.pending_exit = selected
             emit_event('vehicle_travel', dict(actor=hero.id, walking_rounds=route[0],
-                       vehicle_rounds=faster[0] if faster else None,
-                       reason='faster_route' if faster else reason,
-                       is_driving=hero.is_driving, target=selected[1], accepted=accepted), 'economy')
+                       vehicle_rounds=vehicle.rounds if vehicle else None,
+                       reason=reason, is_driving=hero.is_driving, target=selected,
+                       parking=vehicle.parking if vehicle else None,
+                       accepted=accepted), 'economy')
         return accepted
 
     def distances_to(self, targets, vacated=(), reserved=(), exact=False):
