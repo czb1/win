@@ -231,12 +231,12 @@ def prepare_night_scout(turn, memory, nav, ledger, excluded=(), jobs=None):
     return scout
 
 
-def act_night_scout(turn, memory, nav, ledger, home_roles=()):
+def act_night_scout(turn, memory, nav, ledger, home_roles=(), excluded=()):
     base = enemy_base(turn)
     _sync_scout(turn, memory, base)
     if turn.is_day or turn.day != 1 or base is None:
         return None
-    workers = {h.id: h for h in turn.workers}
+    workers = {h.id: h for h in turn.workers if h.id not in excluded}
     scout = workers.get(memory.worker_id)
     if scout is None:
         candidates = [h for h in workers.values() if h.id not in ledger.used]

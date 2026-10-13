@@ -51,17 +51,21 @@ def first_day_purchase_reserve(turn, mem, ledger, include_robots=True):
 
 
 def heal_station_with_pioneer(turn, mem, nav, ledger):
-    """Keep the pioneer's base voucher until HP is strictly below 500."""
-    from .economy import critical_station, use_inventory, voucher_for
+    """Heal a critical base, or spend the voucher before its night carrier dies."""
+    from .economy import critical_station, pioneer_needs_night_relief, use_inventory, voucher_for
     hero, station = turn.pioneer, turn.station
     if (not hero or hero.id in ledger.used or not station
-            or not critical_station(turn, station, mem)):
+            or not (critical_station(turn, station, mem) or pioneer_needs_night_relief(turn))):
         return False
     name = voucher_for(station)
-    if not hero.inventory[name]:
+    if not name or not hero.inventory[name]:
         return False
-    return use_inventory(turn, nav, ledger, hero, mem=mem,
-                         target_only=station.pos, name_only=name, upgrades_only=True)
+    accepted = use_inventory(turn, nav, ledger, hero, mem=mem,
+                             target_only=station.pos, name_only=name, upgrades_only=True)
+    if accepted and pioneer_needs_night_relief(turn):
+        ledger.explain(hero.id, 'pioneer_night_emergency_heal', health=hero.health,
+                       station_health=station.health, item=name)
+    return accepted
 
 
 def prepare_station_reserve(turn, cfg, mem, nav, ledger):
