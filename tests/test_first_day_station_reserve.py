@@ -7,10 +7,11 @@ import test_opening_boss_spending as opening_fixtures
 from test_robot_assault import fortified_case, TOWERS, WALLS
 from agent.brain import Agent, observe_robot_summons, summon_best_robot
 from agent.commands import command
-from agent.economy import use_inventory
+from agent.economy import build, supplies, use_inventory
 from agent.intelligence import Memory
 from agent.model import distance
-from agent.spending import heal_station_with_pioneer, prepare_station_reserve
+from agent.spending import (first_day_purchase_reserve, heal_station_with_pioneer,
+                            plan_day_spending, prepare_station_reserve)
 
 
 class FirstDayStationReserveTests(unittest.TestCase):
@@ -52,7 +53,7 @@ class FirstDayStationReserveTests(unittest.TestCase):
                 self.assertEqual(ledger.spending_plan['robot_blocked'], 'first_day_purchase_limit')
 
     def test_partial_batches_share_the_three_purchase_limit(self):
-        _, _, _, _, ledger, mem = self.buy(self.data(gold=240))
+        _, _, _, _, ledger, mem = self.buy(self.data(gold=340))
         self.assertEqual(ledger.commands['1']['num'], 2)
         data = self.data(round_no=11)
         data['lastRoundRoleActionResults'] = {'1': True}
@@ -98,21 +99,120 @@ class FirstDayStationReserveTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(ledger.commands['1']['num'], 10)
 
-    def test_exact_surplus_buys_one_base_voucher_on_the_pioneer(self):
-        for gold, expected in ((459, False), (460, True), (1200, True)):
+    def test_base_voucher_is_bought_before_any_robot_at_its_price_boundary(self):
+        for gold, expected in ((99, False), (100, True), (1200, True)):
             with self.subTest(gold=gold):
-                _, turn, cfg, nav, ledger, mem = self.buy(self.data(gold=gold))
+                turn, cfg, nav, ledger = fortified_case(self.data(gold=gold))
+                mem = Memory()
                 result = prepare_station_reserve(turn, cfg, mem, nav, ledger)
                 self.assertEqual(result, expected)
                 self.assertEqual(ledger.commands.get('2'), command(
                     'buy', name='StationUpgradeVoucher1', num=1) if expected else None)
-                self.assertEqual(ledger.gold, gold - 360 - (100 if expected else 0))
+                self.assertEqual(ledger.gold, gold - (100 if expected else 0))
 
-    def test_partial_robot_purchase_keeps_money_for_the_remaining_robot(self):
-        _, turn, cfg, nav, ledger, mem = self.buy(self.data(gold=350))
+    def test_base_voucher_precedes_partial_robot_purchase(self):
+        turn, cfg, nav, ledger = fortified_case(self.data(gold=350))
+        mem = Memory()
+        self.assertTrue(prepare_station_reserve(turn, cfg, mem, nav, ledger))
+        self.assertTrue(summon_best_robot(turn, cfg, mem, nav, ledger, TOWERS, WALLS))
         self.assertEqual(ledger.commands['1']['num'], 2)
+        self.assertEqual(ledger.commands['2'], command('buy', name='StationUpgradeVoucher1', num=1))
+        self.assertEqual(ledger.gold, 10)
+        self.assertEqual(first_day_purchase_reserve(turn, mem, ledger), 120)
+
+    def empty_guns_data(self, gold=485, round_no=10):
+        data = self.data(gold=gold, round_no=round_no)
+        data['teamOur']['roles'] = [r for r in data['teamOur']['roles']
+                                    if r['roleType'] not in ('rocket', 'gatling')]
+        data['teamOur']['roles'].append(unit(3, 'worker', 1, 9, health=500))
+        return data
+
+    def test_unbuilt_guns_receive_only_the_remainder_after_heal_and_three_robots(self):
+        for gold, count, building in ((100, 0, False), (219, 0, False), (220, 1, False),
+                                      (459, 2, False), (460, 3, False),
+                                      (484, 3, False), (485, 3, True)):
+            with self.subTest(gold=gold):
+                turn, cfg, nav, ledger = fortified_case(self.empty_guns_data(gold))
+                mem = Memory()
+                self.assertTrue(prepare_station_reserve(turn, cfg, mem, nav, ledger))
+                self.assertEqual(summon_best_robot(turn, cfg, mem, nav, ledger, TOWERS, WALLS,
+                                                  excluded={3}), bool(count))
+                self.assertEqual(ledger.commands.get('1', {}).get('num', 0), count)
+                self.assertEqual(build(turn, cfg, mem, nav, ledger, turn.units[3],
+                                       TOWERS, lambda _: 'rocket'), building)
+                self.assertEqual(ledger.gold, gold - 100 - 120 * count - 25 * building)
+
+    def test_agent_buys_heal_and_three_robots_before_building_its_first_gun(self):
+        data = self.empty_guns_data()
+        _, cfg, _, _ = fortified_case(data)
+        cfg.llm_enabled = False
+        response = Agent(cfg).decide(data)['roleCommandMap']
+        self.assertEqual(response['2'], command('buy', name='StationUpgradeVoucher1', num=1))
+        self.assertEqual(response['1'], command('buy', name='BossRobotSummonOrder', num=3))
+        self.assertEqual(response['3'], command('build', TOWERS[0], name='rocket'))
+
+    def test_walking_buyers_reserve_each_cost_once_and_leave_the_tower_remainder(self):
+        data = self.empty_guns_data()
+        data['teamOur']['roles'][1]['pos'] = {'x': 0, 'y': 0}
+        data['teamOur']['roles'][2]['pos'] = {'x': 7, 'y': 8}
+        turn, cfg, nav, ledger = fortified_case(data)
+        mem = Memory()
+        self.assertTrue(prepare_station_reserve(turn, cfg, mem, nav, ledger))
+        self.assertTrue(summon_best_robot(turn, cfg, mem, nav, ledger, TOWERS, WALLS, excluded={3}))
+        self.assertEqual(ledger.commands['1']['action'], 'move')
+        self.assertEqual(ledger.commands['2']['action'], 'move')
+        self.assertEqual(mem.robot_summon_state['purchased'], 0)
+        self.assertFalse(mem.robot_summon_state['station_purchased'])
+        plan_day_spending(turn, cfg, mem, nav, ledger, TOWERS)
+        self.assertEqual(first_day_purchase_reserve(turn, mem, ledger), 0)
+        self.assertEqual(ledger.gold, 25)
+        self.assertTrue(build(turn, cfg, mem, nav, ledger, turn.units[3], TOWERS, lambda _: 'rocket'))
+
+    def test_new_turn_reserves_unbought_robot_instead_of_spending_it_on_a_gun(self):
+        for gold, building in ((144, False), (145, True)):
+            with self.subTest(gold=gold):
+                data = self.empty_guns_data(gold)
+                data['teamOur']['roles'][2]['backpack'] = ['StationUpgradeVoucher1']
+                turn, cfg, nav, ledger = fortified_case(data)
+                mem = Memory()
+                mem.robot_summon_state = dict(day=1, count=0, purchased=2,
+                    positions=set(), pending=None, observed_round=-1, buyer=None)
+                self.assertEqual(first_day_purchase_reserve(turn, mem, ledger), 120)
+                self.assertEqual(build(turn, cfg, mem, nav, ledger, turn.units[3],
+                                       TOWERS, lambda _: 'rocket'), building)
+
+    def test_day_two_releases_opening_reserves_and_can_build_with_only_25_gold(self):
+        turn, cfg, nav, ledger = fortified_case(self.empty_guns_data(25, round_no=140))
+        mem = Memory()
+        self.assertEqual(first_day_purchase_reserve(turn, mem, ledger), 0)
         self.assertFalse(prepare_station_reserve(turn, cfg, mem, nav, ledger))
-        self.assertEqual(ledger.gold, 110)
+        self.assertTrue(build(turn, cfg, mem, nav, ledger, turn.units[3], TOWERS, lambda _: 'rocket'))
+
+    def test_ordinary_medicine_and_wall_stock_cannot_spend_the_opening_budget(self):
+        from agent.wall_watch import prepare_watch
+        data = self.data(gold=119)
+        data['teamOur']['roles'][1]['health'] = 50
+        turn, cfg, nav, ledger = fortified_case(data)
+        mem = Memory(wall_watch_id=1)
+        self.assertIsNone(supplies(turn, cfg, mem, nav, ledger, turn.workers[0], urgent_only=True))
+        _, reserved = prepare_watch(turn, cfg, mem, nav, ledger, turn.workers[0], WALLS)
+        self.assertEqual(reserved, 0)
+        self.assertFalse(any(c['action'] == 'buy' for c in ledger.commands.values()))
+
+    def test_shop_prices_set_the_budget_instead_of_fixed_gold_thresholds(self):
+        data = self.empty_guns_data(gold=159)
+        for item in data['weaponShopList']:
+            if item['name'] == 'StationUpgradeVoucher1':
+                item['price'] = 60
+            elif item['name'] == 'BossRobotSummonOrder':
+                item['price'] = 25
+        turn, cfg, nav, ledger = fortified_case(data)
+        mem = Memory()
+        self.assertEqual(first_day_purchase_reserve(turn, mem, ledger), 135)
+        self.assertTrue(prepare_station_reserve(turn, cfg, mem, nav, ledger))
+        self.assertTrue(summon_best_robot(turn, cfg, mem, nav, ledger, TOWERS, WALLS, excluded={3}))
+        self.assertEqual(ledger.gold, 24)
+        self.assertFalse(build(turn, cfg, mem, nav, ledger, turn.units[3], TOWERS, lambda _: 'rocket'))
 
     def test_walking_robot_budget_is_not_reserved_twice(self):
         data = self.data(gold=460)
@@ -146,6 +246,20 @@ class FirstDayStationReserveTests(unittest.TestCase):
                 turn, cfg, nav, ledger = fortified_case(data)
                 observe_robot_summons(turn, mem)
                 self.assertEqual(prepare_station_reserve(turn, cfg, mem, nav, ledger), rejected)
+
+    def test_initial_base_voucher_counts_after_it_is_consumed_for_healing(self):
+        data = self.data()
+        data['teamOur']['roles'][2]['backpack'] = ['StationUpgradeVoucher1']
+        turn, cfg, nav, ledger = fortified_case(data)
+        mem = Memory()
+        self.assertFalse(prepare_station_reserve(turn, cfg, mem, nav, ledger))
+        self.assertTrue(mem.robot_summon_state['station_purchased'])
+        data['roundNo'] += 1
+        data['teamOur']['roles'][0].update(level=2, health=3000)
+        data['teamOur']['roles'][2]['backpack'] = []
+        turn, cfg, nav, ledger = fortified_case(data)
+        self.assertFalse(prepare_station_reserve(turn, cfg, mem, nav, ledger))
+        self.assertEqual(first_day_purchase_reserve(turn, mem, ledger, include_robots=False), 0)
 
     def test_reserve_respects_existing_stock_capacity_and_task_or_recall_cutoff(self):
         for condition in ('owned', 'full', 'task', 'recall', 'max_level', 'missing_shop_item'):

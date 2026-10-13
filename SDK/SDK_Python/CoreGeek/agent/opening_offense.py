@@ -3,11 +3,11 @@ from dataclasses import replace
 
 from .commands import command
 from .economy import build, build_options
-from .economy_plan import planned_weapons, via
+from .economy_plan import via
 from .model import DEFENCE_RETURN_TICK, ORES, SUMMON_ORDERS
 from .robot_assault import enemy_base, enemy_entries
 from .scouting import FIRST_DAY_SCOUT_TICK, prepare_first_day_wall_blocker
-from .spending import FIRST_DAY_ROBOT_PURCHASE_LIMIT, first_day_boss_phase
+from .spending import FIRST_DAY_ROBOT_PURCHASE_LIMIT, first_day_guns_built, first_day_purchase_reserve
 
 
 FIRST_DAY_OFFENSE_TICK = FIRST_DAY_SCOUT_TICK
@@ -139,7 +139,7 @@ def _buy(turn, cfg, mem, nav, ledger, hero, base, towers):
         ledger.explain(hero.id, 'first_day_offense_wait_buy_retry', shop=shop,
                        retry_round=mem.buy_failures[hero.id, BOSS_ORDER])
         return True, 'buy_retry_cooldown'
-    reserve = sum(w.id < 0 for w in planned_weapons(turn, cfg, mem, towers)) * cfg.weapon_cost
+    reserve = first_day_purchase_reserve(turn, mem, ledger, include_robots=False)
     if summon_best_robot(turn, cfg, mem, nav, ledger, towers, ledger.wall_cells,
                          excluded={h.id for h in turn.heroes if h.id != hero.id},
                          reserve=reserve, item_only=BOSS_ORDER, shop_only=shop,
@@ -152,7 +152,7 @@ def _buy(turn, cfg, mem, nav, ledger, hero, base, towers):
             ledger.remember_work(hero, 'robot_buy', shop, name=BOSS_ORDER,
                                  quantity=-negative_count)
         ledger.explain(hero.id, 'first_day_offense_wait_gold', shop=shop,
-                       reserved_construction_gold=reserve, gold=ledger.gold,
+                       reserved_station_gold=reserve, gold=ledger.gold,
                        price=turn.shop[BOSS_ORDER], route_steps=route[0])
         return True, 'waiting_for_gold'
     return False, ledger.spending_plan.get('robot_blocked', 'purchase_unavailable')
@@ -166,7 +166,7 @@ def act_first_day_offense(turn, cfg, mem, nav, ledger, towers, walls):
     if not turn.is_day or turn.day != 1 or turn.tick < FIRST_DAY_OFFENSE_TICK or base is None:
         return None
     # With no second worker there is no way to split offense and construction.
-    if len(turn.workers) < 2 and not first_day_boss_phase(turn, cfg):
+    if len(turn.workers) < 2 and not first_day_guns_built(turn, cfg):
         return None
     from .brain import observe_robot_summons
     observe_robot_summons(turn, mem)

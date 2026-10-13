@@ -81,20 +81,18 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()
         if turn.day > cfg.robot_purchase_last_day:
             return False, 'purchase_days_finished'
         from .brain import summon_best_robot
-        from .spending import plan_day_spending, prepare_defense_purchase, first_day_boss_staging
+        from .spending import plan_day_spending, prepare_defense_purchase
         priority_actors, reserve = plan_day_spending(turn, cfg, mem, nav, ledger, towers, excluded)
         reserve = prepare_defense_purchase(turn, mem, ledger, reserve)
         ok = summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls,
                                excluded=priority_actors | {h.id for h in turn.heroes if h.id != hero.id},
                                reserve=reserve, item_only=job['name'], shop_only=target,
-                               quantity_limit=job['quantity'],
-                               stage_only=first_day_boss_staging(turn, cfg))
+                               quantity_limit=job['quantity'])
         if not ok and target is not None:
             ok = summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls,
                                    excluded=priority_actors | {h.id for h in turn.heroes if h.id != hero.id},
                                    reserve=reserve, item_only=job['name'],
-                                   quantity_limit=job['quantity'],
-                                   stage_only=first_day_boss_staging(turn, cfg))
+                                   quantity_limit=job['quantity'])
     elif kind == 'use':
         ok = use_inventory(turn, nav, ledger, hero, mem=mem,
                            target_only=target, name_only=job['name'])

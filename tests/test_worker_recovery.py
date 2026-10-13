@@ -171,6 +171,8 @@ class WorkerRecoveryTests(unittest.TestCase):
 
     def test_agent_emits_recovery_prompt_on_observed_loop(self):
         p = self.case(15)
+        # Isolate recovery from the opening's higher-priority funded gun work.
+        p['teamOur']['goldNum'] = 0
         p['mapInfo']['zones'].append({'neutralType': 'copper', 'pos': {'x': 7, 'y': 7}})
         agent = Agent()
         agent.decide(p)

@@ -172,19 +172,18 @@ class RobotDaylightOrderTests(unittest.TestCase):
         self.assertFalse(any(c['action'] == 'buy' for c in response.values()))
         self.assertEqual(turn.gold, 419)
 
-    def test_staging_keeps_the_existing_gun_builder_and_pioneer_task(self):
+    def test_robot_shopping_can_borrow_a_builder_and_keeps_the_pioneer_task(self):
         data = opening_data(50)
         data['teamOur']['roles'].append(unit(20011, 'pioneer', 28, 17))
         data['phaseTask'] = 'active task'
         turn, cfg, nav, ledger = opening_setup(data)
         mem = Memory(daytime_jobs={20012: dict(kind='build', target=(32, 10), name='rocket')})
         actors, reserve = plan_day_spending(turn, cfg, mem, nav, ledger, OPENING_TOWERS)
-        self.assertEqual(actors, {20012})
+        self.assertEqual(actors, set())
         self.assertTrue(summon_best_robot(turn, cfg, mem, nav, ledger, OPENING_TOWERS, [],
-                                         excluded=actors, reserve=reserve, stage_only=True))
+                                         excluded=actors, reserve=reserve))
         self.assertNotIn(20011, ledger.used)
-        self.assertNotIn(20012, ledger.used)
-        self.assertEqual(ledger.work_jobs[20010]['kind'], 'robot_buy')
+        self.assertEqual(ledger.work_jobs[20012]['kind'], 'robot_buy')
         self.assertGreaterEqual(ledger.gold, cfg.weapon_cost)
 
     def test_last_gun_does_not_reassign_an_existing_robot_buyer(self):
@@ -192,30 +191,32 @@ class RobotDaylightOrderTests(unittest.TestCase):
         mem = Memory(daytime_jobs={20010: dict(kind='robot_buy', target=(25, 20),
                                              name=BOSS, quantity=3)})
         actors, reserve = plan_day_spending(turn, cfg, mem, nav, ledger, OPENING_TOWERS)
-        self.assertEqual(actors, {20012})
+        self.assertEqual(actors, set())
         self.assertTrue(summon_best_robot(turn, cfg, mem, nav, ledger, OPENING_TOWERS, [],
-                                         excluded=actors, reserve=reserve, stage_only=True))
+                                         excluded=actors, reserve=reserve))
         self.assertEqual(ledger.work_jobs[20010]['kind'], 'robot_buy')
 
-    def test_only_remaining_worker_can_resume_necessary_construction(self):
+    def test_only_remaining_worker_prioritizes_robot_purchase_over_construction(self):
         data = opening_data(50)
         data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] != 20012]
         turn, cfg, nav, ledger = opening_setup(data)
         mem = Memory(daytime_jobs={20010: dict(kind='robot_buy', target=(25, 20),
                                              name=BOSS, quantity=3)})
         actors, reserve = plan_day_spending(turn, cfg, mem, nav, ledger, OPENING_TOWERS)
-        self.assertEqual(actors, {20010})
-        self.assertFalse(summon_best_robot(turn, cfg, mem, nav, ledger, OPENING_TOWERS, [],
-                                          excluded=actors, reserve=reserve, stage_only=True))
+        self.assertEqual(actors, set())
+        self.assertTrue(summon_best_robot(turn, cfg, mem, nav, ledger, OPENING_TOWERS, [],
+                                         excluded=actors, reserve=reserve))
+        self.assertEqual(ledger.work_jobs[20010]['kind'], 'robot_buy')
 
-    def test_staged_buyer_at_shop_waits_for_observed_gun_completion(self):
+    def test_buyer_at_shop_purchases_without_waiting_for_observed_gun_completion(self):
         data = opening_data(60, at_shop=True)
         turn, cfg, nav, ledger = opening_setup(data)
         mem = Memory(daytime_jobs={20012: dict(kind='robot_buy', target=(25, 20), name=BOSS, quantity=2)})
         resume_daytime_jobs(turn, cfg, mem, nav, ledger, OPENING_TOWERS, [], set())
-        self.assertNotIn('20012', ledger.commands)
+        self.assertEqual(ledger.commands['20012'], command('buy', name=BOSS, num=2))
         self.assertIn(20012, ledger.used)
-        self.assertEqual(ledger.work_jobs[20012]['kind'], 'robot_buy')
+        self.assertEqual(mem.robot_summon_state['purchased'], 2)
+        self.assertNotIn(20012, ledger.work_jobs)
         self.assertEqual(turn.gold, 419)
         self.assertEqual(ledger.gold, 179)
 
@@ -228,13 +229,17 @@ class RobotDaylightOrderTests(unittest.TestCase):
         mem = next(iter(agent.sessions.values()))
         self.assertEqual(mem.daytime_jobs[20010]['kind'], 'build')
 
-    def test_staging_releases_the_buyer_if_guns_are_still_missing_at_recall(self):
-        turn, cfg, nav, ledger = opening_setup(opening_data(67, at_shop=True))
-        mem = Memory(daytime_jobs={20012: dict(kind='robot_buy', target=(25, 20), name=BOSS, quantity=2)})
-        resume_daytime_jobs(turn, cfg, mem, nav, ledger, OPENING_TOWERS, [], set())
-        self.assertNotIn(20012, mem.daytime_jobs)
-        self.assertNotIn(20012, ledger.used)
-        self.assertEqual(ledger.gold, 419)
+    def test_late_buyer_depends_on_remaining_use_actions_instead_of_gun_completion(self):
+        for tick, count in ((67, 2), (69, 0)):
+            with self.subTest(tick=tick):
+                turn, cfg, nav, ledger = opening_setup(opening_data(tick, at_shop=True))
+                mem = Memory(daytime_jobs={20012: dict(kind='robot_buy', target=(25, 20), name=BOSS, quantity=2)})
+                resume_daytime_jobs(turn, cfg, mem, nav, ledger, OPENING_TOWERS, [], set())
+                self.assertEqual(ledger.commands.get('20012'),
+                                 command('buy', name=BOSS, num=count) if count else None)
+                self.assertEqual(ledger.gold, 419 - 120 * count)
+                if not count:
+                    self.assertNotIn(20012, mem.daytime_jobs)
 
     def test_fixed_worker_buys_and_uses_the_whole_batch_before_first_night(self):
         data = opening_data(35, ready=True, at_shop=True)
