@@ -503,10 +503,10 @@ class ImpIntegrationTests(unittest.TestCase):
         data["teamOur"]["roles"] += [unit(10, "worker", 3, 26), unit(11, "pioneer", 9, 22),
                                        unit(12, "worker", 3, 25), unit(20, "rocket", 3, 27)]
         data["robot"]["roles"] = [unit(90, "smallRobot", 9, 27, targetTeam="challenger", attackRange=3)]
-        # First-night shielding and later sabotage must both leave the crew's
-        # independent assignments intact, including an explicit layout.
+        # Day-55 recall, first-night shielding and later sabotage must leave
+        # the crew's independent assignments intact, including an explicit layout.
         cfg = Config(llm_enabled=False, layout_mode='explicit', weapon_cells=[[3, 27]])
-        for round_no, expected in ((70, 'move'), (200, 'destroy')):
+        for round_no, expected in ((55, 'move'), (70, 'move'), (200, 'destroy')):
             with self.subTest(round_no=round_no):
                 data['roundNo'] = round_no
                 result = Agent(cfg).decide(data)["roleCommandMap"]

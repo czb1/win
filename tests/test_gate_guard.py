@@ -184,8 +184,8 @@ class GateGuardEligibilityTests(unittest.TestCase):
                     self.assertEqual(commands['14'], command('destroy', (12, 2)))
                     self.assertEqual(next(iter(agent.sessions.values())).sabotage.gate_states, {})
 
-    def test_unbuilt_perimeter_does_not_recall_at_dusk(self):
-        data = gate_case(69, imp=(11, 2), worker=(1, 1))
+    def test_later_unbuilt_perimeter_does_not_recall_at_dusk(self):
+        data = gate_case(199, imp=(11, 2), worker=(1, 1))
         data['teamOur']['roles'] = [u for u in data['teamOur']['roles'] if u['roleType'] != 'wall']
         turn, _, nav, ledger = setup_case(data, llm_enabled=False)
         mem = Memory()
@@ -400,8 +400,8 @@ class GateGuardTests(unittest.TestCase):
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['14'], command('move', GATE))
 
-    def test_far_imp_recalls_before_last_turn(self):
-        data, agent = gate_case(64, imp=(13, 4)), Agent(Config(llm_enabled=False))
+    def test_later_far_imp_recalls_before_last_turn(self):
+        data, agent = gate_case(194, imp=(13, 4)), Agent(Config(llm_enabled=False))
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['14']['action'], 'move')
         state = next(iter(agent.sessions.values())).sabotage.gate_states[14]
