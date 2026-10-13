@@ -103,7 +103,7 @@ class MixedBatteryTests(unittest.TestCase):
         self.assertEqual(commands['2']['action'], 'move')
         self.assertEqual(next(iter(agent.sessions.values())).night_scout.worker_id, 2)
 
-    def test_released_gatling_worker_mines_while_other_worker_scouts(self):
+    def test_later_night_released_gatling_worker_mines_without_scouting(self):
         data = mixed_case(470, walls=True)
         data['robot']['roles'] = []
         enemy_walls(data)
@@ -111,8 +111,8 @@ class MixedBatteryTests(unittest.TestCase):
         commands = agent.decide(data)['roleCommandMap']
         self.assertIn(commands['1']['action'], ('move', 'collect'))
         mem = next(iter(agent.sessions.values()))
-        self.assertIsNone(mem.wall_watch_id)
-        self.assertEqual(mem.night_scout.worker_id, 2)
+        self.assertEqual(mem.wall_watch_id, 2)
+        self.assertIsNone(mem.night_scout.worker_id)
         self.assertEqual(mem.gatling_operator_id, 1)
         self.assertEqual(commands['20']['controllerId'], '11')
 

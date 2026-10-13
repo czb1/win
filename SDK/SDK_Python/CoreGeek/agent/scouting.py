@@ -22,8 +22,8 @@ class ScoutMemory:
 
 
 def _sync_scout(turn, memory, base):
-    key = (turn.day, base.id, base.pos) if base else None
-    if memory.key != key:
+    key = (turn.day, base.id, base.pos) if base and turn.day == 1 else None
+    if memory.key != key or key is None:
         memory.key, memory.worker_id, memory.post, memory.wall_entry = key, None, None, None
 
 
@@ -183,7 +183,10 @@ def _routes(turn, memory, nav, ledger, scout, base, reserved):
 
 
 def prepare_night_scout(turn, memory, nav, ledger, excluded=(), jobs=None):
-    """Stage an observer, using wall denial on day one and timed dusk otherwise."""
+    """Prepare the first night's observer; later days belong to normal work."""
+    if turn.day != 1:
+        _sync_scout(turn, memory, None)
+        return None
     scout = prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded, jobs)
     if scout:
         return scout
@@ -231,7 +234,7 @@ def prepare_night_scout(turn, memory, nav, ledger, excluded=(), jobs=None):
 def act_night_scout(turn, memory, nav, ledger, home_roles=()):
     base = enemy_base(turn)
     _sync_scout(turn, memory, base)
-    if turn.is_day or base is None:
+    if turn.is_day or turn.day != 1 or base is None:
         return None
     workers = {h.id: h for h in turn.workers}
     scout = workers.get(memory.worker_id)

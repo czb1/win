@@ -1,6 +1,7 @@
 """Finite observed-state checks for one night observer and role isolation."""
 import copy
 import unittest
+from unittest.mock import patch
 
 from test_agent import payload, setup_case, unit
 from test_robot_assault import controlled_robot
@@ -33,29 +34,30 @@ def decide(data, memory=None, home_roles=(), assault=False):
 
 
 class NightScoutTests(unittest.TestCase):
-    def test_dusk_departure_is_route_timed_and_night_keeps_worker(self):
-        data = scout_case(185)
+    @patch('agent.scouting.prepare_first_day_wall_blocker', return_value=None)
+    def test_first_dusk_fallback_departure_is_route_timed_and_night_keeps_worker(self, blocker):
+        data = scout_case(55)
         data['teamOur']['roles'][1]['pos'] = {'x': 13, 'y': 2}
         data['teamOur']['roles'][2]['pos'] = {'x': 5, 'y': 10}
         memory = ScoutMemory()
         turn, _, nav, ledger = setup_case(data)
         self.assertIsNone(prepare_night_scout(turn, memory, nav, ledger, excluded={12}))
         self.assertFalse(ledger.used)
-        data['roundNo'] = 198
+        data['roundNo'] = 68
         turn, _, nav, ledger = setup_case(data)
         scout = prepare_night_scout(turn, memory, nav, ledger, excluded={12})
         self.assertEqual(scout.id, 10)
         self.assertEqual(ledger.commands['10']['action'], 'move')
         self.assertTrue(rear_approach(turn, turn.enemies[0], memory.post))
-        self.assertEqual(memory.key[0], 2)
-        data['roundNo'] = 200
+        self.assertEqual(memory.key[0], 1)
+        data['roundNo'] = 70
         data['teamOur']['roles'][1]['pos'] = {'x': memory.post[0], 'y': memory.post[1]}
         turn, _, nav, ledger = setup_case(data)
         self.assertEqual(act_night_scout(turn, memory, nav, ledger).id, 10)
         self.assertEqual(ledger.notes[10]['reason'], 'night_scout_hold')
 
     def test_paid_daytime_job_is_not_taken_for_staging(self):
-        data = scout_case(198)
+        data = scout_case(68)
         turn, _, nav, ledger = setup_case(data)
         memory = ScoutMemory()
         self.assertIsNone(prepare_night_scout(turn, memory, nav, ledger,
@@ -63,7 +65,9 @@ class NightScoutTests(unittest.TestCase):
         self.assertFalse(ledger.used)
 
     def test_agent_stages_then_reads_shared_sight_for_robot_attack(self):
-        data = scout_case(198)
+        data = scout_case(68)
+        data['teamOur']['roles'] += [unit(20+i, 'rocket', x, y, level=3)
+                                    for i, (x, y) in enumerate(((2, 12), (3, 12), (2, 10)))]
         data['teamOur']['roles'][1]['pos'] = {'x': 13, 'y': 2}
         agent = Agent(Config(llm_enabled=False))
         first = agent.decide(data)['roleCommandMap']
@@ -71,12 +75,12 @@ class NightScoutTests(unittest.TestCase):
         post = memory.night_scout.post
         self.assertEqual(first['10']['action'], 'move')
         self.assertIsNotNone(post)
-        data['roundNo'] = 199
+        data['roundNo'] = 69
         data['teamOur']['roles'][1]['pos'] = {'x': post[0], 'y': post[1]}
         agent.decide(data)
         self.assertEqual(memory.night_scout.worker_id, 10)
         self.assertEqual(memory.night_scout.post, post)
-        data['roundNo'] = 200
+        data['roundNo'] = 70
         # The engine supplies the enemy after our observer sees it; the agent
         # never inserts an unseen target into this request.
         data['teamEnemy']['roles'].append(unit(50, 'rocket', 12, 3))

@@ -428,6 +428,9 @@ class Agent:
         budget_reached = False
         gate_guard = None
         try:
+            if turn.day != 1:
+                mem.night_scout.key, mem.night_scout.worker_id = None, None
+                mem.night_scout.post, mem.night_scout.wall_entry = None, None
             if not hasattr(mem, "robot_assault"):
                 mem.robot_assault = RobotAssaultMemory()
             # A paid base heal takes the pioneer before task or gun allocation,
@@ -505,8 +508,9 @@ class Agent:
                 # Establish the existing gunner before choosing a new scout.
                 # Prefer releasing the other worker's watch over this operator.
                 fixed_gatling_crew(turn, mem, nav, ledger)
-            scout = scout or act_night_scout(turn, mem.night_scout, nav, ledger,
-                                    home_roles=(mem.gatling_operator_id, mem.wall_watch_id))
+            if turn.day == 1:
+                scout = scout or act_night_scout(turn, mem.night_scout, nav, ledger,
+                                        home_roles=(mem.gatling_operator_id, mem.wall_watch_id))
             pioneer_gunner = bool(h and turn.weapons and
                                  ((not turn.is_day and not finish_opening_task) or not hold_task))
             if not turn.is_day and pioneer_gunner:
@@ -688,9 +692,9 @@ class Agent:
                     if watcher and hero.id == watcher.id and hero.id not in ledger.used:
                         if hero.health <= 165 and hero.inventory["Medicine"]:
                             use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem)
-                        else:
-                            repair_watch(turn, mem, nav, ledger, hero, walls)
-                        continue
+                            continue
+                        if repair_watch(turn, mem, nav, ledger, hero, walls):
+                            continue
                     if hero.id not in ledger.used and use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem):
                         continue
                     if hero.id not in ledger.used and hero.id not in {h.id for h, _ in pairs}:
@@ -718,7 +722,7 @@ class Agent:
                 scout_excluded = returning | ({watcher.id} if watcher else set()) | opening_scout_excluded
                 staged_scout = scout
                 enemy_station = enemy_base(turn)
-                if (not staged_scout and enemy_station and mem.night_scout.worker_id is not None
+                if (turn.day == 1 and not staged_scout and enemy_station and mem.night_scout.worker_id is not None
                         and mem.night_scout.key == (turn.day, enemy_station.id, enemy_station.pos)):
                     staged_scout = prepare_night_scout(
                         turn, mem.night_scout, nav, ledger,
@@ -732,7 +736,7 @@ class Agent:
                     summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls,
                                       excluded=returning | priority_actors, reserve=priority_gold)
                 dusk_resources(turn, self.cfg, mem, nav, ledger, towers)
-                if not staged_scout:
+                if turn.day == 1 and not staged_scout:
                     staged_scout = prepare_night_scout(
                         turn, mem.night_scout, nav, ledger,
                         excluded=scout_excluded, jobs=mem.daytime_jobs)

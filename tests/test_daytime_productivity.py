@@ -195,8 +195,10 @@ class DaytimeProductivityTests(unittest.TestCase):
         self.assertEqual(ledger.commands['1'], command('collect', (5, 5)))
         self.assertEqual(ledger.commands['2'], command('build', (7, 8), name='wall'))
 
-    def test_daytime_scout_cannot_take_last_income_worker_or_arrive_after_dark(self):
+    @patch('agent.scouting.prepare_first_day_wall_blocker', return_value=None)
+    def test_first_day_scout_cannot_take_last_income_worker_or_arrive_after_dark(self, blocker):
         data = income_case(50)
+        data['roundNo'] = 50
         data['teamEnemy']['roles'] = [unit(99, 'station', 12, 2)]
         turn, _, nav, ledger = income_setup(data)
         ledger.income_worker_id = 1
@@ -250,8 +252,10 @@ class DaytimeProductivityTests(unittest.TestCase):
                             if r['roleType'] == 'wall'])
         return setup_case(data)
 
-    def test_scout_uses_feasible_post_when_preferred_post_misses_deadline(self):
+    @patch('agent.scouting.prepare_first_day_wall_blocker', return_value=None)
+    def test_first_day_scout_uses_feasible_post_when_preferred_post_misses_deadline(self, blocker):
         data = income_case(50)
+        data['roundNo'] = 50
         data['teamEnemy']['roles'] = [unit(99, 'station', 12, 2)]
         turn, _, nav, ledger = income_setup(data)
         routes = [((11, 2), (23, (5, 4)), 6, 4), ((10, 2), (19, (5, 4)), 5, 4)]
