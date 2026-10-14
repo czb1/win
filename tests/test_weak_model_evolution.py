@@ -45,8 +45,11 @@ class WeakModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); cfg,contract,docs,preview=self.fixture(root)
             entry=next(x for x in preview['files'] if x.get('case_count'))
-            self.assertEqual(len(entry['case_samples']),2)
-            self.assertEqual(json.loads(entry['sample'])[0]['expected'],['a','z'])
+            self.assertTrue(entry['complete'])
+            self.assertEqual(entry['content'], (root/'examples.json').read_text())
+            self.assertEqual(json.loads(entry['content'])['cases'][0]['expected'],['a','z'])
+            self.assertNotIn('case_samples',entry)
+            self.assertNotIn('sample',entry)
             self.assertIsNone(transform_config(docs,{**contract,'repair_spec':True},preview))
             self.assertIsNone(transform_config([{'output':'write unknown'}],contract,preview))
             docs[0]['output']+=' 写入 `other.json`'
