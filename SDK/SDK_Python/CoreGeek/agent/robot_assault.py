@@ -1,4 +1,4 @@
-"""Reach an open base firing position before coordinating unavoidable clearance."""
+"""Keep base shots, clear the chosen gap together, then advance to the base."""
 from collections import deque
 from dataclasses import dataclass, field
 from heapq import heappop, heappush
@@ -84,6 +84,7 @@ class RobotAssaultMemory:
     base_pos: tuple | None = None
     focus_target_id: int | None = None
     clearance_entry: tuple | None = None
+    priority_target_id: int | None = None
 
     def observe(self, turn, base):
         base_id = base.id if base else None
@@ -95,6 +96,7 @@ class RobotAssaultMemory:
             self.entry_crossed.clear()
             self.focus_target_id = None
             self.clearance_entry = None
+            self.priority_target_id = None
             self.objectives.clear()
             self.pending.clear()
             self.yield_waiters.clear()
@@ -852,7 +854,7 @@ def _act_inside_base(turn, memory, nav, ledger, robot, base, occupied):
     return False
 
 
-def _gap_clearance_target(turn, memory, nav, ledger, base, occupied):
+def _gap_clearance_target(turn, memory, nav, ledger, base, occupied, *, priority_only=False):
     """Find the first enemy on a useful route through a gap, not on a base ray.
 
     Projected removal only chooses a target. Actual attacks and moves still
@@ -868,10 +870,23 @@ def _gap_clearance_target(turn, memory, nav, ledger, base, occupied):
                  else memory.clearance_entry)
     entries = [p for p in ring if p == preferred or not (
         (hit := occupied.get(p)) and hit[0] is not None and hit[0].kind == 'wall')]
+    entries.sort(key=lambda p: (p != preferred,
+                               min(distance(r.pos, p) for r in robots), p))
+    if priority_only:
+        # A prepared entrance outranks a speculative trip around the base.
+        # Without scout/history, only infer a nearby gap bracketed by walls;
+        # ordinary enemies in open terrain must not become mandatory targets.
+        entries = entries[:1]
+        if entries and entries[0] != preferred:
+            x, y = entries[0]
+            flanks = ring & {(x-1, y), (x+1, y), (x, y-1), (x, y+1)}
+            if len(flanks) != 2 or not all(
+                    (hit := occupied.get(p)) and hit[0] is not None and hit[0].kind == 'wall'
+                    for p in flanks):
+                return None
     inner = {p for cell in base.cells for p in neighbours(cell)
              if turn.inside(p) and p not in base.cells}
-    for entry in sorted(entries, key=lambda p: (p != preferred,
-                        min(distance(r.pos, p) for r in robots), p)):
+    for entry in entries:
         check_time(nav.deadline)
         region = inner | {entry}
         removable = {p: hit[0] for p, hit in occupied.items()
@@ -880,7 +895,7 @@ def _gap_clearance_target(turn, memory, nav, ledger, base, occupied):
         holder = occupied.get(entry)
         vacated = {entry} if holder and holder[0] is not None and holder[0].id in robot_ids else set()
         fixed = ((turn.blocked - removable.keys() - vacated) | ledger.reserved
-                 | set(memory.occupied_steps))
+                 | (set(memory.occupied_steps) - removable.keys()))
         if entry in fixed:
             continue
         projected = {p: hit for p, hit in occupied.items() if p not in removable}
@@ -1179,6 +1194,7 @@ def act_robots(turn, memory, nav, ledger):
     if not turn.summon_robots:
         memory.focus_target_id = None
         memory.clearance_entry = None
+        memory.priority_target_id = None
         return
     occupied = _occupants(turn, memory)
     if base is not None and not turn.is_day:
@@ -1189,6 +1205,7 @@ def act_robots(turn, memory, nav, ledger):
                for r in turn.summon_robots):
             memory.focus_target_id = None
             memory.clearance_entry = None
+            memory.priority_target_id = None
             for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
                 check_time(nav.deadline)
                 _act_toward_target(turn, memory, nav, ledger, robot, base, occupied, attack_only=True)
@@ -1200,9 +1217,8 @@ def act_robots(turn, memory, nav, ledger):
         # it no longer forces robots to visit an entry before they may shoot.
         memory.entry_crossed.update(r.id for r in turn.summon_robots
                                     if r.pos == entry or base_distance(base, r.pos) < 2)
-    # Give every robot its direct shot or obstacle-free route first. Only the
-    # remaining robots participate in clearance; moving/attacking the base must
-    # not supply imaginary firepower to the shared obstacle objective.
+    # Current base shots and inner progress keep priority. Outside robots then
+    # clear the selected gap before continuing an old or speculative detour.
     previous_focus = memory.focus_target_id
     memory.focus_target_id = None
     for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
@@ -1214,9 +1230,8 @@ def act_robots(turn, memory, nav, ledger):
             ledger.explain(robot.id, "robot_wait_day" if turn.is_day else "robot_dizzy" if robot.abnormal_state == "dizzy"
                            else "robot_enemy_base_missing")
             continue
-        # An exposed wall/tower is not necessarily an unavoidable obstacle.
-        # Search all reachable clear firing stances before spending attacks on
-        # it. This retains current legal base shots without moving closer.
+        # Keep current legal base shots without moving closer or clearing an
+        # obstacle that does not prevent this robot from firing.
         _act_toward_target(turn, memory, nav, ledger, robot, base, occupied, attack_only=True)
 
     # Preserve observed ingress independently of a teammate's stalled approach.
@@ -1225,6 +1240,45 @@ def act_robots(turn, memory, nav, ledger):
         check_time(nav.deadline)
         if robot.id not in ledger.used:
             _act_inside_base(turn, memory, nav, ledger, robot, base, occupied)
+
+    # Recheck the actual entrance every turn, even when a long route to a
+    # different side exists. Do not wait for collisions/stalls to identify a
+    # visible worker standing in the gap, and do not chase it after it leaves.
+    previous_priority = memory.priority_target_id
+    early_focus = (_gap_clearance_target(turn, memory, nav, ledger, base, occupied,
+                                        priority_only=True)
+                   if base and not turn.is_day else None)
+    if previous_priority is not None:
+        memory.routes = {uid: route for uid, route in memory.routes.items()
+                         if route.target_id != previous_priority
+                         or early_focus is not None and route.target_id == early_focus.id}
+    if early_focus is not None and early_focus.kind in WEAPONS:
+        # Turrets block walking but permit shots through them. Keep a one-step
+        # base firing stance instead of demolishing a turret we need not enter.
+        for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
+            check_time(nav.deadline)
+            if robot.id not in ledger.used:
+                _act_toward_target(turn, memory, nav, ledger, robot, base, occupied,
+                                   move_within={robot.pos, *neighbours(robot.pos)})
+        if all(r.id in ledger.used for r in turn.summon_robots):
+            early_focus = None
+    memory.priority_target_id = early_focus.id if early_focus else None
+    if early_focus is not None:
+        memory.focus_target_id = early_focus.id
+        for attack_only in (True, False):
+            for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
+                check_time(nav.deadline)
+                if robot.id in ledger.used:
+                    continue
+                route = memory.routes.get(robot.id)
+                continued = (not attack_only and route is not None
+                             and route.target_id == early_focus.id
+                             and _continue_assault_route(turn, memory, nav, ledger, robot, occupied))
+                if continued or _act_toward_target(turn, memory, nav, ledger, robot,
+                                                  early_focus, occupied, attack_only=attack_only):
+                    ledger.notes[robot.id]['conditions']['gap_priority'] = True
+    else:
+        memory.clearance_entry = None
 
     # Keep a confirmed, shrinking route (including a clearance approach) before
     # another speculative base detour or a teammate's shared clearance choice.
@@ -1237,8 +1291,7 @@ def act_robots(turn, memory, nav, ledger):
     # After correlated failures/backtracking, jointly clear an observed enemy
     # on base-directed rays before allocating another speculative detour.
     # Direct base shooters were allocated first and cannot be pulled away.
-    early_focus = None
-    if base and not turn.is_day and any(
+    if early_focus is None and base and not turn.is_day and any(
             memory.approach_stalls.get(r.id, 0) >= ASSAULT_STALL_LIMIT
             for r in turn.summon_robots if r.id not in ledger.used):
         memory.focus_target_id = previous_focus
