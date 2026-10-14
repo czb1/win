@@ -33,8 +33,8 @@ def prepare(data, **config):
 
 
 class FirstNightImpTests(unittest.TestCase):
-    def test_returns_without_walls_or_robots_instead_of_destroying_mine(self):
-        for round_no in (70, 129):
+    def test_empty_opening_returns_without_walls_before_robot_spawn(self):
+        for round_no in (70,):
             data = base_case(round_no, point=(11, 2))
             turn, nav, ledger, mem, guard = prepare(data)
             self.assertIsInstance(guard, FirstNightBaseGuard)
@@ -112,7 +112,7 @@ class FirstNightImpTests(unittest.TestCase):
                 self.assertIn(14, ledger.used)
                 self.assertIs(turn.blocked, original)
 
-    def test_returns_from_rear_gate_to_front_and_keeps_rocket_fire(self):
+    def test_first_night_holds_wall_opening_and_keeps_rocket_fire(self):
         data, agent = gate_case(70), Agent(Config(llm_enabled=False))
         data['robot']['roles'] = [unit(90, 'largeRobot', 10, 10, attackRange=3,
                                       targetTeam='challenger')]
@@ -123,11 +123,11 @@ class FirstNightImpTests(unittest.TestCase):
             self.assertEqual(shots[0]['controllerId'], '11')
             advance(data, commands)
         imp = next(u for u in data['teamOur']['roles'] if u['id'] == 14)
-        self.assertIn(pos(imp['pos']), {(7, 10), (7, 11)})
+        self.assertEqual(pos(imp['pos']), (3, 10))
         self.assertNotIn('14', agent.decide(data)['roleCommandMap'])
 
     def test_front_guard_yields_for_an_actual_worker_route(self):
-        data = base_case(point=(7, 10))
+        data = base_case(55, point=(7, 10))
         data['teamOur']['roles'].append(unit(1, 'worker', 7, 9))
         data['teamOur']['roles'] += [unit(100+x, 'wall', x, 10)
                                      for x in range(15) if x not in (5, 6, 7)]
@@ -142,7 +142,7 @@ class FirstNightImpTests(unittest.TestCase):
         self.assertIsNotNone(nav.search(turn.workers[0], {(7, 12)}))
 
     def test_accepted_collection_does_not_displace_front_guard(self):
-        data = base_case(point=(7, 10))
+        data = base_case(55, point=(7, 10))
         data['teamOur']['roles'].append(unit(1, 'worker', 7, 9))
         data['teamOur']['roles'] += [unit(100+x, 'wall', x, 10)
                                      for x in range(15) if x not in (5, 6, 7)]

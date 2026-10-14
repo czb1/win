@@ -16,6 +16,7 @@ class ImpMemory:
     positions: dict = field(default_factory=dict)
     enemies: dict = field(default_factory=dict)
     gate_states: dict = field(default_factory=dict)
+    night_wave: dict = field(default_factory=dict)
 
     def observe(self, turn, mem):
         alive = {h.id for h in turn.imps}
@@ -198,7 +199,10 @@ def act_imps(turn, memory, nav, ledger):
     if all(h.id in ledger.used for h in turn.imps):
         return
     immediate = danger_cells(turn, dangers, 1, nav.deadline)
-    forbidden = ledger.tower_cells | ledger.wall_cells | set(ledger.operator_posts.values())
+    # Broken wall blueprints are passageways at night, when construction is
+    # unavailable. Keep actual buildings blocked through turn.blocked.
+    forbidden = (ledger.tower_cells | (ledger.wall_cells if turn.is_day else set())
+                 | set(ledger.operator_posts.values()))
     avoided = immediate | forbidden
     channel_danger = {DESTROY_ROUNDS: danger_cells(turn, dangers, DESTROY_ROUNDS, nav.deadline)}
     mines = sorted(p for p in turn.zones if turn.enemy_mine(p))

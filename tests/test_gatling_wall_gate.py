@@ -167,7 +167,9 @@ class GatlingWallGateTests(unittest.TestCase):
         guard = prepare_gate_guard(turn, cfg, Memory(), nav, ledger, towers, walls)
         self.assertIsNotNone(guard)
         self.assertEqual(guard.gate, (9, 19))
-        self.assertEqual(guard.inward, (0, 1))
+        guard.finish()
+        self.assertEqual(guard.state['gate'], (9, 19))
+        self.assertNotIn('14', ledger.commands)
 
 
 if __name__ == '__main__':
