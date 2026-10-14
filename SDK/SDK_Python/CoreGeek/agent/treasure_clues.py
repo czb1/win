@@ -12,8 +12,8 @@ ITEM_DESCRIPTIONS = {
 KINDS = ("items", "location", "time")
 
 
-def merge_material_plan(previous, proposed, news, clues, shop):
-    """Validate structure and quote provenance; interpretation belongs to LLM."""
+def merge_material_plan(previous, proposed, shop):
+    """Validate executable structure; material interpretation belongs to the LLM."""
     if proposed is None:
         return previous, "unchanged"
     if not isinstance(proposed, dict):
@@ -27,21 +27,22 @@ def merge_material_plan(previous, proposed, news, clues, shop):
     items = proposed.get("items")
     if not isinstance(items, list) or not items:
         return previous, "invalid_items"
-    sources = [(n.get("day"), n.get("folkLegends", "")) for n in news]
-    sources += [(c.get("day"), c.get("quote", "")) for c in clues]
-    sources += [(i.get("day"), i.get("quote", "")) for i in (previous or {}).get("items", [])]
     checked, names = [], set()
     for item in items:
         if not isinstance(item, dict):
             return previous, "invalid_item"
         name, quantity = item.get("name"), item.get("quantity")
-        day, quote = item.get("day"), item.get("quote")
         if (not isinstance(name, str) or name not in shop or name in names
-                or type(quantity) is not int or quantity <= 0
-                or type(day) is not int or not isinstance(quote, str) or not quote.strip()
-                or not any(day == d and quote.strip() in text for d, text in sources)):
-            return previous, "invalid_item_or_evidence"
-        checked.append(dict(name=name, quantity=quantity, day=day, quote=quote.strip()))
+                or type(quantity) is not int or quantity <= 0):
+            return previous, "invalid_item"
+        entry = dict(name=name, quantity=quantity)
+        # Legacy replies may include explanatory metadata. It never gates buying.
+        day, quote = item.get("day"), item.get("quote")
+        if type(day) is int:
+            entry["day"] = day
+        if isinstance(quote, str):
+            entry["quote"] = quote.strip()
+        checked.append(entry)
         names.add(name)
     return {"status": status, "items": checked}, "confirmed"
 
