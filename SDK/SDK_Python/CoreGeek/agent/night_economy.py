@@ -362,6 +362,19 @@ def _mine(turn, cfg, mem, nav, ledger, hero, state):
             prep = nav.leg(replace(hero, pos=sale[2]), home,
                            arrival[0] + quantity + sale[0] + count) if home else None
             preparation = prep[0] if prep else 0
+            if hero.id == mem.gatling_operator_id:
+                from .front_rebuild import missing_front, finish_plan
+                sites = missing_front(turn, mem, ledger)
+                if sites:
+                    elapsed = arrival[0] + quantity + sale[0] + count
+                    front_plan = finish_plan(turn, cfg, mem, nav, ledger,
+                                             replace(hero, pos=sale[2]), sites, elapsed)
+                    if front_plan is None:
+                        continue
+                    # Include the real next-day wall route and all build actions,
+                    # not merely a walk from the vendor to the base footprint.
+                    dawn = 0 if turn.is_day else 130 - turn.tick
+                    preparation = front_plan['total_steps'] - max(dawn, elapsed) - cfg.return_margin
             if (home and prep is None
                     or preparation + cfg.return_margin > 70 - cfg.economy_rounds):
                 continue
@@ -428,6 +441,9 @@ def work(turn, cfg, mem, base_nav, ledger, hero, *, start=False):
         # Let existing emergency medicine/repair handling take over.
         mem.night_work.pop(hero.id, None)
         return False
+    from .front_rebuild import act as rebuild_front
+    if rebuild_front(turn, cfg, mem, base_nav, ledger, hero):
+        return True
     if ((not turn.is_day or not watcher or state.get('delivery_pending'))
             and not (not watcher and state['phase'] == 'shop')
             and _deliver(turn, mem, nav, ledger, hero, state, watcher)):

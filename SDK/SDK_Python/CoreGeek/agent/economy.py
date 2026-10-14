@@ -1064,6 +1064,8 @@ def repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
             continue
         if turn.day > 1:
             from .wall_batches import face_sites
+            front = set(front_sites(turn, wall_sites))
+            reachable = [p for p in reachable if p in front] or reachable
             anchor = min(reachable, key=lambda p: (nav.approach(hero, [p], ledger.reserved)[0], p))
             face = face_sites(wall_sites, anchor)
             reachable = [p for p in reachable if p in face]
