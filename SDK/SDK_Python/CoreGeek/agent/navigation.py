@@ -245,12 +245,18 @@ def layout(turn, cfg):
         return origin[0] + sx * p[0], origin[1] + sy * p[1]
 
     # Rear corner: the adjacent rocket pair shares the control cell (-1, 0).
-    # Keep the original one-cell weapon ring inside the two-cell wall perimeter.
+    # The short-range gatling belongs on the base's inward Y flank: below a
+    # top-left base and above a bottom-right base. Keep existing batteries
+    # in place, including the previous side gatling and three-rocket layout.
     tower_order = [(-1, -1), (0, -1), (-1, 1)]
+    if cfg.loadout.count("rocket") == 2 and cfg.loadout.count("gatling") == 1:
+        preferred = [world(p) for p in [(-1, -1), (0, -1), (0, 2)]]
+        if all(w.pos in preferred for w in turn.weapons):
+            tower_order = [(-1, -1), (0, -1), (0, 2)]
     towers = [world(p) for p in tower_order[:len(cfg.loadout)] if turn.inside(world(p))]
     # Preserve the original six-cell front and flanks, then close the rear.
-    # The sole gate (-2, 1) faces the gatling at (-1, 1): an inward
-    # advance meets a tower before the base. Legal diagonal steps keep the
+    # The sole gate (-2, 1) and wall coordinates stay unchanged. The gatling
+    # on the Y flank retains a clear ray to the gate. Legal diagonal steps keep the
     # shared control post (-1, 0) and the inner aisle accessible to workers.
     # It is absent from the blueprint, including breach repairs.
     order = [(3, v) for v in (0, 1, -1, 2, -2, 3)]

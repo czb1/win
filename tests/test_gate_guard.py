@@ -77,7 +77,7 @@ class ThreeRocketTests(unittest.TestCase):
             for missing in range(3):
                 data = payload(10, [unit(13, 'station', 5, 11), unit(1, 'worker', 4, 11),
                     *[unit(20+i, 'rocket', *p) for i, p in enumerate(TOWERS) if i != missing]])
-                turn, _, nav, ledger = setup_case(data)
+                turn, _, nav, ledger = setup_case(data, loadout=cfg.loadout)
                 self.assertTrue(build(turn, cfg, Memory(), nav, ledger, turn.workers[0],
                                       TOWERS, lambda _: 'rocket'))
                 self.assertEqual(ledger.commands['1'], command('build', TOWERS[missing], name='rocket'))
@@ -101,8 +101,9 @@ class ThreeRocketTests(unittest.TestCase):
 
     def test_sole_gap_faces_a_tower_before_the_base_in_all_four_corners(self):
         for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
-            turn = Turn(payload(roles=[unit(13, 'station', x, y)]), Config())
-            towers, walls = layout(turn, Config())
+            cfg = Config(loadout=['rocket'] * 3)
+            turn = Turn(payload(roles=[unit(13, 'station', x, y)]), cfg)
+            towers, walls = layout(turn, cfg)
             gates = wall_gates(turn, walls)
             self.assertEqual(len(walls), 19)
             self.assertEqual(len(gates), 1)
@@ -117,6 +118,18 @@ class ThreeRocketTests(unittest.TestCase):
 
 
 class GateGuardEligibilityTests(unittest.TestCase):
+    def test_inferred_flank_gatling_retains_second_night_gate_guard(self):
+        for station in ((3, 11), (10, 4)):
+            data = payload(210, [unit(13, 'station', *station, health=1500)])
+            cfg = Config()
+            towers, walls = layout(Turn(data, cfg), cfg)
+            gate = next(iter(wall_gates(Turn(data, cfg), walls)))
+            data['teamOur']['roles'] += [unit(14, 'imp', *gate, health=500),
+                *[unit(100+i, 'wall', *p) for i, p in enumerate(walls)]]
+            data['robot']['roles'] = [unit(90, 'largeRobot', gate[0], gate[1] + 1)]
+            turn, _, nav, ledger = setup_case(data)
+            self.assertIsNotNone(prepare_gate_guard(turn, cfg, Memory(), nav, ledger, towers, walls))
+
     def test_idle_quiet_night_keeps_gate_clear_after_yield_window(self):
         data, agent = gate_case(worker=(1, 1)), Agent(Config(llm_enabled=False))
         data['robot']['roles'] = []

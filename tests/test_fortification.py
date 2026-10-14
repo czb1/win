@@ -34,8 +34,9 @@ class LayoutRegressionTests(unittest.TestCase):
     def test_sealed_blueprint_has_three_reachable_distinct_operator_spots(self):
         for station in ((3, 11), (10, 4)):
             p = payload(roles=[unit(13, "station", *station), unit(10, "worker", 0, 7)])
-            t = Turn(p, Config())
-            towers, walls = layout(t, Config())
+            cfg = Config(loadout=['rocket'] * 3)
+            t = Turn(p, cfg)
+            towers, walls = layout(t, cfg)
             p["teamOur"]["roles"] += [unit(100+i, "wall", *point) for i, point in enumerate(walls)]
             p["teamOur"]["roles"] += [unit(20+i, "rocket", *point) for i, point in enumerate(towers)]
             t, _, nav, _ = setup_case(p)
