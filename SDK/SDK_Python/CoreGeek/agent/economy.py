@@ -1064,10 +1064,19 @@ def repair_walls(turn, cfg, mem, nav, ledger, free, wall_sites):
             continue
         if turn.day > 1:
             from .wall_batches import face_sites
+            # A reachable front gap may still be disconnected from the live
+            # wall chain, occupied or claimed. Choose the face from executable
+            # build options so a connecting side can advance the perimeter.
+            buildable = {p: route[0] for _, _, _, _, p, route in build_options(
+                turn, cfg, mem, nav, ledger, hero, reachable, lambda _: 'wall')}
+            if not buildable:
+                continue
             front = set(front_sites(turn, wall_sites))
-            reachable = [p for p in reachable if p in front] or reachable
-            anchor = min(reachable, key=lambda p: (nav.approach(hero, [p], ledger.reserved)[0], p))
+            anchors = front & buildable.keys() or buildable.keys()
+            anchor = min(anchors, key=lambda p: (buildable[p], p))
             face = face_sites(wall_sites, anchor)
+            # Retain the face's full material batch, including cells that only
+            # become connected after its first wall is observed as built.
             reachable = [p for p in reachable if p in face]
         held = hero.inventory["stone"]
         capacity = (held + hero.space) // cfg.wall_stones
