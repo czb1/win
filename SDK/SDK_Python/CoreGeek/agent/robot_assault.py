@@ -480,8 +480,8 @@ def open_assault_entry(turn, base, entry):
 
 
 def in_summon_cluster(ledger, point):
-    # Rear robots do not enter through the scout. Keep its existing wall gap
-    # available as a fallback instead of dragging it to the new spawn cluster.
+    # Rear anchors must not drag the scout away from its gap; once usable,
+    # that gap takes priority for subsequent summons.
     if ledger.robot_summon_mode == 'rear_direct':
         return True
     anchor = ledger.robot_summon_anchor
@@ -592,16 +592,28 @@ def choose_summon_position(turn, ledger, deadline=None):
                             for w in weapons)}
         return _summon_in_cluster(turn, ledger, base, ledger.robot_assault_entry, deadline, forbidden)
     entry = open_assault_entry(turn, base, ledger.robot_assault_entry)
+    if turn.day == 1 and entry is not None:
+        # A usable worker gap owns deployment, even after an earlier rear or
+        # weak-entry fallback. Only keep an anchor already serving this gap.
+        anchor = ledger.robot_summon_anchor
+        clustered = (turn.day == 1 and anchor is not None
+                     and ledger.robot_summon_mode == 'scout_gap'
+                     and distance(entry, anchor) <= FIRST_DAY_SUMMON_RADIUS + 1)
+        position = (_summon_in_cluster(turn, ledger, base, entry, deadline) if clustered
+                    else _summon_at_gap(turn, ledger, base, entry, deadline))
+        if position is not None:
+            ledger.robot_summon_mode = 'scout_gap'
+            return position
     rear = scouted_rear_summon_position(turn, ledger, deadline)
     if rear is not None:
         ledger.robot_summon_mode = 'rear_direct'
         return rear
-    # If the rear is now walled/blocked, release its grouping preference and
-    # return to the worker's gap. Already submitted positions stay reserved.
+    # With no usable gap or rear shot, retain a previous non-rear group.
+    # Already submitted positions stay reserved when deployment changes.
     if (turn.day == 1 and ledger.robot_summon_anchor is not None
             and ledger.robot_summon_mode != 'rear_direct'):
         return _summon_in_cluster(turn, ledger, base, entry, deadline)
-    if entry is not None:
+    if turn.day != 1 and entry is not None:
         position = _summon_at_gap(turn, ledger, base, entry, deadline)
         if position is not None:
             ledger.robot_summon_mode = 'scout_gap'

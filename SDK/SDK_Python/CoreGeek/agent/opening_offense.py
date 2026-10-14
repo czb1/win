@@ -6,7 +6,7 @@ from .economy import build, build_options, buy_supply, supplies, use_inventory, 
 from .economy_plan import via
 from .logging_system import emit_event
 from .model import DEFENCE_RETURN_TICK, ORES, SUMMON_ORDERS
-from .robot_assault import enemy_base, first_day_wall_entries, scouted_rear_summon_position
+from .robot_assault import enemy_base, first_day_wall_entries
 from .scouting import FIRST_DAY_SCOUT_TICK, prepare_first_day_wall_blocker
 from .spending import (FIRST_DAY_ROBOT_PURCHASE_LIMIT, first_day_guns_built,
                        first_day_purchase_reserve, first_day_pioneer_plan_active,
@@ -335,17 +335,16 @@ def act_first_day_offense(turn, cfg, mem, nav, ledger, towers, walls):
         if scout.key != key or scout.worker_id != hero.id:
             scout.key, scout.worker_id, scout.post, scout.wall_entry = key, hero.id, None, None
         from .brain import summon_best_robot
-        # An observed open rear needs no held gap. Leave the final daylight
-        # uses available even when neither route could be secured in time.
-        rear_open = scouted_rear_summon_position(turn, ledger, nav.deadline) is not None
-        if (turn.tick >= DEFENCE_RETURN_TICK or rear_open) and summon_best_robot(
+        # Preserve final daylight uses; earlier, establish the worker's gap
+        # before considering a rear fallback, including on the first visit.
+        if turn.tick >= DEFENCE_RETURN_TICK and summon_best_robot(
                 turn, cfg, mem, nav, ledger, towers, walls,
                 excluded={h.id for h in turn.heroes if h.id != hero.id}, use_only=True):
             return hero
         blocker = prepare_first_day_wall_blocker(
             turn, scout, nav, ledger, worker_id=hero.id,
             departure_tick=FIRST_DAY_OFFENSE_TICK, reserve_hold=False)
-        if blocker and hero.pos == scout.wall_entry and hero.id not in ledger.used:
+        if hero.id not in ledger.used and (blocker is None or hero.pos == scout.wall_entry):
             summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls,
                               excluded={h.id for h in turn.heroes if h.id != hero.id}, use_only=True)
         if blocker is None:

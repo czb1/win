@@ -12,7 +12,8 @@ from agent.intelligence import Memory
 from agent.model import distance, pos
 from agent.navigation import DeadlineExceeded
 from agent.robot_assault import (RobotAssaultMemory, act_robots, choose_summon_position,
-                                 enemy_entries, rear_approach, scouted_rear_summon_position)
+                                 enemy_entries, first_day_wall_entries, rear_approach,
+                                 scouted_rear_summon_position)
 from agent.scouting import prepare_first_day_wall_blocker
 
 
@@ -39,7 +40,7 @@ def close_rear(data):
 
 
 class ScoutedRearSummonTests(unittest.TestCase):
-    def test_observed_open_rear_overrides_held_gap_and_attacks_base_on_both_axes(self):
+    def test_observed_open_rear_without_gap_attacks_base_on_both_axes(self):
         for kind in ('gatling', 'railgun', 'rocket'):
             for flip_x in (False, True):
                 for flip_y in (False, True):
@@ -53,7 +54,6 @@ class ScoutedRearSummonTests(unittest.TestCase):
                         old_spawn = (40 - SPAWN[0] if flip_x else SPAWN[0],
                                      31 - SPAWN[1] if flip_y else SPAWN[1])
                         turn, _, nav, ledger = setup_case(data)
-                        ledger.robot_assault_entry = entry
                         spawn = choose_summon_position(turn, ledger, nav.deadline)
                         self.assertNotEqual(spawn, old_spawn)
                         self.assertTrue(rear_approach(turn, turn.enemies[0], spawn))
@@ -68,6 +68,82 @@ class ScoutedRearSummonTests(unittest.TestCase):
                         shot = ledger.commands['30000']
                         self.assertEqual(shot['action'], 'attack')
                         self.assertIn(pos(shot['targetPos'][0]), turn.enemies[0].cells)
+
+    def test_worker_gap_precedes_open_rear_on_horizontal_and_vertical_faces(self):
+        for entry, expected in ((ENTRY, SPAWN), ((31, 7), (31, 6)), ((28, 10), (27, 10))):
+            for flip_x in (False, True):
+                for flip_y in (False, True):
+                    with self.subTest(entry=entry, flip_x=flip_x, flip_y=flip_y):
+                        data = block_case(46, held=True, stock=[BOSS])
+                        data['teamOur']['roles'][1]['pos'] = {'x': entry[0], 'y': entry[1]}
+                        data['teamEnemy']['roles'].append(unit(20040, 'rocket', 32, 8))
+                        mirror(data, flip_x, flip_y)
+                        gap = (40 - entry[0] if flip_x else entry[0],
+                               31 - entry[1] if flip_y else entry[1])
+                        spawn = (40 - expected[0] if flip_x else expected[0],
+                                 31 - expected[1] if flip_y else expected[1])
+                        turn, cfg, nav, ledger = setup_case(data)
+                        memory = Memory(night_scout=memory_for(gap))
+                        base = turn.enemies[0]
+                        memory.night_scout.key = (1, base.id, base.pos)
+                        self.assertIsNotNone(scouted_rear_summon_position(turn, ledger))
+                        ledger.robot_assault_entry = gap
+                        self.assertEqual(choose_summon_position(turn, ledger), spawn)
+                        self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger,
+                                                         [], [], use_only=True))
+                        self.assertEqual(pos(ledger.commands['12']['targetPos'][0]), spawn)
+                        self.assertEqual(memory.robot_summon_state['mode'], 'scout_gap')
+                        self.assertEqual(memory.robot_summon_state['anchor'], spawn)
+
+    def test_unavailable_worker_gap_keeps_rear_fallback(self):
+        for reason in ('missing', 'wall', 'reserved_exterior'):
+            with self.subTest(reason=reason):
+                data = rear_case()
+                if reason == 'wall':
+                    data['teamEnemy']['roles'].append(unit(50000, 'wall', *ENTRY))
+                turn, cfg, nav, ledger = setup_case(data)
+                memory = Memory(night_scout=memory_for(None if reason == 'missing' else ENTRY))
+                if reason == 'reserved_exterior':
+                    ledger.reserved.update((x, 13) for x in range(29, 32))
+                self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger,
+                                                 [], [], use_only=True))
+                self.assertEqual(memory.robot_summon_state['mode'], 'rear_direct')
+                spawn = pos(ledger.commands['12']['targetPos'][0])
+                self.assertTrue(rear_approach(turn, turn.enemies[0], spawn))
+                self.assertTrue(turn.summon_position_legal(spawn))
+                self.assertNotIn(spawn, ledger.reserved)
+
+    def test_new_gap_takes_priority_over_distant_existing_anchor(self):
+        for mode in ('rear_direct', 'weakest_entry', 'scout_gap'):
+            with self.subTest(mode=mode):
+                turn, _, _, ledger = setup_case(rear_case())
+                old = (34, 9)
+                ledger.robot_summon_anchor = old
+                ledger.robot_summon_mode = mode
+                ledger.summon_pending_positions.add(old)
+                ledger.robot_assault_entry = ENTRY
+                self.assertEqual(choose_summon_position(turn, ledger), SPAWN)
+                self.assertEqual(ledger.robot_summon_mode, 'scout_gap')
+                self.assertEqual(ledger.summon_pending_positions, {old})
+
+    def test_waiting_for_new_gap_preserves_deployment_and_worker_route(self):
+        data = rear_case(46, held=False, stock=[BOSS] * 2)
+        memory = Memory(night_scout=memory_for(None))
+        turn, cfg, nav, ledger = setup_case(data)
+        self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger, [], [], use_only=True))
+        rear = pos(ledger.commands['12']['targetPos'][0])
+        data['roundNo'] = 47
+        data['lastRoundRoleActionResults'] = {'12': True}
+        memory.night_scout.wall_entry = ENTRY
+        turn, cfg, nav, ledger = setup_case(data)
+        self.assertFalse(summon_best_robot(turn, cfg, memory, nav, ledger, [], [], use_only=True))
+        self.assertEqual(memory.robot_summon_state['anchor'], rear)
+        self.assertEqual(memory.robot_summon_state['positions'], {rear})
+        self.assertEqual(ledger.robot_summon_mode, 'rear_direct')
+        scout = prepare_first_day_wall_blocker(turn, memory.night_scout, nav, ledger)
+        self.assertIsNotNone(scout)
+        self.assertEqual(memory.night_scout.wall_entry, ENTRY)
+        self.assertEqual(ledger.commands[str(scout.id)]['action'], 'move')
 
     def test_rear_walls_keep_original_worker_gap(self):
         for flip_x in (False, True):
@@ -100,9 +176,9 @@ class ScoutedRearSummonTests(unittest.TestCase):
                 self.assertIsNone(scouted_rear_summon_position(turn, ledger))
                 self.assertEqual(choose_summon_position(turn, ledger), SPAWN)
 
-    def test_scouted_rear_can_summon_before_worker_occupies_gap(self):
-        for tick, closed, expected in ((24, False, False), (46, False, True),
-                                       (46, True, False), (67, True, True)):
+    def test_selected_gap_waits_for_worker_even_when_rear_is_open(self):
+        for tick, closed, expected in ((24, False, False), (46, False, False),
+                                       (46, True, False), (67, False, True), (67, True, True)):
             with self.subTest(tick=tick, closed=closed):
                 data = rear_case(tick, held=False)
                 if closed:
@@ -114,26 +190,40 @@ class ScoutedRearSummonTests(unittest.TestCase):
                 if expected:
                     spawn = pos(ledger.commands['12']['targetPos'][0])
                     self.assertTrue(turn.summon_position_legal(spawn))
-                    self.assertEqual(memory.robot_summon_state['mode'],
-                                     'scout_gap' if closed else 'rear_direct')
+                    self.assertEqual(memory.robot_summon_state['mode'], 'scout_gap')
+                else:
+                    self.assertFalse(ledger.commands)
+                    self.assertIsNone(memory.robot_summon_state['anchor'])
 
-    def test_agent_offense_carrier_uses_rear_before_moving_to_gap(self):
-        data = rear_case(46, held=False, stock=())
-        data['teamOur']['roles'][1]['backpack'] = [BOSS] * 3
-        agent = Agent(Config(llm_enabled=False))
-        original = copy.deepcopy(data)
-        response = agent.decide(data)
-        memory = next(iter(agent.sessions.values()))
-        action = response['roleCommandMap']['10']
-        self.assertEqual(action['action'], 'use')
-        self.assertEqual(memory.robot_summon_state['mode'], 'rear_direct')
-        self.assertEqual(data, original)
-        self.assertEqual(agent.decide(copy.deepcopy(data)), response)
-        self.assertEqual(memory.robot_summon_state['count'], 1)
+    def test_agent_offense_carrier_selects_gap_before_first_summon(self):
+        for held in (False, True):
+            with self.subTest(held=held):
+                data = rear_case(46, held=held, stock=())
+                data['teamOur']['roles'][1]['backpack'] = [BOSS] * 3
+                turn, _, _, ledger = setup_case(data)
+                built = {u.pos for u in turn.enemies if u.kind == 'wall'}
+                data['teamEnemy']['roles'] += [unit(50000 + i, 'wall', *p)
+                    for i, p in enumerate(first_day_wall_entries(turn, turn.enemies[0]))
+                    if p != ENTRY and p not in built]
+                turn, _, _, ledger = setup_case(data)
+                self.assertIsNotNone(scouted_rear_summon_position(turn, ledger))
+                agent = Agent(Config(llm_enabled=False))
+                original = copy.deepcopy(data)
+                response = agent.decide(data)
+                memory = next(iter(agent.sessions.values()))
+                action = response['roleCommandMap']['10']
+                self.assertEqual(memory.night_scout.wall_entry, ENTRY)
+                self.assertEqual(action['action'], 'use' if held else 'move')
+                if held:
+                    self.assertEqual(pos(action['targetPos'][0]), SPAWN)
+                    self.assertEqual(memory.robot_summon_state['mode'], 'scout_gap')
+                self.assertEqual(data, original)
+                self.assertEqual(agent.decide(copy.deepcopy(data)), response)
+                self.assertEqual(memory.robot_summon_state['count'], int(held))
 
     def test_rear_orders_stay_nearby_unique_and_retain_base_shots(self):
         data = rear_case(stock=[BOSS] * 3)
-        memory = Memory(night_scout=memory_for())
+        memory = Memory(night_scout=memory_for(None))
         placements = []
         for tick in (46, 47, 48):
             data['roundNo'] = tick
@@ -158,13 +248,14 @@ class ScoutedRearSummonTests(unittest.TestCase):
         for accepted in (True, False, None):
             with self.subTest(accepted=accepted):
                 data = rear_case(stock=[BOSS] * 3)
-                memory = Memory(night_scout=memory_for())
+                memory = Memory(night_scout=memory_for(None))
                 turn, cfg, nav, ledger = setup_case(data)
                 self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger, [], [], use_only=True))
                 first = pos(ledger.commands['12']['targetPos'][0])
                 data['roundNo'] = 47
                 data['lastRoundRoleActionResults'] = {'12': True}
                 close_rear(data)
+                memory.night_scout.wall_entry = ENTRY
                 turn, cfg, nav, ledger = setup_case(data)
                 self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger, [], [], use_only=True))
                 self.assertEqual(pos(ledger.commands['12']['targetPos'][0]), SPAWN)
@@ -196,7 +287,7 @@ class ScoutedRearSummonTests(unittest.TestCase):
         act_robots(turn, memory, nav, ledger)
         self.assertIsNone(scouted_rear_summon_position(turn, ledger))
 
-    def test_new_sighting_switches_from_old_gap_without_releasing_submitted_spawn(self):
+    def test_new_rear_sighting_keeps_gap_group_and_submitted_spawn(self):
         data = block_case(46, held=True, stock=[BOSS] * 2)
         memory = Memory(night_scout=memory_for())
         turn, cfg, nav, ledger = setup_case(data)
@@ -207,17 +298,18 @@ class ScoutedRearSummonTests(unittest.TestCase):
         data['teamEnemy']['roles'].append(unit(20040, 'rocket', 30, 11))
         turn, cfg, nav, ledger = setup_case(data)
         self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger, [], [], use_only=True))
-        rear = pos(ledger.commands['12']['targetPos'][0])
-        self.assertTrue(rear_approach(turn, turn.enemies[0], rear))
-        self.assertNotEqual(rear, SPAWN)
-        self.assertEqual(memory.robot_summon_state['mode'], 'rear_direct')
-        self.assertEqual(memory.robot_summon_state['anchor'], rear)
-        self.assertEqual(memory.robot_summon_state['positions'], {SPAWN, rear})
+        second = pos(ledger.commands['12']['targetPos'][0])
+        self.assertNotEqual(second, SPAWN)
+        self.assertLessEqual(distance(second, SPAWN), 2)
+        self.assertGreater(second[1], ENTRY[1])
+        self.assertEqual(memory.robot_summon_state['mode'], 'scout_gap')
+        self.assertEqual(memory.robot_summon_state['anchor'], SPAWN)
+        self.assertEqual(memory.robot_summon_state['positions'], {SPAWN, second})
 
     def test_rear_cluster_does_not_pull_worker_away_from_fallback_gap(self):
         data = block_case(46, held=True, stock=[BOSS] * 2)
         data['teamEnemy']['roles'].append(unit(20040, 'rocket', 30, 11))
-        memory = Memory(night_scout=memory_for())
+        memory = Memory(night_scout=memory_for(None))
         turn, cfg, nav, ledger = setup_case(data)
         self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger, [], [], use_only=True))
         rear = pos(ledger.commands['12']['targetPos'][0])
@@ -229,18 +321,22 @@ class ScoutedRearSummonTests(unittest.TestCase):
         ledger.robot_summon_anchor = state['anchor']
         ledger.robot_summon_mode = state['mode']
         ledger.summon_pending_positions = state['positions'].copy()
+        memory.night_scout.wall_entry = ENTRY
         scout = prepare_first_day_wall_blocker(turn, memory.night_scout, nav, ledger)
         self.assertEqual(scout.pos, ENTRY)
         self.assertEqual(memory.night_scout.wall_entry, ENTRY)
         self.assertNotIn('10', ledger.commands)
-        close_rear(data)
         turn, cfg, nav, ledger = setup_case(data)
+        self.assertIsNotNone(scouted_rear_summon_position(turn, ledger))
         self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger, [], [], use_only=True))
         self.assertEqual(pos(ledger.commands['12']['targetPos'][0]), SPAWN)
+        self.assertEqual(memory.robot_summon_state['mode'], 'scout_gap')
+        self.assertEqual(memory.robot_summon_state['anchor'], SPAWN)
+        self.assertEqual(memory.robot_summon_state['positions'], {rear, SPAWN})
 
     def test_rejected_first_rear_use_and_daybreak_clear_deployment_state(self):
         data = rear_case()
-        memory = Memory(night_scout=memory_for())
+        memory = Memory(night_scout=memory_for(None))
         turn, cfg, nav, ledger = setup_case(data)
         self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger, [], [], use_only=True))
         data['roundNo'] = 47
