@@ -128,7 +128,7 @@ class FirstDayStationReserveTests(unittest.TestCase):
         return data
 
     def test_unbuilt_guns_receive_only_the_remainder_after_heal_and_three_robots(self):
-        for gold, count, building in ((100, 0, False), (219, 0, False), (220, 1, False),
+        for gold, count, building in ((100, 0, False), (219, 0, False), (220, 0, True),
                                       (459, 2, False), (460, 3, False),
                                       (484, 3, False), (485, 3, True)):
             with self.subTest(gold=gold):

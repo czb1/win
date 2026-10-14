@@ -9,27 +9,25 @@ from .model import DEFENCE_RETURN_TICK, ORES, SUMMON_ORDERS
 from .robot_assault import enemy_base, first_day_wall_entries, scouted_rear_summon_position
 from .scouting import FIRST_DAY_SCOUT_TICK, prepare_first_day_wall_blocker
 from .spending import (FIRST_DAY_ROBOT_PURCHASE_LIMIT, first_day_guns_built,
-                       first_day_purchase_reserve, first_day_pioneer_plan_active)
+                       first_day_purchase_reserve, first_day_pioneer_plan_active,
+                       first_day_robot_batch_allowed)
 
 
 FIRST_DAY_OFFENSE_TICK = FIRST_DAY_SCOUT_TICK
 BOSS_ORDER = 'BossRobotSummonOrder'
 
 
-def observe_first_day_gatling(turn, mem):
-    """Cancel from shared, live enemy sight before reserving any new actions."""
+def cancel_first_day_offense(turn, mem, reason, *, phase='mining', ledger=None, **details):
+    """Release the assault role and keep the cancellation for this match."""
     scout = mem.night_scout
-    if scout.cancelled or turn.day != 1 or not turn.is_day:
-        return
-    gatling = next((unit for unit in turn.enemies if unit.kind == 'gatling'), None)
-    if gatling is None:
+    if scout.cancelled:
         return
     worker_id = mem.first_day_offense.get('worker_id') or scout.worker_id
     scout.cancelled = True
+    scout.cancel_reason = reason
     scout.key, scout.worker_id, scout.post, scout.wall_entry = None, None, None, None
     mem.first_day_offense.clear()
-    mem.first_day_offense.update(worker_id=worker_id, phase='upgrade_buy',
-                                 transition='enemy_gatling_spotted')
+    mem.first_day_offense.update(worker_id=worker_id, phase=phase, transition=reason)
     # Release both the worker's old task chain and any other robot buyer.
     mem.daytime_jobs = {uid: job for uid, job in mem.daytime_jobs.items()
                        if uid != worker_id and job.get('kind') != 'robot_buy'}
@@ -41,8 +39,39 @@ def observe_first_day_gatling(turn, mem):
         workers.discard(worker_id)
     if mem.supply_worker == worker_id:
         mem.supply_worker = None
-    emit_event('first_day_offense_cancelled', dict(reason='enemy_gatling_spotted',
-               worker=worker_id, enemy=gatling.id, position=gatling.pos), 'decision')
+    if ledger is not None:
+        # The pioneer shops after the blocker is planned. Withdraw only that
+        # unsubmitted movement/hold; keep useful sales, construction and heals.
+        if ledger.first_day_offense_worker_id == worker_id and worker_id is not None:
+            action = ledger.commands.get(str(worker_id), {})
+            if action.get('action') in (None, 'move'):
+                from .model import pos
+                ledger.commands.pop(str(worker_id), None)
+                ledger.used.discard(worker_id)
+                ledger.reserved.difference_update(pos(p) for p in action.get('targetPos', []))
+                worker = next((w for w in turn.workers if w.id == worker_id), None)
+                if worker:
+                    ledger.reserved.discard(worker.pos)
+                ledger.notes.pop(worker_id, None)
+            ledger.work_jobs.pop(worker_id, None)
+        ledger.first_day_offense_worker_id = None
+        ledger.robot_assault_entry = None
+        ledger.spending_plan['robot_blocked'] = reason
+        ledger.spending_plan['robot_use_blocked'] = reason
+    if getattr(mem, 'robot_summon_state', None):
+        mem.robot_summon_state['buyer'] = None
+    emit_event('first_day_offense_cancelled', dict(reason=reason, worker=worker_id,
+                                                  **details), 'decision')
+
+
+def observe_first_day_gatling(turn, mem):
+    """Cancel from shared, live enemy sight before reserving any new actions."""
+    if mem.night_scout.cancelled or turn.day != 1 or not turn.is_day:
+        return
+    gatling = next((unit for unit in turn.enemies if unit.kind == 'gatling'), None)
+    if gatling is not None:
+        cancel_first_day_offense(turn, mem, 'enemy_gatling_spotted', phase='upgrade_buy',
+                                 enemy=gatling.id, position=gatling.pos)
 
 
 def first_day_offense_worker(turn, cfg, mem):
@@ -164,6 +193,7 @@ def _buy(turn, cfg, mem, nav, ledger, hero, base, towers):
     state = mem.robot_summon_state
     remaining = FIRST_DAY_ROBOT_PURCHASE_LIMIT - state.get('purchased', 0)
     if remaining <= 0 or BOSS_ORDER not in turn.shop or turn.shop[BOSS_ORDER] < 0 or not hero.space:
+        first_day_robot_batch_allowed(turn, mem, ledger, 0)
         return False, 'purchase_limit_item_or_capacity'
     options = []
     for shop, kind in turn.zones.items():
@@ -179,28 +209,23 @@ def _buy(turn, cfg, mem, nav, ledger, hero, base, towers):
         if quantity > 0:
             options.append((-quantity, route[0], shop, route))
     if not options:
+        first_day_robot_batch_allowed(turn, mem, ledger, 0)
         return False, 'shop_or_wall_daylight_deadline'
     negative_count, _, shop, route = min(options)
+    reserve = first_day_purchase_reserve(turn, mem, ledger, include_robots=False)
+    price = turn.shop[BOSS_ORDER]
+    funded = min(-negative_count, max(0, ledger.gold - reserve) // price) if price else -negative_count
+    if not first_day_robot_batch_allowed(turn, mem, ledger, funded):
+        return False, 'insufficient_first_day_robots'
     if (hero.id, BOSS_ORDER) in mem.buy_failures:
         ledger.explain(hero.id, 'first_day_offense_wait_buy_retry', shop=shop,
                        retry_round=mem.buy_failures[hero.id, BOSS_ORDER])
         return True, 'buy_retry_cooldown'
-    reserve = first_day_purchase_reserve(turn, mem, ledger, include_robots=False)
     if summon_best_robot(turn, cfg, mem, nav, ledger, towers, ledger.wall_cells,
                          excluded={h.id for h in turn.heroes if h.id != hero.id},
                          reserve=reserve, item_only=BOSS_ORDER, shop_only=shop,
                          quantity_limit=-negative_count):
         return True, 'purchase_or_approach'
-    if ledger.spending_plan.get('robot_blocked') == 'insufficient_surplus':
-        # Stage while the other worker/pioneer can still earn the price. Stop
-        # waiting when the next turn would no longer leave time to occupy/use.
-        if route[1] is not None and ledger.add(hero.id, command('move', route[1])):
-            ledger.remember_work(hero, 'robot_buy', shop, name=BOSS_ORDER,
-                                 quantity=-negative_count)
-        ledger.explain(hero.id, 'first_day_offense_wait_gold', shop=shop,
-                       reserved_station_gold=reserve, gold=ledger.gold,
-                       price=turn.shop[BOSS_ORDER], route_steps=route[0])
-        return True, 'waiting_for_gold'
     return False, ledger.spending_plan.get('robot_blocked', 'purchase_unavailable')
 
 
@@ -301,6 +326,8 @@ def act_first_day_offense(turn, cfg, mem, nav, ledger, towers, walls):
             _advance(mem, ledger, hero, state, 'buy', 'ore_finished_or_sale_unavailable')
         if state['phase'] == 'buy':
             acted, reason = _buy(turn, cfg, mem, nav, ledger, hero, base, towers)
+            if mem.night_scout.cancelled:
+                return _upgrade_after_abort(turn, cfg, mem, nav, ledger)
             if acted:
                 return hero
             _advance(mem, ledger, hero, state, 'block', reason)
@@ -327,9 +354,10 @@ def act_first_day_offense(turn, cfg, mem, nav, ledger, towers, walls):
     finally:
         # The role stays assigned even when no legal action is available. No
         # later construction, shopping, recall, recovery or mining may take it.
-        ledger.used.add(hero.id)
-        ledger.reserved.add(hero.pos)
-        note = ledger.notes.setdefault(hero.id, {'reason': 'first_day_offense_wait', 'conditions': {}})
-        note['conditions'].update(first_day_offense_phase=state['phase'],
-                                  first_day_offense_worker=hero.id, stop_mining_tick=FIRST_DAY_OFFENSE_TICK,
-                                  transition=state.get('transition'))
+        if not mem.night_scout.cancelled:
+            ledger.used.add(hero.id)
+            ledger.reserved.add(hero.pos)
+            note = ledger.notes.setdefault(hero.id, {'reason': 'first_day_offense_wait', 'conditions': {}})
+            note['conditions'].update(first_day_offense_phase=state['phase'],
+                                      first_day_offense_worker=hero.id, stop_mining_tick=FIRST_DAY_OFFENSE_TICK,
+                                      transition=state.get('transition'))

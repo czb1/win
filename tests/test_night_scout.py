@@ -66,6 +66,7 @@ class NightScoutTests(unittest.TestCase):
 
     def test_agent_stages_then_reads_shared_sight_for_robot_attack(self):
         data = scout_case(68)
+        data['teamOur']['roles'][3]['backpack'] = ['BossRobotSummonOrder'] * 2
         data['teamOur']['roles'] += [unit(20+i, 'rocket', x, y, level=3)
                                     for i, (x, y) in enumerate(((2, 12), (3, 12), (2, 10)))]
         data['teamOur']['roles'][1]['pos'] = {'x': 13, 'y': 2}
