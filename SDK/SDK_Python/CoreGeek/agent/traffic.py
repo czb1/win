@@ -36,6 +36,12 @@ def transit_cells(turn, nav, ledger):
     Blueprint gate cells are excluded as well, even before the ring is built.
     """
     blocked = turn.blocked - {h.pos for h in turn.heroes}
+    # The shared pioneer post can close the alternative inside branch. An
+    # idle worker must not park in the only remaining entrance branch merely
+    # because removing every friendly body makes that branch look optional.
+    blocked |= {post for uid, post in ledger.operator_posts.items()
+                if (actor := turn.units.get(uid)) and
+                actor.kind == 'pioneer'}
     key = frozenset(blocked), frozenset(ledger.wall_cells)
     cached = getattr(nav, '_transit_cache', None)
     if cached and cached[0] == key:
@@ -82,6 +88,13 @@ def transit_cells(turn, nav, ledger):
             if p not in walls and (((x-1, y) in walls and (x+1, y) in walls)
                                   or ((x, y-1) in walls and (x, y+1) in walls)):
                 cuts.add(p)
+    # Both inner neighbours can be usable routes individually while parking
+    # on either one blocks the supplier together with the reserved gunner post.
+    # Keep the inner mouth clear even when it is not a graph articulation.
+    from .projectiles import wall_gates
+    from .wall_watch import geometry
+    inside, _ = geometry(turn, walls)
+    cuts.update(p for gate in wall_gates(turn, walls) for p in neighbours(gate) if p in inside)
     nav._transit_cache = key, cuts
     return cuts
 
@@ -99,7 +112,8 @@ def parking_goals(turn, nav, ledger, hero, *, near_home=False, forbidden=()):
 
 
 def park_idle_worker(turn, nav, ledger, hero):
-    if not late_logistics_ready(turn, ledger.cfg) or hero.id in ledger.used:
+    if (not turn.is_day or hero.id in ledger.used
+            or ledger.plans.get(hero.id, {}).get('reason') == 'defence_recall'):
         return False
     goals = parking_goals(turn, nav, ledger, hero)
     route = nav.search(hero, goals, ledger.reserved)
@@ -115,6 +129,9 @@ def park_idle_worker(turn, nav, ledger, hero):
 
 
 def _intent(turn, mem, ledger, hero, returning):
+    request = ledger.traffic_requests.get(hero.id)
+    if request:
+        return request['signature'], request['goals'], request['urgency']
     post = ledger.operator_posts.get(hero.id)
     if hero.id in returning and post is not None:
         return ('recall', post), {post}, 0
@@ -174,7 +191,8 @@ def coordinate_traffic(turn, cfg, mem, nav, ledger, returning):
     if not turn.is_day:
         mem.traffic_leases.clear()
         return
-    if not late_logistics_ready(turn, cfg):
+    ready = late_logistics_ready(turn, cfg)
+    if not ready and not ledger.traffic_requests:
         mem.traffic_leases.clear()
         return
     nav.traffic_forbidden = ledger.traffic_forbidden
@@ -182,11 +200,13 @@ def coordinate_traffic(turn, cfg, mem, nav, ledger, returning):
     static = turn.blocked - {h.pos for h in turn.heroes}
     intents = {}
     for uid, hero in heroes.items():
+        if not ready and uid not in ledger.traffic_requests and uid not in returning:
+            continue
         intent = _intent(turn, mem, ledger, hero, returning)
         if intent and uid not in ledger.used:
             signature, goals, urgency = intent
             path = _path(turn, nav, hero.pos, goals, static | ledger.reserved)
-            if path and signature[0] != 'recall':
+            if path and signature[0] not in ('recall', 'wall_supply_home'):
                 from .mining import return_destination
                 home, exact = return_destination(turn, nav, ledger, hero, mem)
                 home_goals = (set(home) if exact else
@@ -238,13 +258,16 @@ def coordinate_traffic(turn, cfg, mem, nav, ledger, returning):
                             and any(distance(h.pos, path[i]) <= 3 for i in gates)]
             elif blockers:
                 last = max(path.index(h.pos) for h in blockers)
+                if signature[0] == 'wall_supply_home':
+                    last = max([last] + [i for i, p in enumerate(path[1:], 1)
+                                        if p in transit_cells(turn, nav, ledger)])
             if not blockers or any(h.id in ledger.used or h.health <= 165 and h.inventory['Medicine']
                                    for h in blockers):
                 continue
             end = min(len(path)-1, last+2)
             lease = dict(job=signature, corridor=path[:end+1], remaining=len(path)-1-end,
                          blockers=[h.id for h in blockers], position=hero.pos,
-                         progress_round=turn.round)
+                         progress_round=turn.round, aside={})
         corridor = set(lease['corridor'])
         if corridor & owned:
             mem.traffic_leases.pop(uid, None)
@@ -264,13 +287,40 @@ def coordinate_traffic(turn, cfg, mem, nav, ledger, returning):
                 continue
             if blocker.pos in corridor:
                 goals_aside = parking_goals(turn, nav, ledger, blocker, forbidden=goals | corridor)
-                # Prefer a single side step; allow a short path to a pocket.
-                route = nav.search(blocker, goals_aside, ledger.reserved)
-                if route and route[1] is not None and ledger.add(bid, command('move', route[1])):
+                aside = lease.setdefault('aside', {})
+                previous = aside.get(bid)
+                if previous in goals_aside:
+                    goals_aside = {previous}
+                # Some inner aisles have no sideways exit: the blocker must
+                # first walk through the corridor to reach a safe pocket. Only
+                # this departure may cross its own lease; real occupancy and
+                # all other requests/reservations still apply at every step.
+                forbidden = ledger.traffic_forbidden[bid]
+                nav.traffic_forbidden[bid] = forbidden - corridor
+                try:
+                    route = nav.search(blocker, goals_aside, ledger.reserved, with_endpoint=True)
+                    accepted = bool(route and route[1] is not None
+                                    and ledger.add(bid, command('move', route[1])))
+                finally:
+                    nav.traffic_forbidden[bid] = forbidden
+                if accepted:
+                    aside[bid] = route[2]
                     _hold(turn, mem, ledger, blocker, 'yield_blocked_route', requester=uid,
                           previous=blocker.pos, landing=route[1], target=signature[1])
+            elif signature[0] == 'wall_supply_home' and bid in returning:
+                _hold(turn, mem, ledger, blocker, 'keep_wall_passage_clear', requester=uid,
+                      corridor=lease['corridor'])
         # Preserve a blocked buy/mine/sell job through this turn. Otherwise
         # normal fallback would replace it with an unrelated homeward action.
         if nav.search(hero, goals, ledger.reserved) is None:
+            request = ledger.traffic_requests.get(uid, {})
+            if request.get('local_work'):
+                continue  # The supplier may use its adjacent paid coupon now.
+            if request.get('advance') and len(path) > 1:
+                step = nav.search(hero, {path[1]}, ledger.reserved)
+                if step and step[0] == 1 and ledger.add(uid, command('move', path[1])):
+                    _hold(turn, mem, ledger, hero, 'approach_wall_passage',
+                          target=sorted(goals), blockers=lease['blockers'])
+                    continue
             _hold(turn, mem, ledger, hero, 'wait_for_passage', blockers=lease['blockers'],
                   target=signature[1], urgency=urgency, route_steps=len(path)-1)

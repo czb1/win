@@ -831,6 +831,8 @@ class Agent:
                 income = reserve_income_worker(turn, mem, nav, ledger, returning)
                 if income:
                     emit_event('income_reserve', dict(actor=income.id, day_left=turn.day_left), 'economy')
+                from .wall_supply import request_wall_passage
+                request_wall_passage(turn, self.cfg, mem, nav, ledger, watcher, walls)
                 coordinate_traffic(turn, self.cfg, mem, nav, ledger, returning)
                 resume_morning(turn, self.cfg, mem, nav, ledger, returning)
                 # Reserve the watcher's repair budget before other dusk buyers
