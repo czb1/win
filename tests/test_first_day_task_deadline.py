@@ -17,7 +17,7 @@ BASE, BOSS = shopping.BASE, shopping.BOSS
 
 
 class FirstDayTaskDeadlineTests(unittest.TestCase):
-    def data(self, tick=53, gold=668):
+    def data(self, tick=56, gold=668):
         data = shopping.FirstDayPioneerShoppingTests().data(round_no=tick, gold=gold)
         data['phaseTask'] = 'unfinished opening task'
         data['teamOur']['roles'][2]['pos'] = {'x': 8, 'y': 10}
@@ -31,37 +31,37 @@ class FirstDayTaskDeadlineTests(unittest.TestCase):
         cfg.round_origin = origin
         return Agent(cfg)
 
-    def test_51_to_53_hold_task_then_54_moves_to_shop_for_both_origins(self):
+    def test_51_to_56_hold_task_then_57_moves_to_shop_for_both_origins(self):
         for origin in (0, 1):
             with self.subTest(origin=origin):
                 data = self.data()
                 agent = self.agent(data, origin)
                 with patch.object(Intelligence, 'task', return_value=('', '')) as task:
-                    for tick in (51, 52, 53):
+                    for tick in range(51, 57):
                         data['roundNo'] = tick + origin
                         response = agent.decide(copy.deepcopy(data))
                         self.assertNotIn('2', response['roleCommandMap'])
-                    self.assertEqual(task.call_count, 3)
-                    data['roundNo'] = 54 + origin
+                    self.assertEqual(task.call_count, 6)
+                    data['roundNo'] = 57 + origin
                     response = agent.decide(copy.deepcopy(data))
                     mem = next(iter(agent.sessions.values()))
-                    self.assertEqual(task.call_count, 3)
+                    self.assertEqual(task.call_count, 6)
                     self.assertEqual(response['roleCommandMap']['2']['action'], 'move')
                     destination = pos(response['roleCommandMap']['2']['targetPos'][0])
                     self.assertLess(distance(destination, (4, 9)), distance((8, 10), (4, 9)))
                     self.assertGreater(distance(destination, (8, 11)), 1)
                     self.assertEqual(mem.stop_reason, FIRST_DAY_ROBOT_TASK_STOP)
-                    self.assertEqual(mem.first_day_pioneer['trigger'], 'tick_54')
+                    self.assertEqual(mem.first_day_pioneer['trigger'], 'tick_57')
                     self.assertEqual(mem.first_day_pioneer['phase'], 'shop')
                     self.assertIsNone(mem.task_target)
                     self.assertIsNone(mem.task_wait_cell)
                     self.assertFalse(response['executeCmd'])
                     self.assertFalse(response['prompt'])
                     self.assertEqual(agent.decide(copy.deepcopy(data)), response)
-                    self.assertEqual(task.call_count, 3)
+                    self.assertEqual(task.call_count, 6)
 
     def test_interrupted_task_buys_and_uses_orders_even_before_phase_clears(self):
-        data = self.data(54)
+        data = self.data(57)
         agent = self.agent(data)
         with patch.object(Intelligence, 'task', return_value=('unexpected task', 'unexpected command')) as task:
             response = agent.decide(copy.deepcopy(data))
@@ -69,11 +69,11 @@ class FirstDayTaskDeadlineTests(unittest.TestCase):
             # Observed arrival and backpack snapshots, with a delayed task-clear report.
             data['teamOur']['roles'][2]['pos'] = {'x': 5, 'y': 8}
             for tick, backpack, gold, expected in (
-                    (55, [], 668, command('buy', name=BASE, num=1)),
-                    (56, [BASE], 568, command('buy', name=BOSS, num=3)),
-                    (57, [BASE, BOSS, BOSS, BOSS], 208, None),
-                    (58, [BASE, BOSS, BOSS], 208, None),
-                    (59, [BASE, BOSS], 208, None)):
+                    (58, [], 668, command('buy', name=BASE, num=1)),
+                    (59, [BASE], 568, command('buy', name=BOSS, num=3)),
+                    (60, [BASE, BOSS, BOSS, BOSS], 208, None),
+                    (61, [BASE, BOSS, BOSS], 208, None),
+                    (62, [BASE, BOSS], 208, None)):
                 data.update(roundNo=tick, lastRoundRoleActionResults={'2': True})
                 data['teamOur']['roles'][2]['backpack'] = backpack
                 data['teamOur']['goldNum'] = gold
@@ -91,7 +91,7 @@ class FirstDayTaskDeadlineTests(unittest.TestCase):
         self.assertEqual(mem.robot_summon_state['purchased'], 3)
         self.assertEqual(mem.robot_summon_state['count'], 3)
         self.assertEqual(len(mem.robot_summon_state['positions']), 3)
-        data.update(roundNo=60, phaseTask='')
+        data.update(roundNo=63, phaseTask='')
         data['teamOur']['roles'][2]['backpack'] = [BASE]
         agent.decide(copy.deepcopy(data))
         self.assertEqual(mem.first_day_pioneer['phase'], 'return')
@@ -106,8 +106,8 @@ class FirstDayTaskDeadlineTests(unittest.TestCase):
                 with patch.object(Intelligence, 'task', return_value=('', '')):
                     agent.decide(copy.deepcopy(data))
                 mem = next(iter(agent.sessions.values()))
-                setattr(mem, state, ('cmd', 53) if state == 'pending' else 'ready work')
-                data['roundNo'] = 54
+                setattr(mem, state, ('cmd', 56) if state == 'pending' else 'ready work')
+                data['roundNo'] = 57
                 with patch.object(Intelligence, 'task') as task:
                     response = agent.decide(copy.deepcopy(data))
                     task.assert_not_called()
@@ -116,11 +116,11 @@ class FirstDayTaskDeadlineTests(unittest.TestCase):
                 self.assertFalse(response['prompt'])
 
     def test_failed_move_keeps_shopping_even_if_gold_then_falls(self):
-        data = self.data(54)
+        data = self.data(57)
         agent = self.agent(data)
         with patch.object(Intelligence, 'task') as task:
             agent.decide(copy.deepcopy(data))
-            data.update(roundNo=55, lastRoundRoleActionResults={'2': False})
+            data.update(roundNo=58, lastRoundRoleActionResults={'2': False})
             data['teamOur']['goldNum'] = 100
             response = agent.decide(copy.deepcopy(data))
             task.assert_not_called()
@@ -132,7 +132,7 @@ class FirstDayTaskDeadlineTests(unittest.TestCase):
     def test_cancelled_or_unaffordable_offense_keeps_task(self):
         for condition in ('enemy_gatling', 'insufficient_gold', 'missing_enemy', 'missing_item', 'full_bag'):
             with self.subTest(condition=condition):
-                data = self.data(54)
+                data = self.data(57)
                 if condition == 'enemy_gatling':
                     data['teamEnemy']['roles'].append(unit(98, 'gatling', 12, 12))
                 elif condition == 'insufficient_gold':
@@ -159,7 +159,7 @@ class FirstDayTaskDeadlineTests(unittest.TestCase):
                 (120, 240, [BASE], 40, True), (120, 1000, [], 2, False),
                 (120, 1000, [], 3, True)):
             with self.subTest(price=price, gold=gold, backpack=backpack, capacity=capacity):
-                data = self.data(54, gold)
+                data = self.data(57, gold)
                 data['teamOur']['roles'][2].update(backpack=backpack, backPackCapability=capacity)
                 next(v for v in data['weaponShopList'] if v['name'] == BOSS)['price'] = price
                 turn, _, _, ledger = fortified_case(data)
@@ -168,7 +168,7 @@ class FirstDayTaskDeadlineTests(unittest.TestCase):
     def test_purchase_and_summon_caps_do_not_interrupt_task(self):
         for field, value in (('purchased', 3), ('count', 10)):
             with self.subTest(field=field):
-                turn, _, _, ledger = fortified_case(self.data(54))
+                turn, _, _, ledger = fortified_case(self.data(57))
                 mem = Memory()
                 observe_robot_summons(turn, mem)[field] = value
                 self.assertFalse(first_day_pioneer_task_due(turn, mem, ledger))
@@ -176,7 +176,7 @@ class FirstDayTaskDeadlineTests(unittest.TestCase):
     def test_owned_orders_respect_summon_limit_and_new_cancellation(self):
         for condition in ('usable', 'daily_limit', 'enemy_gatling', 'base_unaffordable'):
             with self.subTest(condition=condition):
-                data = self.data(54, gold=0)
+                data = self.data(57, gold=0)
                 data['teamOur']['roles'][2]['backpack'] = [BASE, BOSS]
                 if condition == 'enemy_gatling':
                     data['teamEnemy']['roles'].append(unit(98, 'gatling', 12, 12))
@@ -189,14 +189,14 @@ class FirstDayTaskDeadlineTests(unittest.TestCase):
                 self.assertEqual(first_day_pioneer_task_due(turn, mem, ledger), condition == 'usable')
 
     def test_night_and_later_days_do_not_trigger_first_day_deadline(self):
-        for tick in (70, 184):
+        for tick in (70, 187):
             with self.subTest(tick=tick):
                 data = self.data(tick)
                 turn, _, _, ledger = fortified_case(data)
                 self.assertFalse(first_day_pioneer_task_due(turn, Memory(), ledger))
 
     def test_critical_base_heal_keeps_priority_over_shopping(self):
-        data = self.data(54)
+        data = self.data(57)
         data['teamOur']['roles'][0]['health'] = 300
         data['teamOur']['roles'][2].update(pos={'x': 5, 'y': 10}, backpack=[BASE])
         agent = self.agent(data)

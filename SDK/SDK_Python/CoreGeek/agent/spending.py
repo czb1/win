@@ -167,7 +167,7 @@ def _first_day_pioneer_cart(turn, mem, ledger, summons, purchased):
 
 
 def first_day_pioneer_task_due(turn, mem, ledger):
-    """Stop solving at tick 54 only when the opening robot plan can proceed."""
+    """Stop solving at tick 57 only when the opening robot plan can proceed."""
     if (turn.day != 1 or not turn.is_day or turn.tick < FIRST_DAY_PIONEER_TASK_DEADLINE
             or not turn.phase_task or not turn.pioneer or not turn.station):
         return False
@@ -209,7 +209,8 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
     state = mem.first_day_pioneer
     if not state:
         state.update(phase='shop', station_item=voucher_for(station), pending_buy=None,
-                     trigger=('tick_54' if mem.stop_reason == FIRST_DAY_ROBOT_TASK_STOP else
+                     trigger=(f'tick_{FIRST_DAY_PIONEER_TASK_DEADLINE}'
+                              if mem.stop_reason == FIRST_DAY_ROBOT_TASK_STOP else
                               'tick_51' if turn.tick >= FIRST_DAY_PIONEER_SHOP_TICK else 'tasks_finished'))
         mem.task_target = mem.task_wait_cell = None
         # The shopping chain takes precedence over the ordinary tick-67 recall.

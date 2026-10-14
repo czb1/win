@@ -594,7 +594,7 @@ class Agent:
                 for r in turn.robots))
             nav.vehicle_detours = not danger
             # Uninterrupted shopping tasks may finish before the usual recall;
-            # an affordable opening robot plan takes over from tick 54.
+            # an affordable opening robot plan takes over from tick 57.
             defence_return_due = turn.is_day and bool(home) and turn.tick >= DEFENCE_RETURN_TICK
             first_watch = turn.day == 1 and defence_return_due
             finish_opening_task = (turn.day == 1 and turn.tick >= FIRST_DAY_PIONEER_SHOP_TICK

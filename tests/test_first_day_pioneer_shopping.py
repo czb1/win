@@ -130,7 +130,7 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
         _, cfg, _, _ = fortified_case(data)
         agent = Agent(cfg)
         with patch.object(Intelligence, 'task', return_value=('', '')) as task:
-            for tick in (51, 52, 53):
+            for tick in range(51, 57):
                 data['roundNo'] = tick
                 response = agent.decide(copy.deepcopy(data))['roleCommandMap']
                 mem = next(iter(agent.sessions.values()))
