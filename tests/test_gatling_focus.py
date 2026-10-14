@@ -87,7 +87,7 @@ class GatlingFocusTests(unittest.TestCase):
         self.assertNotIn(90, damage)
         self.assertEqual(mem.gatling_targets, {22: 91})
 
-    def test_invalid_or_blocked_focus_switches_to_a_hittable_enemy(self):
+    def test_focus_validity_ignores_static_obstacles_but_respects_robot_collision(self):
         for reason in ('dead', 'missing', 'out_of_range', 'opponent_bound', 'ours',
                        'wall', 'character', 'robot', 'protected_robot'):
             with self.subTest(reason=reason):
@@ -106,18 +106,23 @@ class GatlingFocusTests(unittest.TestCase):
                 elif reason in ('wall', 'character'):
                     kind = 'wall' if reason == 'wall' else 'worker'
                     data['teamOur']['roles'].append(unit(70, kind, 8, 5))
+                    robot['health'] = 10
                 else:
                     team = 'defender' if reason == 'protected_robot' else 'challenger'
                     data['robot']['roles'].append(unit(92, 'smallRobot', 8, 5,
                                                       health=40, targetTeam=team))
                 ledger = self.fire(data, mem)
-                self.assertEqual(ledger.commands['22']['targetPos'], [dict(x=5, y=2)])
-                self.assertEqual(mem.gatling_targets, {22: 91})
+                if reason in ('wall', 'character'):
+                    self.assertEqual(ledger.commands['22']['targetPos'], [dict(x=12, y=5)])
+                    self.assertEqual(mem.gatling_targets, {22: 90})
+                else:
+                    self.assertEqual(ledger.commands['22']['targetPos'], [dict(x=5, y=2)])
+                    self.assertEqual(mem.gatling_targets, {22: 91})
 
     def test_no_legal_shot_clears_obstructed_focus(self):
         data, mem = self.case(), Memory(gatling_targets={22: 90})
         data['robot']['roles'].pop()
-        data['teamOur']['roles'].append(unit(70, 'wall', 8, 5))
+        data['robot']['roles'].append(unit(92, 'smallRobot', 8, 5, health=40, targetTeam='defender'))
         self.assertNotIn('22', self.fire(data, mem).commands)
         self.assertEqual(mem.gatling_targets, {})
 

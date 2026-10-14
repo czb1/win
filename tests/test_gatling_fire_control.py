@@ -28,6 +28,13 @@ def frames():
     return json.loads(FRAMES.read_text(encoding='utf-8'))
 
 
+def railgun_frame(data):
+    """Retain the old occlusion scenarios for the weapon that still uses them."""
+    data = deepcopy(data)
+    next(u for u in data['teamOur']['roles'] if u['id'] == 20020)['roleType'] = 'railgun'
+    return data
+
+
 def setup(data, **options):
     cfg = mixed_config(llm_enabled=False, **options)
     turn = Turn(data, cfg)
@@ -51,10 +58,10 @@ def mirror(data, flip_x, flip_y):
 
 
 class ProjectileModelTests(unittest.TestCase):
-    def test_observed_blocker_counts_and_samples_identify_operator(self):
+    def test_railgun_blocker_counts_and_samples_identify_operator(self):
         for data, count in zip(frames(), (12, 12, 8)):
             with self.subTest(round=data['roundNo']):
-                turn, _, nav, _, _, _ = setup(data)
+                turn, _, nav, _, _, _ = setup(railgun_frame(data))
                 tower = next(w for w in turn.weapons if w.id == 20020)
                 report = {}
                 self.assertEqual(select_targets(turn, tower, {}, nav.deadline,
@@ -66,11 +73,11 @@ class ProjectileModelTests(unittest.TestCase):
                 self.assertEqual(sample['robot_id'], 31027)
                 self.assertEqual(sample['blockers'][0]['unit_id'], 20012)
 
-    def test_verified_character_option_changes_projectiles_only(self):
-        turn, _, nav, _, _, _ = setup(frames()[0], projectile_characters_block=False)
+    def test_verified_character_option_changes_railgun_projectiles_only(self):
+        turn, _, nav, _, _, _ = setup(railgun_frame(frames()[0]), projectile_characters_block=False)
         tower = next(w for w in turn.weapons if w.id == 20020)
         before = turn.blocked.copy()
-        self.assertEqual(select_targets(turn, tower, {}, nav.deadline), [(31, 12)] * 2)
+        self.assertEqual(select_targets(turn, tower, {}, nav.deadline), [(31, 12)])
         self.assertEqual(turn.blocked, before)
         self.assertIn((31, 11), turn.blocked)
         obstacles = projectile_obstacles(turn, tower)
@@ -79,12 +86,12 @@ class ProjectileModelTests(unittest.TestCase):
         self.assertIn((28, 9), obstacles)
 
     def test_projected_post_does_not_mutate_observed_occupancy(self):
-        turn, _, nav, _, _, _ = setup(frames()[0])
+        turn, _, nav, _, _, _ = setup(railgun_frame(frames()[0]))
         tower = next(w for w in turn.weapons if w.id == 20020)
         before = turn.blocked.copy()
         targets = select_targets(turn, tower, {}, nav.deadline, controller=turn.units[20012],
                                  actor_positions={20012: (33, 10)})
-        self.assertEqual(targets, [(31, 12)] * 2)
+        self.assertEqual(targets, [(31, 12)])
         self.assertEqual(turn.units[20012].pos, (31, 11))
         self.assertEqual(turn.blocked, before)
 
@@ -98,8 +105,8 @@ class ProjectileModelTests(unittest.TestCase):
                                        controller=turn.units[20012], diagnostics=report))
         self.assertEqual(report['origin'], (31, 11))
 
-    def test_character_option_never_removes_protected_robot_collision(self):
-        data = frames()[0]
+    def test_railgun_character_option_never_removes_protected_robot_collision(self):
+        data = railgun_frame(frames()[0])
         data['robot']['roles'].append(unit(39999, 'smallRobot', 32, 11,
                                          health=40, targetTeam='challenger'))
         turn, _, nav, _, _, _ = setup(data, projectile_characters_block=False)
@@ -120,8 +127,8 @@ class ProjectileModelTests(unittest.TestCase):
 
 
 class OperatorPostTests(unittest.TestCase):
-    def test_blind_fixed_post_is_replaced_with_reachable_firing_post(self):
-        turn, _, nav, ledger, _, walls = setup(frames()[0])
+    def test_blind_railgun_post_is_replaced_with_reachable_firing_post(self):
+        turn, _, nav, ledger, _, walls = setup(railgun_frame(frames()[0]))
         hero, tower = turn.units[20012], turn.units[20020]
         posts = operator_posts(turn, nav, [(hero, tower)], walls + [(32, 9)], {hero.id: hero.pos})
         self.assertEqual(posts[hero.id], ((33, 10), 2))
@@ -144,53 +151,52 @@ class OperatorPostTests(unittest.TestCase):
                 operator_posts(turn, nav, [(turn.units[20012], turn.units[20020])], walls)
         self.assertIs(turn.blocked, original)
 
-    def test_real_match_repositions_in_three_bounded_requests_then_fires(self):
+    def test_real_match_fires_in_all_three_requests_without_leaving_post(self):
         agent = Agent(mixed_config(llm_enabled=False))
-        for index, data in enumerate(frames()):
+        expected = [[(27, 11)] * 2, [(27, 11)] * 2, [(27, 11), (31, 12)]]
+        for data, targets in zip(frames(), expected):
             hero = next(u for u in data['teamOur']['roles'] if u['id'] == 20012)
-            if index:
-                hero['pos'] = move
             result = agent.decide(data)['roleCommandMap']
             memory = next(iter(agent.sessions.values()))
             self.assertEqual(memory.gatling_operator_id, 20012)
-            if index < 2:
-                self.assertEqual(result['20012']['action'], 'move')
-                self.assertNotIn('20020', result)
-                move = result['20012']['targetPos'][0]
-            else:
-                self.assertEqual(hero['pos'], {'x': 33, 'y': 10})
-                self.assertEqual(result['20020']['controllerId'], '20012')
-                self.assertEqual(result['20020']['targetPos'], [{'x': 31, 'y': 12}] * 2)
-                self.assertNotIn('20012', result)
+            self.assertEqual(memory.gatling_targets[20020], 31031)
+            self.assertEqual(hero['pos'], {'x': 31, 'y': 11})
+            self.assertEqual(result['20020']['controllerId'], '20012')
+            self.assertEqual(result['20020']['targetPos'], [{'x': x, 'y': y} for x, y in targets])
+            self.assertNotIn('20012', result)
 
-    def test_match_recall_and_existing_layout_work_in_four_corners(self):
+    def test_match_keeps_firing_from_existing_post_in_four_corners(self):
         for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
             with self.subTest(flip_x=flip_x, flip_y=flip_y):
                 data = mirror(frames()[0], flip_x, flip_y)
                 agent = Agent(mixed_config(llm_enabled=False))
                 result = agent.decide(data)['roleCommandMap']
-                self.assertEqual(result['20012']['action'], 'move')
+                self.assertNotIn('20012', result)
+                self.assertEqual(result['20020']['controllerId'], '20012')
                 memory = next(iter(agent.sessions.values()))
                 self.assertEqual(memory.gatling_operator_id, 20012)
-                gate = (7 if flip_x else 33, 21 if flip_y else 10)
-                self.assertEqual(memory.return_posts[20012], gate)
+                post = next(u['pos'] for u in data['teamOur']['roles'] if u['id'] == 20012)
+                self.assertEqual(memory.return_posts[20012], (post['x'], post['y']))
 
-    def test_nonclustered_explicit_layout_also_repositions(self):
+    def test_nonclustered_explicit_layout_also_fires_from_current_post(self):
         agent = Agent(mixed_config(llm_enabled=False, layout_mode='explicit',
                              weapon_cells=[[32, 8], [35, 8], [32, 10]], wall_cells=[]))
         result = agent.decide(frames()[0])['roleCommandMap']
-        self.assertEqual(result['20012']['action'], 'move')
-        self.assertNotIn('20020', result)
+        self.assertNotIn('20012', result)
+        self.assertEqual(result['20020']['controllerId'], '20012')
         self.assertEqual(next(iter(agent.sessions.values())).gatling_operator_id, 20012)
 
-    def test_diagnostics_explain_repositioning_with_original_blockers(self):
+    def test_diagnostics_explain_gatling_firing_without_obstacle_checks(self):
         with capture() as stream:
             Agent(mixed_config(llm_enabled=False)).decide(frames()[0])
         decision = next(r['data'] for r in records(stream)
                         if r['event'] == 'unit_decision' and r['unit_id'] == 20020)
-        self.assertEqual(decision['reason'], 'operator_moving')
+        self.assertEqual(decision['reason'], 'fire_selected_targets')
         self.assertEqual(decision['targeting']['in_range'], 12)
-        self.assertEqual(decision['targeting']['blocker_counts']['character'], 1)
+        self.assertEqual(decision['targeting']['clear_paths'], 12)
+        self.assertEqual(decision['targeting']['blocker_counts'], {})
+        self.assertFalse(decision['targeting']['obstacles_block'])
+        self.assertFalse(decision['targeting']['characters_block'])
         operator = next(r['data'] for r in records(stream)
                         if r['event'] == 'unit_decision' and r['unit_id'] == 20012)
         self.assertEqual(operator['night_role'], 'gatling')
@@ -231,6 +237,18 @@ class GateAndLayoutTests(unittest.TestCase):
         self.assertNotIn('20010', ledger.commands)
         self.assertEqual(ledger.weapon_diagnostics[tower.id]['reason'], 'operator_yielding_gate')
 
+    def test_gate_holder_does_not_yield_to_mining_traffic_before_wave_clears(self):
+        data = self.gate_case()
+        data['robot']['roles'] = [unit(45000, 'largeRobot', 15, 20, health=360,
+                                      targetTeam='defender', attackRange=3)]
+        turn, _, nav, ledger, _, walls = setup(data)
+        mem = Memory(mine_targets={20010: (38, 15)})
+        hero, tower = turn.units[20012], turn.units[20020]
+        ledger.operator_posts = {hero.id: hero.pos}
+        yield_gate_operators(turn, nav, ledger, mem, walls, [(hero, tower)])
+        self.assertNotIn('20012', ledger.commands)
+        self.assertEqual(mem.operator_yields, {})
+
     def test_temporary_gate_exclusion_blocks_operator_route_through_it(self):
         data = self.gate_case()
         next(u for u in data['teamOur']['roles'] if u['id'] == 20012)['pos'] = {'x': 34, 'y': 9}
@@ -245,6 +263,7 @@ class GateAndLayoutTests(unittest.TestCase):
         memory = next(iter(agent.sessions.values()))
         memory.mine_targets[20010] = (38, 15)
         memory.mine_kinds[38, 15] = 'copper'
+        memory.return_posts[20012] = (33, 10)
         data = self.gate_case()
         data['robot']['roles'] = [unit(45000, 'smallRobot', 27, 6, health=30,
                                      targetTeam='defender', attackRange=3)]
@@ -256,15 +275,19 @@ class GateAndLayoutTests(unittest.TestCase):
                 result = agent.decide(data)['roleCommandMap']
             self.assertEqual(memory.gatling_operator_id, 20012)
             if round_no == 99:
-                self.assertEqual(result['20012']['targetPos'], [{'x': 34, 'y': 9}])
+                self.assertNotIn('20012', result)
+                self.assertEqual(result['20020']['controllerId'], '20012')
                 self.assertNotIn('20010', result)
             else:
-                self.assertNotIn('20012', result)
-                self.assertEqual(result['20010']['action'], 'move')
+                self.assertEqual(result['20012']['action'], 'move')
                 reason = next(r['data']['reason'] for r in records(stream)
                               if r['event'] == 'unit_decision' and r['unit_id'] == 20020)
-                self.assertEqual(reason, 'operator_waiting_for_passage')
+                self.assertEqual(reason, 'no_operator')
                 if round_no == 100:
+                    self.assertGreater(result['20012']['targetPos'][0]['x'], 33)
+                    self.assertNotIn('20010', result)
+                else:
+                    self.assertEqual(result['20010']['action'], 'move')
                     self.assertEqual(result['20010']['targetPos'], [{'x': 33, 'y': 10}])
             for uid, action in result.items():
                 if action['action'] == 'move':

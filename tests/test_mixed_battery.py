@@ -403,13 +403,15 @@ class GatlingTargetTests(unittest.TestCase):
         self.assertEqual(targets, [(5, 2)])
         self.assertNotIn(91, damage)
 
-    def test_high_health_behind_wall_or_out_of_range_does_not_override_legal_target(self):
+    def test_high_health_behind_wall_is_targeted_but_out_of_range_is_not(self):
         data = self.case()
         data['teamOur']['roles'].append(unit(70, 'wall', 8, 5))
         data['robot']['roles'] = [unit(90, 'bossRobot', 12, 5, health=800),
                                   unit(91, 'bossRobot', 14, 6, health=900),
                                   unit(92, 'middleRobot', 5, 2, health=60)]
-        self.assertEqual(self.targets(data)[0], [(5, 2)])
+        targets, damage = self.targets(data)
+        self.assertEqual(targets, [(12, 5)])
+        self.assertEqual(damage, {90: 25})
 
     def test_dead_enemy_and_enemy_already_covered_by_planned_damage_are_skipped(self):
         data = self.case()
