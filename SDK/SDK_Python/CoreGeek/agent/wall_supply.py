@@ -121,6 +121,28 @@ def _home(turn, mem, nav, ledger, hero, sites):
     return goals, route
 
 
+def request_wall_passage(turn, cfg, mem, nav, ledger, hero, sites):
+    """Expose the supplier's return even when its ordinary work job was cleared."""
+    if (not turn.is_day or not hero or hero.id in ledger.used
+            or turn.tick < cfg.economy_rounds or not active(turn, mem)):
+        return
+    home, back = _home(turn, mem, nav, ledger, hero, sites)
+    from .traffic import transit_cells
+    safe_home = home - transit_cells(turn, nav, ledger)
+    goals = safe_home or home
+    if not goals or hero.pos in goals:
+        return
+    lease = mem.traffic_leases.get(hero.id, {})
+    if back is not None and lease.get('job', (None,))[0] != 'wall_supply_home':
+        return
+    ledger.traffic_requests[hero.id] = dict(
+        goals=goals, signature=('wall_supply_home', hero.id), urgency=0,
+        local_work=any(w.kind == 'wall' and w.level < 3 and w.pos in sites
+                       and turn.adjacent(hero.pos, w.pos)
+                       and hero.inventory[V1 if w.level == 1 else V2] for w in turn.ours),
+        advance=mem.wall_supply_trip.get('phase') in ('deliver', 'return'))
+
+
 def _shops(turn, cfg, mem, nav, ledger, hero, home, actions, preferred=None):
     options = []
     for shop, kind in turn.zones.items():
@@ -201,6 +223,13 @@ def prepare(turn, cfg, mem, nav, ledger, hero, sites):
             state['shop'] = None
         state['pending'] = None
     if back is None:
+        # An adjacent paid delivery needs no travel and must not be vetoed by
+        # an unrelated teammate currently occupying the inside return route.
+        if use_inventory(turn, nav, ledger, hero, mem=mem, local_only=True,
+                         upgrades_only=True, target_sites=set(sites)):
+            action = ledger.commands[str(hero.id)]['targetPos'][0]
+            state['anchor'] = action['x'], action['y']
+            return finish('local_delivery_while_waiting_for_passage')
         ledger.daytime_waits[hero.id] = 'no_home_route'
         return finish('home_route_blocked')
     if turn.day_left <= back[0] + cfg.return_margin + 1:

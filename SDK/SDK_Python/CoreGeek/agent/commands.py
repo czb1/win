@@ -54,6 +54,7 @@ class Ledger:
         self.daytime_waits = {}
         self.traffic_forbidden = {}
         self.traffic_holds = set()
+        self.traffic_requests = {}
         self.income_worker_id = None
         self.watch_pack_slots = {}
         self.work_jobs = {}

@@ -7,7 +7,7 @@ from .economy import use_inventory
 from .mining import spare_mine, return_destination, sale_inventory
 from .model import distance, neighbours
 from .wall_watch import geometry
-from .economy_plan import late_logistics_ready, late_economy_allowed
+from .economy_plan import late_logistics_ready
 
 LOG = logging.getLogger(__name__)
 
@@ -204,7 +204,7 @@ def finish_daytime_work(turn, cfg, mem, nav, ledger, returning):
                          'day_left=%s return_steps=%s', turn.round, hero.id, role, outcome,
                          turn.day_left, back[0])
                 continue
-        if hero.id not in returning and late_economy_allowed(turn, cfg, mem, ledger, hero):
+        if hero.id not in returning and not watcher:
             from .traffic import park_idle_worker
             park_idle_worker(turn, nav, ledger, hero)
         LOG.info('round=%s worker=%s daytime_role=%s idle_reason=%s lock_reason=%s '

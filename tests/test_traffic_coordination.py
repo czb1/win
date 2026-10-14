@@ -29,7 +29,7 @@ class TrafficCoordinationTests(unittest.TestCase):
         return Memory(daytime_jobs={1: dict(kind='buy', target=(7, 3),
                                            name='WallFixer', quantity=3)})
 
-    def test_new_traffic_and_parking_skip_opening_or_unfinished_firepower(self):
+    def test_ordinary_traffic_stays_gated_but_idle_parking_always_clears_gate(self):
         for day, ready, downgrade in ((1, True, False), (2, False, False), (4, True, True)):
             with self.subTest(day=day, ready=ready, downgrade=downgrade):
                 data = gate_case(day=day, ready=ready)
@@ -41,7 +41,8 @@ class TrafficCoordinationTests(unittest.TestCase):
                 self.assertFalse(ledger.commands)
                 self.assertFalse(ledger.traffic_holds)
                 self.assertFalse(mem.traffic_leases)
-                self.assertFalse(park_idle_worker(turn, nav, ledger, turn.units[2]))
+                self.assertTrue(park_idle_worker(turn, nav, ledger, turn.units[2]))
+                self.assertEqual(ledger.commands['2']['action'], 'move')
 
     def test_dedicated_late_work_does_not_start_another_remote_income_cycle(self):
         for kind in ('build', 'buy', 'use', 'robot_buy', 'recovery', 'return', 'wall_batch'):

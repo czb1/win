@@ -338,8 +338,9 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
                     and hero.id == mem.wall_watch_id):
                 # Daylight delivery may use either side of the wall. Verify
                 # the subsequent inside/post return separately, as at dusk.
-                route = dusk_route(turn, nav, ledger, hero, building.cells,
-                                   home_override=return_destination(turn, nav, ledger, hero, mem))
+                route = (nav.approach(hero, building.cells, ledger.reserved) if local_only
+                         else dusk_route(turn, nav, ledger, hero, building.cells,
+                                   home_override=return_destination(turn, nav, ledger, hero, mem)))
             else:
                 route = (dusk_route(turn, nav, ledger, hero, building.cells)
                          if turn.is_day and (upgrades_only or turn.tick >= DUSK_SPEND_TICK or late_wall_phase(turn))
@@ -1181,6 +1182,13 @@ def worker(turn, cfg, mem, nav, ledger, hero, tower_sites, wall_sites, builder,
         if spare_mine(turn, cfg, mem, nav, ledger, hero, max_steps=max_steps):
             return
     if turn.station and not late_economy_allowed(turn, cfg, mem, ledger, hero):
+        from .traffic import park_idle_worker, transit_cells
+        home = nav.approach(hero, turn.station.cells, ledger.reserved, with_endpoint=True)
+        critical = transit_cells(turn, nav, ledger) | set(ledger.operator_posts.values())
+        if (hero.pos in critical or home and home[2] in critical
+                or ledger.traffic_forbidden.get(hero.id)):
+            if park_idle_worker(turn, nav, ledger, hero):
+                return
         walk(nav, ledger, hero, turn.station.cells)
 
 
