@@ -452,6 +452,9 @@ class GateGuardTests(unittest.TestCase):
     def test_outside_wall_watcher_enters_and_imp_waits_for_observed_clearance(self):
         data, agent = gate_case(460, worker=(2, 10)), Agent(Config(llm_enabled=False))
         data['teamOur']['roles'][1]['backpack'] = ['WallFixer']
+        # Entry is still required while our wave is live; a cleared wave now
+        # releases the watcher to continuous night income instead of recalling it.
+        data['robot']['roles'][0]['targetTeam'] = 'challenger'
         commands = agent.decide(data)['roleCommandMap']
         self.assertIn(pos(commands['14']['targetPos'][0]), POSTS)
         advance(data, commands)

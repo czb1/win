@@ -283,6 +283,8 @@ class Memory:
     pioneer_relief: dict = field(default_factory=dict)
     gatling_operator_id: int | None = None
     gatling_targets: dict = field(default_factory=dict)
+    night_release: dict = field(default_factory=dict)
+    night_work: dict = field(default_factory=dict)
     operator_yields: dict = field(default_factory=dict)
     traffic_leases: dict = field(default_factory=dict)
     pioneer_wait_post: tuple | None = None
@@ -409,6 +411,9 @@ class Memory:
             if not turn.is_day and tower_id in gatlings and robot_id in hostiles
             and distance(gatlings[tower_id].pos, hostiles[robot_id].pos) <= gatlings[tower_id].attack_range
         }
+        alive_workers = {h.id for h in turn.workers}
+        self.night_work = {uid: state for uid, state in self.night_work.items()
+                           if uid in alive_workers and turn.round < state['end_round']}
         self.sabotage.observe(turn, self)
         self.wall_watch.observe(turn, self)
         if turn.station:
