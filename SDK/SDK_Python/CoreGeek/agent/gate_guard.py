@@ -19,6 +19,7 @@ class GateGuard:
         self.initial_blocked = set(turn.blocked)
         self.requests = {}
         self.request_reservations = {}
+        self.journeys = {}
 
     def observe_search(self, helper, goals, reserved, route):
         """Record a blocked real search, without changing its result or legality.
@@ -27,10 +28,12 @@ class GateGuard:
         danger masks and other occupied cells must never be removed to make
         an unsafe mining trip appear reachable.
         """
-        if (route is not None
-                or helper.kind not in HEROES or helper.id in self.ledger.used
+        if (helper.kind not in HEROES or helper.id in self.ledger.used
                 or not self.turn.blocked <= self.initial_blocked
                 or self.hero.pos in reserved):
+            return
+        if route is not None:
+            self.journeys[helper.id] = set(goals), route[1]
             return
         original = self.turn.blocked
         try:
@@ -71,9 +74,17 @@ class GateGuard:
         def blocked_requests(landing):
             self.turn.blocked = (original - {self.hero.pos}) | {landing}
             try:
-                return sum(bool(goals) and self.nav._search(self.turn.units[uid], goals,
-                    self.ledger.reserved | self.request_reservations.get(uid, set())) is None
-                           for uid, goals in traffic.items())
+                blocked = 0
+                for uid, goals in traffic.items():
+                    action = self.ledger.commands.get(str(uid), {})
+                    own_steps = ({pos(p) for p in action.get('targetPos', [])}
+                                 if action.get('action') == 'move' else set())
+                    own_post = {self.ledger.operator_posts.get(uid)} - {None}
+                    reserved = ((self.ledger.reserved - own_steps - own_post)
+                                | self.request_reservations.get(uid, set()))
+                    blocked += bool(goals) and self.nav._search(
+                        self.turn.units[uid], goals, reserved) is None
+                return blocked
             finally:
                 self.turn.blocked = original
 
@@ -139,12 +150,13 @@ class GateGuard:
                   'imp_dusk_staging' if self.turn.is_day else
                   'imp_yielding_gate' if yielding else 'imp_guarding_gate')
         try:
-            route = (self._stage(traffic) if self.turn.is_day or yielding else
+            route = (self._stage(traffic, allow_unbuilt=not self.turn.is_day)
+                     if self.turn.is_day or yielding else
                      self.nav._search(self.hero, {self.gate}, self.ledger.reserved
                                       | set(self.ledger.operator_posts.values())))
             # An occupied gate is never entered or exchanged with its occupant.
             if route is None and not self.turn.is_day and not yielding:
-                route = self._stage(traffic)
+                route = self._stage(traffic, allow_unbuilt=True)
             if route is not None and route[1] is not None:
                 if self.ledger.add(self.hero.id, command('move', route[1])):
                     self.ledger.explain(self.hero.id, reason, gate=self.gate,
@@ -174,7 +186,7 @@ class GateGuard:
 
 
 class FirstNightBaseGuard(GateGuard):
-    """Return from day-one tick 55, then hold beside the base through night."""
+    """Stage from day-one tick 55; shield the base if no wall ring is available."""
 
     def __init__(self, turn, nav, ledger, hero, posts, catches):
         # Staging avoids catch reach but deliberately accepts robot damage.
@@ -212,14 +224,198 @@ class FirstNightBaseGuard(GateGuard):
                             route_available=route is not None)
 
 
+def wall_openings(turn, walls):
+    """Actual openings in the configured rectangular ring, including its door."""
+    if not walls or not turn.station:
+        return set(), set()
+    xs, ys = zip(*walls)
+    left, right, bottom, top = min(xs), max(xs), min(ys), max(ys)
+    if right - left < 2 or top - bottom < 2:
+        return set(), set()
+    ring = {(x, y) for x in range(left, right + 1) for y in range(bottom, top + 1)
+            if (x in (left, right) or y in (bottom, top)) and turn.inside((x, y))}
+    if not set(walls) <= ring or not all(left < x < right and bottom < y < top
+                                       for x, y in turn.station.cells):
+        return set(), set()
+    built = {u.pos for u in turn.ours if u.kind == 'wall'}
+    return ring - built, built & ring
+
+
+def bracketed(point, built):
+    x, y = point
+    return ({(x - 1, y), (x + 1, y)} <= built
+            or {(x, y - 1), (x, y + 1)} <= built)
+
+
+class NightWallGuard(GateGuard):
+    """Choose a real hole after the heroes have committed to their actions."""
+
+    def __init__(self, turn, nav, ledger, hero, posts, state, catches, gaps, built):
+        state.setdefault('gate', min(gaps))
+        super().__init__(turn, nav, ledger, hero, state['gate'], None,
+                         posts, state, catches)
+        self.gaps, self.built = gaps, built
+        self.yield_traffic = None
+
+    def _traffic(self):
+        if self.yield_traffic is not None:
+            return self.yield_traffic
+        traffic = super()._traffic()
+        for helper in self.turn.heroes:
+            action = self.ledger.commands.get(str(helper.id), {})
+            if helper.id in self.ledger.used and action.get('action') != 'move':
+                continue
+            if helper.id in self.requests:
+                traffic[helper.id] = self.requests[helper.id]
+            elif action.get('action') == 'move' and helper.id in self.journeys:
+                goals, first = self.journeys[helper.id]
+                if first in {pos(p) for p in action['targetPos']}:
+                    traffic[helper.id] = goals
+        return traffic
+
+    def _blocks(self, point, traffic):
+        original = self.turn.blocked
+        try:
+            for uid, goals in traffic.items():
+                if not goals:
+                    continue
+                helper = self.turn.units[uid]
+                action = self.ledger.commands.get(str(uid), {})
+                own_steps = {pos(p) for p in action.get('targetPos', [])}
+                own_post = {self.ledger.operator_posts.get(uid)} - {None}
+                reserved = ((self.ledger.reserved - own_steps - own_post)
+                            | self.request_reservations.get(uid, set()))
+                self.turn.blocked = original - {self.hero.pos}
+                if self.nav._search(helper, goals, reserved) is None:
+                    continue  # An unrelated obstacle is not an imp traffic request.
+                self.turn.blocked = self.turn.blocked | {point}
+                if self.nav._search(helper, goals, reserved) is None:
+                    return True
+        finally:
+            self.turn.blocked = original
+        return False
+
+    def finish(self):
+        if self.turn.is_day or self.state.get('traffic_only'):
+            return super().finish()
+        self.ledger.used.discard(self.hero.id)
+        traffic = self._traffic()
+        choices = []
+        try:
+            for gap in sorted(self.gaps):
+                if (gap in self.ledger.reserved or gap in self.ledger.operator_posts.values()
+                        or exposed(gap, self.catches)):
+                    continue
+                route = self.nav._search(self.hero, {gap}, self.ledger.reserved
+                                         | set(self.ledger.operator_posts.values()))
+                if route is None or exposed(route[1] or self.hero.pos, self.catches):
+                    continue
+                if self._blocks(gap, traffic) or self._blocks(route[1] or self.hero.pos, traffic):
+                    continue
+                # Keep a recently yielded doorway clear until traffic has passed.
+                if (gap == self.state.get('gate')
+                        and self.state.get('yield_until', -1) >= self.turn.round):
+                    continue
+                choices.append((not bracketed(gap, self.built), route[0],
+                                gap != self.state.get('gate'), gap, route))
+            if choices:
+                _, _, _, self.gate, route = min(choices)
+                self.state.update(gate=self.gate, traffic_only=False)
+                if route[1] is not None:
+                    if self.ledger.add(self.hero.id, command('move', route[1])):
+                        self.ledger.explain(self.hero.id, 'imp_guarding_gate', gate=self.gate,
+                                            return_steps=route[0], openings=len(self.gaps),
+                                            bracketed=bracketed(self.gate, self.built))
+                        return
+                else:
+                    self._hold('imp_guarding_gate', at_gate=True, openings=len(self.gaps),
+                               bracketed=bracketed(self.gate, self.built))
+                    return
+            self.yield_traffic = {uid: goals for uid, goals in traffic.items()
+                                  if uid in self.requests or self._blocks(
+                                      self.gate, {uid: goals})}
+        except DeadlineExceeded:
+            # Existing legal local clearance remains available on budget expiry.
+            self.yield_traffic = {uid: goals for uid, goals in traffic.items()
+                                  if uid in self.requests}
+        self.state['traffic_only'] = True
+        try:
+            super().finish()
+        finally:
+            self.state['traffic_only'] = False
+
+
+def prepare_wall_guard(turn, cfg, mem, nav, ledger, walls):
+    hero = turn.imps[0]
+    gaps, built = wall_openings(turn, walls)
+    state = mem.sabotage.gate_states.get(hero.id, {})
+    wave = mem.sabotage.night_wave
+    if not turn.is_day and turn.tick == 70 and wave.get('day') != turn.day:
+        wave.clear()
+        wave.update(day=turn.day, seen=False)
+    if not turn.is_day and any(r.id not in turn.summon_robot_ids for r in turn.robots):
+        wave.update(day=turn.day, seen=True)
+    awaiting = not turn.is_day and (turn.tick == 70 or
+               wave.get('day') == turn.day and not wave.get('seen'))
+    # A wave anywhere on its way to us keeps the guard home; the first empty
+    # night request precedes spawning and must not be treated as a cleared wave.
+    active = not turn.is_day and (awaiting or any(
+        r.id not in turn.summon_robot_ids and (turn.threatens_us(r)
+        or min(turn.base_distance(r.pos), min((distance(r.pos, p) for p in gaps), default=999))
+        <= max(cfg.task_danger_radius, r.attack_range + 2)) for r in turn.robots))
+    if not active and not turn.is_day:
+        # Quiet-night clearance uses the existing rear posts for a few steps,
+        # then releases the imp as soon as it is outside the home passage.
+        state['yield_until'] = -1
+        return None
+    if (not gaps or not built) and active and turn.day == 1 and turn.station:
+        catches = [t for t in threats(turn, mem.sabotage) if t.catch]
+        mem.sabotage.targets.pop(hero.id, None)
+        mem.sabotage.progress.pop(hero.id, None)
+        mem.sabotage.gate_states.pop(hero.id, None)
+        if exposed(hero.pos, catches):
+            escape(turn, nav, ledger, hero, catches)
+            return None
+        xs, ys = zip(*turn.station.cells)
+        front_x = max(xs) + 1 if min(xs) + max(xs) < turn.width - 1 else min(xs) - 1
+        ledger.used.add(hero.id)
+        return FirstNightBaseGuard(turn, nav, ledger, hero,
+                                   [(front_x, y) for y in sorted(set(ys))], catches)
+    if not gaps or not built:
+        return None
+    posts = rear_waiting_posts(turn, walls)
+    if not posts:
+        return None
+    if turn.is_day:
+        original = turn.blocked
+        try:
+            turn.blocked = original - {h.pos for h in turn.characters}
+            route = nav._search(hero, set(posts), set(ledger.operator_posts.values()))
+        finally:
+            turn.blocked = original
+        if route is None or turn.day_left > route[0] + cfg.return_margin + 1:
+            return None
+    catches = [t for t in threats(turn, mem.sabotage) if t.catch]
+    mem.sabotage.targets.pop(hero.id, None)
+    mem.sabotage.progress.pop(hero.id, None)
+    if exposed(hero.pos, catches):
+        escape(turn, nav, ledger, hero, catches)
+        return None
+    state.update(day=turn.day, recalling=turn.is_day, traffic_only=False,
+                 yield_until=state.get('yield_until', -1))
+    mem.sabotage.gate_states[hero.id] = state
+    ledger.used.add(hero.id)
+    return NightWallGuard(turn, nav, ledger, hero, posts, state, catches, gaps, built)
+
+
 def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     """Recall at day-one tick 55 for night duty; later days keep gate duty."""
     if not turn.imps:
         return None
     hero = turn.imps[0]
-    if turn.day == 1 and turn.tick >= FIRST_DAY_IMP_RETURN_TICK and turn.station:
+    if turn.day == 1 and turn.is_day and turn.tick >= FIRST_DAY_IMP_RETURN_TICK and turn.station:
         # The fixed recall takes priority even with unfinished walls or an
-        # almost-complete destroy channel, and lasts until the next morning.
+        # almost-complete destroy channel, and lasts until night scheduling.
         mem.sabotage.gate_states.pop(hero.id, None)
         mem.sabotage.targets.pop(hero.id, None)
         mem.sabotage.progress.pop(hero.id, None)
@@ -233,6 +429,9 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
         posts = [(front_x, y) for y in sorted(set(ys))]
         ledger.used.add(hero.id)
         return FirstNightBaseGuard(turn, nav, ledger, hero, posts, catches)
+    guard = prepare_wall_guard(turn, cfg, mem, nav, ledger, walls)
+    if guard is not None or hero.id in ledger.used:
+        return guard
     gates = wall_gates(turn, walls)
     built = {u.pos for u in turn.ours if u.kind == 'wall'}
     if len(gates) != 1 or gates & built:
@@ -273,10 +472,13 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     has_mines = any(turn.enemy_mine(p) for p in turn.zones)
     waiting_post = (state.get('day') == turn.day and state.get('traffic_only')
                     and hero.pos == state.get('post') and not has_mines)
-    near_home = (min(xs) <= hero.pos[0] <= max(xs) and min(ys) <= hero.pos[1] <= max(ys)
+    inside_home = min(xs) <= hero.pos[0] <= max(xs) and min(ys) <= hero.pos[1] <= max(ys)
+    near_home = (inside_home
                  or any(distance(hero.pos, p) <= 1 for p in walls) or hero.pos == gate)
+    mine_departure = (quiet_night and hero.id in mem.sabotage.targets
+                      and not inside_home and hero.pos != gate)
     traffic_only = ((turn.is_day or quiet_night) and (near_home or waiting_post)
-                    and (quiet_night or not has_mines))
+                    and (quiet_night or not has_mines) and not mine_departure)
     if (quiet_night or not set(walls) <= built) and not traffic_only:
         # Keep any valid mine target and channel progress when releasing guard.
         mem.sabotage.gate_states.pop(hero.id, None)
