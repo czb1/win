@@ -142,15 +142,14 @@ class FirstWaveTests(unittest.TestCase):
         result = Agent(Config(llm_enabled=False)).decide(p)
         self.assertEqual(result["roleCommandMap"]["20"]["action"], "attack")
 
-    def test_later_day_recall_does_not_wait_for_robots_or_llm(self):
+    def test_later_day_idle_recall_does_not_wait_for_robots_or_llm(self):
         p = payload(197, [unit(11, "pioneer", 12, 5), unit(20, "rocket", 5, 5),
                          unit(13, "station", 3, 7)])
-        p["phaseTask"] = "slow unresolved task"
         agent = Agent(Config(layout_mode="explicit", return_margin=5))
         result = agent.decide(p)
         self.assertEqual(result["roleCommandMap"]["11"]["action"], "move")
         self.assertFalse(result["prompt"])
-        self.assertEqual(next(iter(agent.sessions.values())).stop_reason, "defence_return_deadline")
+        self.assertIn(11, next(iter(agent.sessions.values())).return_targets)
 
     def test_last_local_wall_finishes_only_with_time_to_return(self):
         p = payload(64, [unit(1, "worker", 9, 9, backpack=["stone"]),

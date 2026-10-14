@@ -113,7 +113,7 @@ class DefenceReturnTickTests(unittest.TestCase):
                             self.assertEqual(result['11']['action'], 'move')
                             self.assertNotEqual(pos(result['11']['targetPos'][0]), position)
 
-    def test_later_day_active_task_releases_pioneer_at_67(self):
+    def test_later_day_active_task_finishes_before_recall(self):
         for day in (2, 10):
             with self.subTest(day=day):
                 agent = Agent(self.operator_config())
@@ -124,14 +124,20 @@ class DefenceReturnTickTests(unittest.TestCase):
                     mem = next(iter(agent.sessions.values()))
                     self.assertNotIn(11, mem.return_targets)
                     self.assertFalse(mem.stop_reason)
-                    self.assertEqual(task.call_args.kwargs['available_rounds'], 1)
+                    remaining = min(mem.task_timeout, agent.cfg.task_max_rounds)
+                    self.assertEqual(task.call_args.kwargs['available_rounds'], remaining)
                     data['roundNo'] += 1
                     result = agent.decide(data)['roleCommandMap']
+                self.assertNotIn(11, mem.return_targets)
+                self.assertFalse(mem.stop_reason)
+                self.assertNotIn('11', result)
+                self.assertEqual(task.call_args.kwargs['available_rounds'], remaining - 1)
+                data.update(roundNo=data['roundNo'] + 1, phaseTask='')
+                result = agent.decide(data)['roleCommandMap']
                 self.assertEqual(mem.return_targets[11], 20)
-                self.assertEqual(mem.stop_reason, 'first_wave_deadline' if day == 1 else 'defence_return_deadline')
                 self.assertEqual(result['11']['action'], 'move')
 
-    def test_ready_task_answer_cannot_take_the_recall_action_at_67(self):
+    def test_ready_task_answer_precedes_recall_at_67(self):
         agent = Agent(self.operator_config())
         data = self.operator_case(196)
         data['phaseTask'] = 'active task'
@@ -142,9 +148,10 @@ class DefenceReturnTickTests(unittest.TestCase):
             task.reset_mock()
             data['roundNo'] = 197
             result = agent.decide(data)['roleCommandMap']
-        task.assert_not_called()
-        self.assertEqual(result['11']['action'], 'move')
-        self.assertEqual(mem.return_targets[11], 20)
+        task.assert_called_once()
+        self.assertNotIn('11', result)
+        self.assertNotIn(11, mem.return_targets)
+        self.assertFalse(mem.stop_reason)
 
     def test_first_day_carried_order_precedes_recall_but_later_day_keeps_cutoff(self):
         for day in (1, 2):

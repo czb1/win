@@ -276,7 +276,7 @@ class TaskReliabilityTests(unittest.TestCase):
         self.assertIn("missing_api('Shanghai')", prompt)
         self.assertIn("NameError", prompt)
 
-    def test_second_night_gunner_overrides_task_without_own_threat(self):
+    def test_second_night_finishes_current_task_without_own_threat(self):
         p = task_payload(196, "query")
         p["teamOur"]["roles"] += [unit(20, "rocket", 1, 1), unit(1, "worker", 1, 2), unit(13, "station", 2, 3)]
         p["robot"]["roles"] = [unit(90, "largeRobot", 7, 5, targetTeam="defender")]
@@ -285,8 +285,11 @@ class TaskReliabilityTests(unittest.TestCase):
         p.update(roundNo=200, llmResp="LIST .")
         response = agent.decide(p)
         self.assertFalse(response["executeCmd"])
-        self.assertEqual(response["roleCommandMap"]["11"]["action"], "move")
-        self.assertEqual(next(iter(agent.sessions.values())).stop_reason, "night_role")
+        self.assertTrue(response['prompt'])
+        self.assertNotIn('11', response['roleCommandMap'])
+        self.assertFalse(next(iter(agent.sessions.values())).stop_reason)
+        p.update(roundNo=201, phaseTask='', llmResp='')
+        self.assertEqual(agent.decide(p)['roleCommandMap']['11']['action'], 'move')
 
     def test_actual_threat_stops_task_and_logs_reason(self):
         p = task_payload(196, "query")
