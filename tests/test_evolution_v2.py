@@ -88,8 +88,10 @@ class EvolutionV2Tests(unittest.TestCase):
             self.assertNotIn('repair_spec', mem.contract)
             cases = next(f for f in mem.inputs['files'] if f['path'].startswith('test_cases/'))
             self.assertEqual(cases['type'], 'dict')
-            self.assertEqual(cases['keys'], ['cases'])
-            self.assertIn('expected', cases['sample'])
+            self.assertTrue(cases['complete'])
+            self.assertEqual(cases['content'], (base/cases['path']).read_text())
+            self.assertEqual(list(json.loads(cases['content'])), ['cases'])
+            self.assertNotIn('sample', cases)
             self.assertIn('inputPreview', response['prompt'])
             # The model program follows this question and validates in the same sandbox call.
             code = "import json\nfrom pathlib import Path\nrows=json.loads(Path('work/input_s2.json').read_text())\nPath('work/result_s2.json').write_text(str(sum(rows)))"

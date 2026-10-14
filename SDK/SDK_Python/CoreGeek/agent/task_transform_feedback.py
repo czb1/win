@@ -28,17 +28,32 @@ def schema(value):
 def metadata(inputs, contract):
     records, outputs = [], []
     for entry in inputs.get('files', []):
-        for case in entry.get('case_samples', []):
+        cases, preview = entry.get('case_samples', []), None
+        if 'content' in entry:
+            # Adapt the existing internal schema observation to source text.
+            # Do not reshape the prompt payload or trust an incomplete prefix.
+            cases = []
+            if entry.get('complete'):
+                try:
+                    value = json.loads(entry['content'])
+                    sequence = value.get('cases') if isinstance(value, dict) else value
+                    if entry.get('case_count') and isinstance(sequence, list):
+                        cases = sequence
+                    elif entry.get('type') == 'list' and isinstance(sequence, list):
+                        preview = sequence[:1]
+                except (ValueError, TypeError, RecursionError):
+                    pass
+        elif entry.get('type') == 'list' and not entry.get('case_count'):
+            try:
+                preview = json.loads(entry.get('sample', ''))
+            except (ValueError, TypeError):
+                pass
+        for case in cases:
             if isinstance(case.get('input'), list):
                 records.extend(case['input'])
             outputs.append(case.get('expected', case.get('output')))
-        if entry.get('type') == 'list' and not entry.get('case_count'):
-            try:
-                preview = json.loads(entry.get('sample', ''))
-                if isinstance(preview, list):
-                    records.extend(preview)
-            except (ValueError, TypeError):
-                pass
+        if isinstance(preview, list):
+            records.extend(preview)
     return {'source': contract.get('family'), 'source_document': contract.get('source'), 'input_schema': schema(records) if records else None,
             'output_schema': schema(outputs) if outputs else None,
             'schema_evidence': 'observed_preview_only'}
