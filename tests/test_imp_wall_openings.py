@@ -20,8 +20,8 @@ def remove_wall(data, point):
 
 
 class ImpWallOpeningTests(unittest.TestCase):
-    def test_first_fourth_and_eighth_nights_fill_actual_broken_wall(self):
-        for day in (1, 4, 8):
+    def test_second_fourth_and_eighth_nights_fill_actual_broken_wall(self):
+        for day in (2, 4, 8):
             data = gate_case((day - 1) * 130 + 80, imp=(8, 10))
             remove_wall(data, (8, 10))
             _, _, ledger, _, guard = guard_setup(data)
@@ -107,26 +107,26 @@ class ImpWallOpeningTests(unittest.TestCase):
             self.assertNotEqual(pos(ledger.commands['14']['targetPos'][0]), (8, 10))
 
     def test_empty_night_opening_waits_for_spawn_then_cleared_wave_releases(self):
-        data, agent = gate_case(70, imp=(11, 2)), Agent(Config(llm_enabled=False))
+        data, agent = gate_case(200, imp=(11, 2)), Agent(Config(llm_enabled=False))
         data['teamOur']['roles'] = [u for u in data['teamOur']['roles']
                                   if u['roleType'] not in ('worker', 'pioneer')]
         data['robot']['roles'] = []
         self.assertEqual(agent.decide(data)['roleCommandMap']['14']['action'], 'move')
-        data['roundNo'] = 71
+        data['roundNo'] = 201
         self.assertEqual(agent.decide(data)['roleCommandMap']['14']['action'], 'move')
-        data['roundNo'] = 72
+        data['roundNo'] = 202
         data['robot']['roles'] = [unit(90, 'largeRobot', 10, 14, targetTeam='defender')]
         self.assertEqual(agent.decide(data)['roleCommandMap']['14']['action'], 'move')
-        data['roundNo'] = 73
+        data['roundNo'] = 203
         data['robot']['roles'] = []
         self.assertEqual(agent.decide(data)['roleCommandMap']['14'], command('destroy', (12, 2)))
 
     def test_cleared_wave_leaves_home_then_resumes_enemy_mine(self):
-        data, agent = gate_case(80), Agent(Config(llm_enabled=False))
+        data, agent = gate_case(210), Agent(Config(llm_enabled=False))
         data['teamOur']['roles'] = [u for u in data['teamOur']['roles']
                                   if u['roleType'] not in ('worker', 'pioneer')]
         agent.decide(data)
-        data['roundNo'] = 81
+        data['roundNo'] = 211
         data['robot']['roles'] = []
         for _ in range(4):
             commands = agent.decide(data)['roleCommandMap']

@@ -112,7 +112,7 @@ class FirstNightImpTests(unittest.TestCase):
                 self.assertIn(14, ledger.used)
                 self.assertIs(turn.blocked, original)
 
-    def test_first_night_holds_wall_opening_and_keeps_rocket_fire(self):
+    def test_first_night_returns_from_gate_to_base_front_and_keeps_rocket_fire(self):
         data, agent = gate_case(70), Agent(Config(llm_enabled=False))
         data['robot']['roles'] = [unit(90, 'largeRobot', 10, 10, attackRange=3,
                                       targetTeam='challenger')]
@@ -123,8 +123,38 @@ class FirstNightImpTests(unittest.TestCase):
             self.assertEqual(shots[0]['controllerId'], '11')
             advance(data, commands)
         imp = next(u for u in data['teamOur']['roles'] if u['id'] == 14)
-        self.assertEqual(pos(imp['pos']), (3, 10))
+        self.assertIn(pos(imp['pos']), {(7, 10), (7, 11)})
         self.assertNotIn('14', agent.decide(data)['roleCommandMap'])
+
+    def test_first_night_front_post_takes_priority_over_wall_openings(self):
+        for broken_front in (False, True):
+            for round_no in (70, 80, 129):
+                with self.subTest(broken_front=broken_front, round_no=round_no):
+                    data = gate_case(round_no, imp=(7, 10))
+                    if broken_front:
+                        data['teamOur']['roles'] = [u for u in data['teamOur']['roles']
+                            if u['roleType'] != 'wall' or pos(u['pos']) != (8, 10)]
+                    _, _, ledger, _, guard = prepare(data)
+                    self.assertIsInstance(guard, FirstNightBaseGuard)
+                    guard.finish()
+                    self.assertNotIn('14', ledger.commands)
+                    self.assertEqual(ledger.notes[14]['reason'], 'imp_first_night_base_guard')
+
+    def test_first_night_holds_front_before_spawn_and_after_wave_clears(self):
+        for with_walls in (False, True):
+            for origin in (0, 1):
+                with self.subTest(with_walls=with_walls, origin=origin):
+                    data = gate_case(69, imp=(7, 10)) if with_walls else base_case(69, (7, 10))
+                    data['teamOur']['roles'] = [u for u in data['teamOur']['roles']
+                                              if u['roleType'] not in ('worker', 'pioneer')]
+                    agent = Agent(Config(llm_enabled=False, round_origin=origin))
+                    for tick in (69, 70, 71, 72, 73, 129):
+                        data['roundNo'] = tick + origin
+                        data['robot']['roles'] = ([unit(90, 'largeRobot', 10, 10,
+                            targetTeam='challenger')] if tick == 72 else [])
+                        self.assertNotIn('14', agent.decide(data)['roleCommandMap'])
+                        memory = next(iter(agent.sessions.values()))
+                        self.assertNotIn(14, memory.sabotage.targets)
 
     def test_front_guard_yields_for_an_actual_worker_route(self):
         data = base_case(55, point=(7, 10))

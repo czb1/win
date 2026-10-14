@@ -186,7 +186,7 @@ class GateGuard:
 
 
 class FirstNightBaseGuard(GateGuard):
-    """Stage from day-one tick 55; shield the base if no wall ring is available."""
+    """Stage from day-one tick 55 and shield the base for the whole first night."""
 
     def __init__(self, turn, nav, ledger, hero, posts, catches):
         # Staging avoids catch reach but deliberately accepts robot damage.
@@ -368,19 +368,6 @@ def prepare_wall_guard(turn, cfg, mem, nav, ledger, walls):
         # then releases the imp as soon as it is outside the home passage.
         state['yield_until'] = -1
         return None
-    if (not gaps or not built) and active and turn.day == 1 and turn.station:
-        catches = [t for t in threats(turn, mem.sabotage) if t.catch]
-        mem.sabotage.targets.pop(hero.id, None)
-        mem.sabotage.progress.pop(hero.id, None)
-        mem.sabotage.gate_states.pop(hero.id, None)
-        if exposed(hero.pos, catches):
-            escape(turn, nav, ledger, hero, catches)
-            return None
-        xs, ys = zip(*turn.station.cells)
-        front_x = max(xs) + 1 if min(xs) + max(xs) < turn.width - 1 else min(xs) - 1
-        ledger.used.add(hero.id)
-        return FirstNightBaseGuard(turn, nav, ledger, hero,
-                                   [(front_x, y) for y in sorted(set(ys))], catches)
     if not gaps or not built:
         return None
     posts = rear_waiting_posts(turn, walls)
@@ -417,9 +404,9 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
             and mem.sabotage.scout.get('hero_id') == hero.id):
         mem.sabotage.gate_states.pop(hero.id, None)
         return None
-    if turn.day == 1 and turn.is_day and turn.tick >= FIRST_DAY_IMP_RETURN_TICK and turn.station:
-        # The fixed recall takes priority even with unfinished walls or an
-        # almost-complete destroy channel, and lasts until night scheduling.
+    if turn.day == 1 and turn.tick >= FIRST_DAY_IMP_RETURN_TICK and turn.station:
+        # Keep the first-day recall active through the entire first night.
+        # Wall gaps and a cleared wave must not pull the imp off the base front.
         mem.sabotage.gate_states.pop(hero.id, None)
         mem.sabotage.targets.pop(hero.id, None)
         mem.sabotage.progress.pop(hero.id, None)
