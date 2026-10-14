@@ -104,7 +104,7 @@ class RobotPathBlockerTests(unittest.TestCase):
                 ledger, _ = decide(data)
                 self.assertEqual(ledger.commands["30000"], command("attack", expected))
 
-    def test_friendly_neutral_and_public_robots_are_bypassed_not_attacked(self):
+    def test_robots_allow_shots_while_other_friendly_and_neutral_obstacles_require_bypass(self):
         for obstruction in ("own_wall", "own_worker", "own_robot", "public_robot", "npc", "mine"):
             with self.subTest(obstruction=obstruction):
                 data = assault_payload(robot=controlled_robot(x=7))
@@ -118,7 +118,8 @@ class RobotPathBlockerTests(unittest.TestCase):
                     data["mapInfo"]["zones"] = [{"neutralType": "vendor" if obstruction == "npc" else "stone",
                                                  "pos": {"x": 8, "y": 4}}]
                 ledger, _ = decide(data)
-                self.assertEqual(ledger.commands["30000"]["action"], "move")
+                expected = "attack" if obstruction in ("own_robot", "public_robot") else "move"
+                self.assertEqual(ledger.commands["30000"]["action"], expected)
                 self.assertNotEqual(pos(ledger.commands["30000"]["targetPos"][0]), (8, 4))
                 self.assertNotIn("31000", ledger.commands)
 
@@ -218,7 +219,7 @@ class RobotObstacleMemoryTests(unittest.TestCase):
         ledger, _ = decide(data, memory)
         self.assertEqual(ledger.commands["30000"], command("attack", (10, 4)))
 
-    def test_reported_positions_shoot_through_towers_but_avoid_allies(self):
+    def test_reported_positions_shoot_through_towers_and_allied_robots(self):
         # Only relevant coordinates from the uploaded logs, not a full replay.
         data = payload(66, [unit(20013, "station", 32, 11)])
         data["mapInfo"].update(width=41, height=32)
@@ -232,14 +233,12 @@ class RobotObstacleMemoryTests(unittest.TestCase):
                                                     targetTeam="challenger") for i in range(3)]
         data["robot"]["roles"] = copy.deepcopy(data["teamOur"]["summonRobotList"])
         ledger, _ = decide(data, memory)
-        # The towers remain movement obstacles; two robots can fire through them.
+        # All three now fire through towers and robots without moving.
         for uid in (31035, 31036, 31037):
-            self.assertEqual(ledger.commands[str(uid)]['action'], 'move' if uid == 31035 else 'attack')
+            self.assertEqual(ledger.commands[str(uid)]['action'], 'attack')
             self.assertEqual(ledger.notes[uid]['conditions']['target_id'], 10013)
             self.assertNotIn(pos(ledger.commands[str(uid)]['targetPos'][0]),
                              {(8, 20), (8, 22), (9, 20)})
-        action = ledger.commands["31035"]
-        self.assertEqual(distance(pos(action["targetPos"][0]), (6, 18)), 1)
         self.assertTrue(all("controllerId" not in action for action in ledger.commands.values()))
 
 

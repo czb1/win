@@ -5,7 +5,7 @@ from heapq import heappop, heappush
 import re
 
 from .commands import command
-from .model import CHARACTERS, WEAPONS, distance, neighbours
+from .model import CHARACTERS, ROBOTS, WEAPONS, distance, neighbours
 from .navigation import check_time
 from .projectiles import line_cells
 
@@ -130,8 +130,9 @@ class RobotAssaultMemory:
                                if until > turn.round}
         self.occupied_seen = {point: seen for point, seen in self.occupied_seen.items()
                               if turn.round - seen <= OCCUPANCY_EVIDENCE_ROUNDS}
+        robot_cells = {p for r in (*turn.robots, *turn.summon_robots) for p in r.cells}
         self.failed_base_lanes = {point: until for point, until in self.failed_base_lanes.items()
-                                  if until > turn.round}
+                                  if until > turn.round and point not in robot_cells}
         self.approach_best = {uid: best for uid, best in self.approach_best.items() if uid in alive}
         self.approach_stalls = {uid: count for uid, count in self.approach_stalls.items() if uid in alive}
         self.routes = {uid: route for uid, route in self.routes.items()
@@ -160,7 +161,7 @@ class RobotAssaultMemory:
                 if target_id == base_id:
                     self.approach_stalls[uid] = min(ASSAULT_STALL_LIMIT,
                         self.approach_stalls.get(uid, 0) + 1)
-                    evidence = set(line_cells(origin, point)) & self.occupied_seen.keys()
+                    evidence = (set(line_cells(origin, point)) & self.occupied_seen.keys()) - robot_cells
                     if evidence:
                         # A collision alone says nothing about attack geometry.
                         # A failed base attack through that recently occupied
@@ -554,11 +555,12 @@ def scouted_rear_summon_position(turn, ledger, deadline=None):
                | {p for u in weapons.values() for p in u.cells})
     weapon_cells = {p for u in (*turn.ours, *turn.enemies, *ledger.robot_known_enemies)
                     if u.kind in WEAPONS for p in u.cells}
-    obstacles = ((turn.blocked - base.cells - weapon_cells)
-                 | ledger.reserved | ledger.summon_pending_positions)
+    robot_cells = {p for u in (*turn.robots, *turn.summon_robots) for p in u.cells}
+    obstacles = (turn.blocked - base.cells - weapon_cells - robot_cells) | ledger.reserved
     candidates = []
     # Every summon type has range three. Check the same conservative rays as
-    # night attacks, including characters/NPCs, while shooting through towers.
+    # night attacks, including characters/NPCs, through towers and robots.
+    # Pending summons reserve their landing cells, never an attack path.
     for point in sorted(_attack_goals(turn, base.cells, 3)):
         if deadline is not None:
             check_time(deadline)
@@ -693,14 +695,14 @@ def _occupants(turn, memory):
 
 
 def _ray_hits(origin, point, occupied, actor_id):
-    """Robot attacks pass intermediate turrets; an aimed turret is still a target.
+    """Robot attacks pass intermediate robots and turrets.
 
-    This is independent of weapon projectiles and of movement occupancy.
+    An aimed turret is still a target. Movement occupancy is independent.
     """
     for cell in line_cells(origin, point):
         hit = occupied.get(cell)
         if hit is not None and (hit[0] is None or hit[0].id != actor_id):
-            if hit[0] is not None and hit[0].kind in WEAPONS and cell != point:
+            if hit[0] is not None and hit[0].kind in (*WEAPONS, *ROBOTS) and cell != point:
                 continue
             yield (*hit, cell)
 
@@ -734,35 +736,10 @@ def _firing_point(origin, robot, target, memory, occupied):
                  and _clear_shot(origin, target, point, occupied, robot.id)), None)
 
 
-def _assault_reserved(turn, memory, ledger, robot):
-    avoided = memory.avoided_steps(robot.id)
-    reserved = ledger.reserved | avoided
-    for uid, lane in ledger.robot_firing_lanes.items():
-        if uid != robot.id:
-            reserved.update(lane)
-    # Attacks settle before movement, but stopping in a teammate's established
-    # firing lane would interrupt its next shot. Preserve those lanes while
-    # finding a new stance; current occupancy still governs every attack.
-    robots = {r.id: r for r in turn.summon_robots}
-    for uid, action in ledger.commands.items():
-        shooter = robots.get(int(uid))
-        if shooter is not None and action.get('action') == 'attack':
-            aim = action['targetPos'][0]
-            reserved.update(line_cells(shooter.pos, (aim['x'], aim['y'])))
-    return reserved
-
-
-def _planned_occupants(turn, ledger, occupied):
-    # Add destinations without removing origins: a submitted move does not
-    # prove that its old cell will be vacant. Only future stances use this view;
-    # actual attacks continue to use the current observation.
-    planned = occupied.copy()
-    for robot in turn.summon_robots:
-        action = ledger.commands.get(str(robot.id), {})
-        if action.get('action') == 'move':
-            point = action['targetPos'][0]
-            planned[point['x'], point['y']] = robot, False
-    return planned
+def _assault_reserved(memory, ledger, robot):
+    # Reserve physical destinations and collision evidence, not firing rays:
+    # another robot can occupy a ray without interrupting the attack.
+    return ledger.reserved | memory.avoided_steps(robot.id)
 
 
 def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, attack_only=False,
@@ -790,14 +767,13 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
         return True
     if attack_only:
         return False
-    reserved = _assault_reserved(turn, memory, ledger, robot)
+    reserved = _assault_reserved(memory, ledger, robot)
     if move_within is not None:
         # Block the boundary as well as filtering goals: a nearby endpoint
         # must not authorize a route that exits and re-enters the inner ring.
         reserved |= {p for cell in move_within for p in neighbours(cell)} - move_within
     blocked = (turn.blocked | reserved) - {robot.pos}
     goals = set()
-    planned = _planned_occupants(turn, ledger, occupied)
     reach = robot.attack_range
     nearest = _target_point(robot.pos, target)
     if memory.rejected(robot.id, robot.pos, target.id, nearest):
@@ -811,7 +787,7 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
         if origin in blocked or move_within is not None and origin not in move_within:
             continue
         if (distance(origin, _target_point(origin, target)) <= reach
-                and _firing_point(origin, robot, target, memory, planned) is not None):
+                and _firing_point(origin, robot, target, memory, occupied) is not None):
             goals.add(origin)
     route = nav.search(robot, goals, reserved, with_endpoint=True)
     if continuation and route is not None and route[0] >= continuation.steps:
@@ -822,9 +798,6 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
         memory.remember(turn, robot, "move", route[1], target.id)
         memory.routes[robot.id] = AssaultRoute(turn.round, target.id, target.pos, route[2],
                                               route[0], route[1])
-        if route[0] == 1:
-            aim = _firing_point(route[2], robot, target, memory, planned)
-            ledger.robot_firing_lanes[robot.id] = set(line_cells(route[2], aim))
         reason = ("robot_approach_base" if phase == "base" else "robot_approach_weak_wall"
                   if phase == "breach" else "robot_approach_path_blocker")
         ledger.explain(robot.id, reason, route_steps=route[0],
@@ -859,8 +832,8 @@ def _act_inside_base(turn, memory, nav, ledger, robot, base, occupied):
              if turn.inside(p) and p not in base.cells}
     if _act_toward_target(turn, memory, nav, ledger, robot, base, occupied, move_within=inner):
         return True
-    # A public robot may block one ray while a visible inner worker blocks the
-    # others. Clear that local obstacle instead of retreating to the shared
+    # A visible inner worker or wall may block the remaining base shots.
+    # Clear that local obstacle instead of retreating to the shared
     # outer wall. Do not invent targets or assume any occupant will move.
     targets = {}
     for point in _target_points(robot.pos, base):
@@ -946,7 +919,7 @@ def _gap_clearance_target(turn, memory, nav, ledger, base, occupied):
         for robot in robots:
             check_time(nav.deadline)
             if _firing_point(robot.pos, robot, target, memory, occupied) is None:
-                reserved = _assault_reserved(turn, memory, ledger, robot)
+                reserved = _assault_reserved(memory, ledger, robot)
                 goals = {p for p in _attack_goals(turn, target.cells, robot.attack_range)
                          - (turn.blocked - {robot.pos}) - reserved
                          if _firing_point(p, robot, target, memory, occupied) is not None}
@@ -990,17 +963,9 @@ def _focus_blocker(turn, memory, nav, ledger, base, occupied):
 def _advance_toward_base(turn, memory, ledger, robot, base):
     """Use a legal forward step if every firing route and clearance failed."""
     current = base_distance(base, robot.pos)
-    firing_lanes = set()
-    shooters = {r.id: r for r in turn.summon_robots}
-    for uid, action in ledger.commands.items():
-        shooter = shooters.get(int(uid))
-        if shooter and action.get('action') == 'attack':
-            aim = action['targetPos'][0]
-            firing_lanes.update(line_cells(shooter.pos, (aim['x'], aim['y'])))
     options = [p for p in neighbours(robot.pos) if turn.inside(p)
                and base_distance(base, p) < current and p not in turn.blocked
-               and p not in ledger.reserved and p not in memory.avoided_steps(robot.id)
-               and p not in firing_lanes]
+               and p not in ledger.reserved and p not in memory.avoided_steps(robot.id)]
     for step in sorted(options, key=lambda p: (base_distance(base, p), p)):
         if ledger.add(robot.id, command('move', step)):
             memory.remember(turn, robot, 'move', step)
@@ -1033,10 +998,6 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
     fixed = (turn.blocked - positions) | ledger.reserved | set(memory.occupied_steps)
     future_occupied = {p: hit for p, hit in occupied.items()
                        if hit[0] is None or hit[0].id not in movable_ids}
-    rays = {r.id: set(line_cells(r.pos, aims[r.id]))
-            for r in turn.summon_robots if aims.get(r.id) is not None
-            and (r.id in movable_ids or ledger.commands.get(str(r.id), {}).get('action') == 'attack')}
-    firing_lanes = set().union(*rays.values()) if rays else set()
     queue = []
     for robot in waiting:
         check_time(nav.deadline)
@@ -1054,7 +1015,7 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
         current_goals = {p for p in _attack_goals(turn, base.cells, robot.attack_range)
                          - (turn.blocked - {robot.pos}) - avoided
                          if _firing_point(p, robot, base, memory, occupied) is not None}
-        current = nav.search(robot, current_goals, avoided | firing_lanes)
+        current = nav.search(robot, current_goals, avoided)
         if current is None or current[0] >= future + 2:
             queue.append(robot)
     if not queue:
@@ -1101,14 +1062,13 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
     # shooter. Apply the same measurable route/space improvement checks to it.
     depth.update(entry_depths)
 
-    def queue_routes(view, vacated, lanes, destinations=()):
+    def queue_routes(view, vacated, destinations=()):
         # Compare one projected move, without removing any other occupant.
         # These paths rank yields only; actual followers still wait for a view.
         routes = {}
         for follower in queue:
             check_time(nav.deadline)
-            avoided = (ledger.reserved | memory.avoided_steps(follower.id)
-                       | set(lanes) | set(destinations))
+            avoided = ledger.reserved | memory.avoided_steps(follower.id) | set(destinations)
             if nav.memory:
                 avoided |= nav.memory.blocked(follower.id)
             cleared = set(vacated) | {follower.pos}
@@ -1119,15 +1079,14 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
                 goals, vacated=cleared, reserved=avoided, exact=True).get(follower.pos)
         return routes
 
-    current_routes = queue_routes(occupied, (), firing_lanes)
-    current_footprint = (positions | firing_lanes) & free_inner
+    current_routes = queue_routes(occupied, ())
+    current_footprint = positions & free_inner
     choices = []
     for robot in movable:
         check_time(nav.deadline)
         if robot.pos not in depth:
             continue
-        protected = set().union(*(ray for uid, ray in rays.items() if uid != robot.id))
-        blocked = turn.blocked | ledger.reserved | memory.avoided_steps(robot.id) | protected
+        blocked = turn.blocked | ledger.reserved | memory.avoided_steps(robot.id)
         if nav.memory:
             blocked |= nav.memory.blocked(robot.id)
         for step in neighbours(robot.pos):
@@ -1139,19 +1098,16 @@ def _make_room_inside(turn, memory, nav, ledger, base, occupied):
             aim = _firing_point(step, robot, base, memory, moved)
             if aim is None:
                 continue
-            next_lanes = protected | set(line_cells(step, aim))
-            next_footprint = ((positions - {robot.pos}) | {step} | next_lanes) & free_inner
+            next_footprint = ((positions - {robot.pos}) | {step}) & free_inner
             space_gain = len(current_footprint) - len(next_footprint)
-            next_routes = queue_routes(moved, {robot.pos}, next_lanes, {step})
+            next_routes = queue_routes(moved, {robot.pos}, {step})
             relief = sum(length is not None and (current_routes[uid] is None
                          or length < current_routes[uid]) for uid, length in next_routes.items())
             worse_route = any(length is not None and (next_routes[uid] is None
                               or next_routes[uid] > length)
                               for uid, length in current_routes.items())
-            # A corner-to-straight shot can release the aisle at equal depth.
-            # Neither route access nor space may worsen, and one must improve
-            # there, so neutral sideways moves cannot oscillate. Prefer relief over packing a
-            # shooter farther away while the doorway remains blocked.
+            # A sideways move must improve physical access or space without
+            # worsening either. Attack rays never consume movement space.
             if depth[step] == depth[robot.pos] and (worse_route or space_gain < 0
                                                   or relief == 0 and space_gain == 0):
                 continue
@@ -1196,7 +1152,7 @@ def _wait_for_scout_gap(turn, memory, nav, ledger, robot, base, entry, occupied)
     if holder is None:
         return False
     vacated = {holder.pos, robot.pos}
-    reserved = _assault_reserved(turn, memory, ledger, robot)
+    reserved = _assault_reserved(memory, ledger, robot)
     if nav.memory:
         reserved |= nav.memory.blocked(robot.id)
     blocked = (turn.blocked - vacated) | reserved
@@ -1226,6 +1182,17 @@ def act_robots(turn, memory, nav, ledger):
         return
     occupied = _occupants(turn, memory)
     if base is not None and not turn.is_day:
+        # A complete firing group holds position, ahead of every cooperative
+        # yield, old route, entry preference and clearance objective.
+        if all(r.id not in ledger.used and r.abnormal_state != 'dizzy'
+               and _firing_point(r.pos, r, base, memory, occupied) is not None
+               for r in turn.summon_robots):
+            memory.focus_target_id = None
+            memory.clearance_entry = None
+            for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
+                check_time(nav.deadline)
+                _act_toward_target(turn, memory, nav, ledger, robot, base, occupied, attack_only=True)
+            return
         _make_room_inside(turn, memory, nav, ledger, base, occupied)
     entry = open_assault_entry(turn, base, ledger.robot_assault_entry) if base else None
     if entry is not None and not turn.is_day:
@@ -1253,7 +1220,7 @@ def act_robots(turn, memory, nav, ledger):
         _act_toward_target(turn, memory, nav, ledger, robot, base, occupied, attack_only=True)
 
     # Preserve observed ingress independently of a teammate's stalled approach.
-    # All current base shots were allocated first, so their lanes remain protected.
+    # All current base shots were allocated first and keep their positions.
     for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
         check_time(nav.deadline)
         if robot.id not in ledger.used:
@@ -1290,8 +1257,7 @@ def act_robots(turn, memory, nav, ledger):
                         _act_toward_target(turn, memory, nav, ledger, robot, early_focus,
                                            occupied, attack_only=attack_only)
 
-    # Allocate all existing shots before moves so even a higher-ID shooter's
-    # lane is protected from a lower-ID robot's new stance.
+    # Existing base shots keep priority over another approach or clearance.
     for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
         check_time(nav.deadline)
         if robot.id not in ledger.used:

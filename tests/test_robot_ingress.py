@@ -4,9 +4,9 @@ import unittest
 
 from test_agent import payload, setup_case, unit
 from test_robot_assault import controlled_robot
+from test_robot_survival_memory import record_move
 from agent.commands import command
-from agent.model import distance, pos
-from agent.projectiles import line_cells
+from agent.model import pos
 from agent.robot_assault import RobotAssaultMemory, act_robots
 
 
@@ -78,28 +78,29 @@ class RobotIngressTests(unittest.TestCase):
         self.assertEqual(ledger.commands['30036'], command('move', (29, 11)))
         self.assertEqual(ledger.notes[30036]['conditions']['target_id'], 20013)
 
-    def test_corner_shooter_steps_sideways_to_release_the_aisle(self):
+    def test_corner_shooters_hold_while_follower_approaches(self):
         for entry in (None, (28, 12)):
             with self.subTest(entry=entry):
                 data = corner_aisle_case()
                 original = copy.deepcopy(data)
                 turn, ledger, _ = decide(data, entry=entry)
-                self.assertEqual(ledger.commands["30035"], command("move", (30, 8)))
+                self.assertEqual(ledger.commands["30035"], command("attack", (30, 9)))
                 self.assertEqual(ledger.commands["30037"], command("attack", (30, 10)))
-                self.assertEqual(ledger.notes[30036]["reason"], "robot_wait_assault_lane")
-                self.assertNotIn("30036", ledger.commands)
+                self.assertEqual(ledger.notes[30036]["reason"], "robot_approach_base")
+                self.assertEqual(ledger.commands["30036"], command("move", (29, 11)))
                 self.assertEqual(data, original)
                 self.assertIn((29, 8), turn.blocked)
-                self.assertIn((30, 8), ledger.reserved)
+                self.assertIn((29, 11), ledger.reserved)
+                self.assertNotIn((30, 8), ledger.reserved)
 
-    def test_opening_the_waiting_route_precedes_unrelated_deeper_moves(self):
+    def test_open_route_does_not_require_deeper_shooter_moves(self):
         data = corner_aisle_case()
         data["roundNo"] = 79
         data["teamOur"]["summonRobotList"][0]["pos"] = {"x": 30, "y": 8}
         _, ledger, _ = decide(data, entry=(28, 12))
-        self.assertEqual(ledger.commands["30037"], command("move", (29, 9)))
+        self.assertEqual(ledger.commands["30037"], command("attack", (30, 10)))
         self.assertEqual(ledger.commands["30035"], command("attack", (30, 9)))
-        self.assertEqual(ledger.notes[30036]["reason"], "robot_wait_assault_lane")
+        self.assertEqual(ledger.commands["30036"], command("move", (29, 11)))
 
     def test_observed_clear_aisle_lets_the_last_robot_approach_the_base(self):
         data = corner_aisle_case()
@@ -125,8 +126,8 @@ class RobotIngressTests(unittest.TestCase):
 
     def test_failed_corner_yield_does_not_admit_the_waiting_robot(self):
         data = corner_aisle_case()
-        _, first, memory = decide(data, entry=(28, 12))
-        self.assertEqual(first.commands["30035"], command("move", (30, 8)))
+        memory = RobotAssaultMemory()
+        record_move(data, memory, 30035, (30, 8))
         data["roundNo"] += 1
         # A legal command alone is not evidence that its move succeeded.
         data["lastRoundRoleActionResults"] = {"30035": True}
@@ -134,9 +135,10 @@ class RobotIngressTests(unittest.TestCase):
         self.assertIn((30, 8), memory.avoided_steps(30035))
         self.assertIn((29, 8), turn.blocked)
         self.assertEqual(ledger.commands["30035"]["action"], "attack")
-        self.assertNotEqual(ledger.commands.get("30036"), command("move", (29, 11)))
+        self.assertNotEqual(ledger.commands.get("30036"), command("move", (29, 8)))
+        self.assertEqual(ledger.commands["30036"], command("move", (29, 11)))
 
-    def test_corner_yield_is_symmetric_and_independent_of_robot_ids(self):
+    def test_corner_hold_is_symmetric_and_independent_of_robot_ids(self):
         for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
             with self.subTest(flip_x=flip_x, flip_y=flip_y):
                 data = corner_aisle_case()
@@ -148,11 +150,11 @@ class RobotIngressTests(unittest.TestCase):
                         station = role["roleType"] == "station"
                         role["pos"] = {"x": 40 - x - int(station) if flip_x else x,
                                        "y": 31 - y + int(station) if flip_y else y}
-                expected = (40 - 30 if flip_x else 30, 31 - 8 if flip_y else 8)
                 _, ledger, _ = decide(data)
-                self.assertEqual(ledger.commands["30039"], command("move", expected))
+                self.assertEqual(ledger.commands["30039"]['action'], 'attack')
+                self.assertEqual(ledger.notes[30039]['conditions']['target_id'], 20013)
 
-    def test_lead_clears_inner_aisle_after_leaving_the_entry(self):
+    def test_frontage_shooters_hold_while_out_of_range_robot_approaches(self):
         for entry in (None, (33, 7)):
             for opposite_gap in (False, True):
                 with self.subTest(entry=entry, opposite_gap=opposite_gap):
@@ -161,8 +163,10 @@ class RobotIngressTests(unittest.TestCase):
                         data["teamEnemy"]["roles"] = [r for r in data["teamEnemy"]["roles"]
                                                         if r["id"] != 41000]
                     _, ledger, _ = decide(data, entry=entry)
-                    self.assertEqual(ledger.commands["30035"], command("move", (30, 8)))
-                    self.assertEqual(ledger.notes[30035]["reason"], "robot_make_room_inside")
+                    for uid in (30035, 30036, 30038):
+                        self.assertEqual(ledger.commands[str(uid)]['action'], 'attack')
+                        self.assertEqual(ledger.notes[uid]['reason'], 'robot_attack_base')
+                    self.assertEqual(ledger.commands['30037']['action'], 'move')
 
     def test_clearing_keeps_current_occupancy_and_input_intact(self):
         data = frontage_case()
@@ -170,21 +174,19 @@ class RobotIngressTests(unittest.TestCase):
         turn, ledger, memory = decide(data)
         self.assertEqual(data, original)
         self.assertIn((31, 8), turn.blocked)
-        self.assertIn((30, 8), ledger.reserved)
-        self.assertEqual(memory.pending[30035][2:4], ("move", (30, 8)))
+        self.assertIn((34, 7), ledger.reserved)
+        self.assertEqual(memory.pending[30035][2:4], ("attack", (31, 9)))
         for action in ledger.commands.values():
             if action["action"] == "move":
                 self.assertNotEqual(pos(action["targetPos"][0]), (31, 8))
         self.assertEqual(ledger.notes[30036]["reason"], "robot_attack_base")
 
-    def test_lead_continues_deeper_when_the_queue_still_needs_space(self):
+    def test_lead_keeps_firing_after_observed_deeper_position(self):
         data = frontage_case(103)
         data["teamOur"]["summonRobotList"][0]["pos"] = {"x": 30, "y": 8}
         _, ledger, _ = decide(data)
-        self.assertEqual(ledger.commands["30035"]["action"], "move")
-        step = pos(ledger.commands["30035"]["targetPos"][0])
-        self.assertIn(step, {(29, 8), (29, 9)})
-        self.assertEqual(distance((30, 8), step), 1)
+        self.assertEqual(ledger.commands["30035"], command('attack', (30, 9)))
+        self.assertEqual(ledger.notes[30035]['conditions']['target_id'], 20013)
 
     def test_enemy_worker_is_not_speculatively_removed_for_ingress(self):
         data = frontage_case(90)
@@ -212,8 +214,8 @@ class RobotIngressTests(unittest.TestCase):
 
     def test_failed_yield_uses_observed_coordinates_and_avoids_retry(self):
         data = frontage_case()
-        _, first, memory = decide(data)
-        self.assertEqual(first.commands["30035"], command("move", (30, 8)))
+        memory = RobotAssaultMemory()
+        record_move(data, memory, 30035, (30, 8))
         data["roundNo"] += 1
         data["lastRoundRoleActionResults"] = {"30035": False}
         turn, ledger, memory = decide(data, memory)
@@ -251,23 +253,22 @@ class RobotIngressTests(unittest.TestCase):
         data = frontage_case()
         data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 29, "y": 8}
         _, ledger, _ = decide(data)
-        # The corner shooter now yields; the nonmoving lead's ray remains
-        # protected, rather than requiring a particular robot to be the mover.
-        self.assertEqual(ledger.notes[30036]["reason"], "robot_make_room_inside")
+        # A teammate on the attack path no longer requires either shooter to move.
+        self.assertEqual(ledger.notes[30036]["reason"], "robot_attack_base")
         action = ledger.commands["30035"]
         self.assertEqual(action["action"], "attack")
-        ray = line_cells((31, 8), pos(action["targetPos"][0]))
+        physical_positions = {pos(r['pos']) for r in data['teamOur']['summonRobotList']}
         for uid, action in ledger.commands.items():
             if uid != "30035" and action["action"] == "move":
-                self.assertNotIn(pos(action["targetPos"][0]), ray)
+                self.assertNotIn(pos(action["targetPos"][0]), physical_positions)
 
     def test_leading_position_is_used_instead_of_robot_id_order(self):
         data = frontage_case()
         data["teamOur"]["summonRobotList"][0]["id"] = 30039
         _, ledger, _ = decide(data)
-        self.assertEqual(ledger.commands["30039"], command("move", (30, 8)))
+        self.assertEqual(ledger.commands["30039"], command("attack", (31, 9)))
 
-    def test_reflected_frontage_uses_the_same_cooperative_rule(self):
+    def test_reflected_frontage_keeps_the_same_base_shooters(self):
         for flip_x, flip_y in ((True, False), (False, True), (True, True)):
             with self.subTest(flip_x=flip_x, flip_y=flip_y):
                 data = frontage_case()
@@ -279,8 +280,8 @@ class RobotIngressTests(unittest.TestCase):
                         role["pos"] = {"x": 40 - x - int(station) if flip_x else x,
                                        "y": 31 - y + int(station) if flip_y else y}
                 _, ledger, _ = decide(data)
-                expected = (40 - 30 if flip_x else 30, 31 - 8 if flip_y else 8)
-                self.assertEqual(ledger.commands["30035"], command("move", expected))
+                self.assertEqual(ledger.commands["30035"]['action'], 'attack')
+                self.assertEqual(ledger.notes[30035]['conditions']['target_id'], 20013)
 
     def test_daytime_does_not_rearrange_robots(self):
         _, ledger, _ = decide(frontage_case(69))
