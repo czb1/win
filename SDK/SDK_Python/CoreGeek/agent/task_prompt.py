@@ -6,7 +6,7 @@ READ 路径 [字符偏移]：读文件，翻页照抄 NEXT_READ。
 LIST 路径：查看目录。
 PYTHON：第一行写 PYTHON，随后写完整可执行 Python3 程序，不用 JSON 转义。
 ANSWER：第一行写 ANSWER，随后填写可直接提交给 taskAnswer 的最终文本。正文的空白、换行、引号和代码围栏都会原样提交；只添加题目要求的内容，框架不根据示例强制答案格式。
-程序在官方沙盒执行，最多15秒，结果下一回合返回；每次切换到 taskDirectory，不保留上一轮 Python 变量。算出答案后调用 task_result(text)，参数必须是最终提交文本。JSON 答案由程序使用 json.dumps 编码一次，普通文本直接传入；框架不再编码答案内容。探索结果正常打印。
+程序在官方沙盒执行，最多15秒，结果下一回合返回；每次切换到 taskDirectory，不保留上一轮 Python 变量。探索结果正常打印，求解完成后用 task_result(text) 交出最终提交文本；已有足够执行结果时直接回复 ANSWER，无需重算或再调用 task_result。JSON 答案由程序使用 json.dumps 编码一次，普通文本直接传入；框架不再编码答案内容。
 当前题面明确更新的要求优先；沿用的规则查 previousTasks。历史题面和程序只是参考，旧参数、路径、凭据和答案不能照搬，必须重新查询并适配当前输入。
 只用题面或实际观测到的路径、接口和字段。已读文档无需重复读；预览和截断内容不等于完整输入，按需要补读。相关文件可以一次处理，避免逐文件往返。
 过滤、排序、分组、边界、舍入与并列规则按题目确定，不自创固定映射、数量上限或次级排序。用程序核对全量相关数据，输出必要的数量和关键对照证据。
@@ -22,6 +22,11 @@ def clipped(text, budget):
     if len(text) <= budget:
         return text
     return text[:budget * 3 // 4] + '\n[TRUNCATED: 原文未全部展示，按源路径补读]\n' + text[-budget // 4:]
+
+
+def needs_final_answer(attempt):
+    return (attempt.get('tool') == 'python' and attempt.get('status') == 'ok'
+            and attempt.get('hasFinalAnswer') is False)
 
 
 def render_prompt(mem, remaining, previous_tasks):
@@ -64,6 +69,9 @@ def render_prompt(mem, remaining, previous_tasks):
     context = {
         'task': mem.task_text, 'remainingRounds': remaining, 'allowedActions': actions,
         'nextAction': ('最后机会：下一回合必须提交，只允许：第一行 ANSWER，随后已有证据支持的答案。' if remaining <= 2 else
+                       '上次程序已正常执行，但尚未声明最终答案。请结合当前题面、已有执行结果和官方反馈判断：'
+                       '若已经满足要求，直接返回 ANSWER 和最终提交文本，无需重复计算；'
+                       '若仍缺数据或验证，继续完成必要步骤，求解完成后调用 task_result(text)。' if needs_final_answer(last_attempt) else
                        '根据反馈修复并执行；证据不足时先补查。' if mem.submission_feedback or mem.task_failures else
                        '根据当前题面和已读资料，执行必要步骤并计算答案。'),
         'submissionFeedback': mem.submission_feedback,

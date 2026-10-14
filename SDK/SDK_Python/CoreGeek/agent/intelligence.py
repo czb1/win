@@ -17,7 +17,7 @@ from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status, merge_m
 from .wall_watch_state import WallWatchState
 from .task_history import remember, references, solution_record, completed_record, previous_tasks, source_snapshot
 from .task_tools import task_document_code
-from .task_prompt import render_prompt
+from .task_prompt import needs_final_answer, render_prompt
 from .task_schedule import task_descriptor, task_signature
 from .task_tools import parse_file_tool, document_path, document_paths, document_code, file_code, resolved_document
 from .task_inputs import input_context
@@ -733,6 +733,7 @@ class Memory:
             self.history.append({'sandbox': self.cmd_result})
             self.last_attempt = {'python': self.running_python if not tool else '',
                                  'sandbox': excerpt(str(observation), 16000), 'status': status,
+                                 'hasFinalAnswer': answer is not None,
                                  'runtimeError': tail_excerpt(observation, 2000) if status != 'ok' else '',
                                  'tool': tool.get('kind', 'python')}
             if report:
@@ -752,7 +753,8 @@ class Memory:
                 count = self.output_fingerprints.get(fingerprint, 0) + 1
                 self.output_fingerprints[fingerprint] = count
                 self.last_attempt['sameOutputCount'] = count
-                if count >= 2 and (answer is None or answer_identity(answer) in self.rejected_answers):
+                if (count >= 2 and not needs_final_answer(self.last_attempt)
+                        and (answer is None or answer_identity(answer) in self.rejected_answers)):
                     self.reject('结果重复且未完成；依据原始证据改变假设，不只改写代码。')
                 self.exploration.append(dict(self.last_attempt))
             LOG.info('round=%s task_sandbox status=%s final=%s chars=%s error_tail=%s',
@@ -909,7 +911,12 @@ class Memory:
             attempts = self.proposal_counts.get(signature, 0) + 1
             self.proposal_counts[signature] = attempts
             if attempts > 2:
-                self.reject("同一内容已尝试两次；根据上次结果修改，禁止原样重试。")
+                last_python = self.exploration[-1] if self.exploration else self.last_attempt
+                if has_python and needs_final_answer(last_python):
+                    self.reject("同一内容已尝试两次；请先检查已有成功输出。若足以回答，直接返回 ANSWER；"
+                                "若不足，只补充仍缺少的查询或计算。")
+                else:
+                    self.reject("同一内容已尝试两次；根据上次结果修改，禁止原样重试。")
                 return
             self.task_failures = 0
             if has_python or file_kinds:

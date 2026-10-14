@@ -143,7 +143,7 @@ class EvolutionV2Tests(unittest.TestCase):
         self.assertIsNone(mem.python)
         self.assertIn('同一内容已尝试两次', mem.history[-1]['error'])
 
-    def test_same_output_from_different_code_requests_diagnosis(self):
+    def test_same_successful_output_without_final_answer_is_not_a_failure(self):
         mem=Memory(task_text='query', task_started=1, bootstrap_done=True)
         for round_no in (2,3):
             mem.pending=('cmd',round_no-1)
@@ -153,7 +153,10 @@ class EvolutionV2Tests(unittest.TestCase):
             turn,cfg,_,_=setup_case(payload)
             mem.observe(turn,cfg)
         self.assertEqual(mem.last_attempt['sameOutputCount'], 2)
-        self.assertIn('结果重复', mem.history[-1]['error'])
+        self.assertFalse(mem.last_attempt['hasFinalAnswer'])
+        self.assertFalse(any('error' in entry for entry in mem.history))
+        self.assertEqual(mem.task_stats.get('rejections', 0), 0)
+        self.assertIsNone(mem.answer)
 
     def test_parser_hint_reuses_method_across_shapes_without_old_data_or_aggregate(self):
         code="import re\nold_input='/tmp/day1/private.json'\n" \
