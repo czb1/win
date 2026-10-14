@@ -233,13 +233,13 @@ class FirstDayWallBlockTests(unittest.TestCase):
 
     def test_agent_yields_then_attacks_through_observed_gap(self):
         agent = Agent(Config(llm_enabled=False))
-        data = seal_ring(block_case(69, held=True, stock=[BOSS]))
+        data = seal_ring(block_case(69, held=True, stock=[BOSS] * 2))
         before = copy.deepcopy(data)
         response = agent.decide(data)
         self.assertEqual(data, before)
         self.assertEqual(response['roleCommandMap']['12'], command('use', SPAWN, name=BOSS))
         data['roundNo'] = 70
-        data['teamOur']['roles'][2]['backpack'] = []
+        data['teamOur']['roles'][2]['backpack'] = [BOSS]
         data['teamOur']['summonRobotList'] = [controlled_robot(x=SPAWN[0], y=SPAWN[1])]
         response = agent.decide(data)
         self.assertEqual(response, agent.decide(copy.deepcopy(data)))

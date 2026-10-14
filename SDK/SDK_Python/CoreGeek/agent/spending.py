@@ -3,6 +3,23 @@ from .economy_plan import front_sites, planned_weapons, via
 from .model import DEFENCE_RETURN_TICK, FIRST_DAY_PIONEER_SHOP_TICK
 
 FIRST_DAY_ROBOT_PURCHASE_LIMIT = 3
+FIRST_DAY_ROBOT_PURCHASE_MINIMUM = 2
+
+
+def first_day_robot_batch_allowed(turn, mem, ledger, quantity):
+    """Commit to the opening assault only with at least two purchased orders."""
+    if turn.day != 1 or not turn.is_day:
+        return True
+    if mem.night_scout.cancelled:
+        return False
+    purchased = mem.robot_summon_state.get('purchased', 0)
+    if purchased + quantity >= FIRST_DAY_ROBOT_PURCHASE_MINIMUM:
+        return True
+    from .opening_offense import cancel_first_day_offense
+    cancel_first_day_offense(turn, mem, 'insufficient_first_day_robots', ledger=ledger,
+                             purchased=purchased, available_quantity=quantity,
+                             minimum=FIRST_DAY_ROBOT_PURCHASE_MINIMUM, gold=ledger.gold)
+    return False
 
 
 def first_day_pioneer_work_pending(turn, mem):
@@ -189,6 +206,8 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
             quantity = 0
         elif robot_price:
             quantity = min(quantity, max(0, ledger.gold - max(0, base_price)) // robot_price)
+        if not held and remaining and not first_day_robot_batch_allowed(turn, mem, ledger, quantity):
+            remaining = quantity = 0
         if not base_missing and (held or not remaining):
             state['phase'] = 'robots'
         elif base_missing and (base_price < 0 or not hero.space):
@@ -211,7 +230,9 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
                     # Reserve the buy and each summon, but no healthy-base use:
                     # the base voucher stays in the backpack for emergency HP.
                     slots = turn.day_left - route[0] - int(base_missing) - 1 - held
-                    count = min(count, max(1, slots))
+                    minimum = (max(1, FIRST_DAY_ROBOT_PURCHASE_MINIMUM - summons['purchased'])
+                               if turn.day == 1 else 1)
+                    count = min(count, max(minimum, slots))
                 options.append((-count, route[0], shop, route))
             if not options:
                 ledger.used.add(hero.id)

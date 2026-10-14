@@ -161,7 +161,7 @@ class FirstDayCentralMiningTests(unittest.TestCase):
         self.assertEqual(response['10'], command('sell', name='iron', num=5))
         self.assertEqual(memory.first_day_offense['phase'], 'sell')
         data['roundNo'] = 26
-        data['teamOur']['roles'][1]['backpack'] = []
+        data['teamOur']['roles'][1]['backpack'] = ['BossRobotSummonOrder'] * 2
         response = agent.decide(data)['roleCommandMap']
         self.assertEqual(memory.first_day_offense['phase'], 'block')
         self.assertEqual(memory.night_scout.worker_id, 10)

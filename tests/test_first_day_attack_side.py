@@ -137,17 +137,17 @@ class FirstDayAttackSideTests(unittest.TestCase):
 
     def test_reserved_uses_keep_existing_gap_when_a_weapon_is_revealed(self):
         agent = Agent(Config(llm_enabled=False))
-        data = block_case(46, held=True, stock=[BOSS])
+        data = block_case(46, held=True, stock=[BOSS] * 2)
         response = agent.decide(data)
         self.assertEqual(pos(response['roleCommandMap']['12']['targetPos'][0]), SPAWN)
         data['roundNo'] = 47
-        data['teamOur']['roles'][2]['backpack'] = []
+        data['teamOur']['roles'][2]['backpack'] = [BOSS]
         data['lastRoundRoleActionResults'] = {'12': True}
         turret(data)
         response = agent.decide(data)
         memory = next(iter(agent.sessions.values()))
         self.assertEqual(memory.night_scout.wall_entry, ENTRY)
-        self.assertEqual(memory.robot_summon_state['positions'], {SPAWN})
+        self.assertIn(SPAWN, memory.robot_summon_state['positions'])
         self.assertNotIn('10', response['roleCommandMap'])
 
     def test_worker_keeps_reachable_gap_while_summons_use_other_open_rear_lanes(self):

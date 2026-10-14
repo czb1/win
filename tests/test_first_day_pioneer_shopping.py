@@ -208,19 +208,21 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
         _, _, ledger = self.prepare(data, mem)
         self.assertEqual(ledger.commands['2'], command('buy', name=BASE, num=1))
 
-    def test_low_gold_waits_for_income_and_uses_only_an_affordable_batch(self):
+    def test_low_gold_keeps_base_purchase_but_abandons_robot_shopping(self):
         data, mem = self.data(gold=99), Memory()
         accepted, _, ledger = self.prepare(data, mem)
         self.assertTrue(accepted)
         self.assertFalse(ledger.commands)
         self.assertIn(2, ledger.used)
+        self.assertTrue(mem.night_scout.cancelled)
         self.next_turn(data, [], gold=340)
         _, _, ledger = self.prepare(data, mem)
         self.assertEqual(ledger.commands['2'], command('buy', name=BASE, num=1))
         self.next_turn(data, [BASE], gold=240)
         _, _, ledger = self.prepare(data, mem)
-        self.assertEqual(ledger.commands['2'], command('buy', name=BOSS, num=2))
-        self.assertEqual(ledger.gold, 0)
+        self.assertFalse(ledger.commands)
+        self.assertEqual(mem.first_day_pioneer['phase'], 'return')
+        self.assertEqual(ledger.gold, 240)
 
     def test_free_orders_still_respect_the_three_purchase_limit(self):
         data, mem = self.data(), Memory()

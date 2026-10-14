@@ -33,7 +33,8 @@ from .spending import (first_day_guns_built, first_day_purchase_reserve, plan_da
                        prepare_paid_upgrades, prepare_defense_purchase, FIRST_DAY_ROBOT_PURCHASE_LIMIT,
                        heal_station_with_pioneer, prepare_station_reserve,
                        first_day_pioneer_plan_active, first_day_pioneer_work_pending,
-                       prepare_first_day_pioneer)
+                       prepare_first_day_pioneer, first_day_robot_batch_allowed,
+                       FIRST_DAY_ROBOT_PURCHASE_MINIMUM)
 from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scout,
                        yield_wall_entry)
 from .task_schedule import task_options
@@ -121,8 +122,9 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     """Use carried orders or prepare the strongest affordable surplus order."""
     state = observe_robot_summons(turn, mem)
     if mem.night_scout.cancelled:
-        ledger.spending_plan['robot_blocked'] = 'enemy_gatling_spotted'
-        ledger.spending_plan['robot_use_blocked'] = 'enemy_gatling_spotted'
+        reason = mem.night_scout.cancel_reason or 'enemy_gatling_spotted'
+        ledger.spending_plan['robot_blocked'] = reason
+        ledger.spending_plan['robot_use_blocked'] = reason
         return False
     # Enemy stations are globally visible; no live base means no assault budget.
     if enemy_base(turn) is None:
@@ -251,6 +253,7 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     if ledger.first_day_offense_worker_id is not None:
         free = [hero for hero in free if hero.id == ledger.first_day_offense_worker_id]
     buyers = []
+    small_batches = []
     for name in names:
         price = turn.shop[name]
         quantity = 1
@@ -259,11 +262,16 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         if quantity_limit is not None:
             quantity = min(quantity, quantity_limit)
         quantity = min(quantity, remaining)
+        if free and not first_day_robot_batch_allowed(turn, mem, ledger, quantity):
+            return False
         for hero in free:
             plan = robot_purchase_plan(turn, cfg, mem, nav, ledger, hero, name,
                                        shop_only, quantity, reserved_uses=held)
             if plan:
                 count, shop, route = plan
+                if turn.day == 1 and state['purchased'] + count < FIRST_DAY_ROBOT_PURCHASE_MINIMUM:
+                    small_batches.append(count)
+                    continue
                 job = mem.daytime_jobs.get(hero.id, {})
                 continuing = (job.get('kind') == 'robot_buy' and job.get('name') == name
                               and job.get('target') == shop)
@@ -272,6 +280,8 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         if buyers:
             break
     if not buyers:
+        if small_batches:
+            first_day_robot_batch_allowed(turn, mem, ledger, max(small_batches))
         ledger.spending_plan.setdefault('robot_blocked', 'no_free_buyer_or_shop_route')
         return False
     _, _, negative_count, _, _, _, hero, route, shop = min(buyers)
@@ -663,6 +673,8 @@ class Agent:
             if turn.is_day:
                 ledger.daytime_gunner_post = mem.gunner_post if shared is not None else None
             prepare_first_day_pioneer(turn, self.cfg, mem, nav, ledger)
+            if mem.night_scout.cancelled:
+                scout = None
             if not turn.is_day:
                 guard_station_with_pioneer(turn, mem, nav, ledger)
             returning = set()

@@ -22,6 +22,7 @@ class ScoutMemory:
     # Match-long cancellation: losing sight or starting another day must not
     # revive the opening assault or consume its remaining orders.
     cancelled: bool = False
+    cancel_reason: str = ''
 
 
 def _sync_scout(turn, memory, base):

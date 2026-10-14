@@ -272,13 +272,14 @@ class FirstDayOffenseTests(unittest.TestCase):
     def test_robot_purchase_precedes_missing_gun_gold(self):
         data = case(35, ready=False, gold=119)
         data['teamOur']['roles'][1]['pos'] = {'x': 14, 'y': 20}
-        _, ledger = step(data, Memory(), walls=[])
+        memory = Memory()
+        _, ledger = step(data, memory, walls=[])
         self.assertFalse(any(c['action'] == 'buy' for c in ledger.commands.values()))
-        self.assertEqual(ledger.notes[10]['reason'], 'first_day_offense_wait_gold')
-        self.assertEqual(ledger.notes[10]['conditions']['reserved_station_gold'], 0)
-        data['teamOur']['goldNum'] = 120
+        self.assertTrue(memory.night_scout.cancelled)
+        self.assertEqual(memory.first_day_offense['phase'], 'mining')
+        data['teamOur']['goldNum'] = 240
         _, ledger = step(data, Memory(), walls=[])
-        self.assertEqual(ledger.commands['10'], command('buy', name=BOSS, num=1))
+        self.assertEqual(ledger.commands['10'], command('buy', name=BOSS, num=2))
         self.assertEqual(ledger.gold, 0)
 
     def test_actual_occupation_allows_same_worker_to_use_three_orders_and_hold(self):
@@ -358,22 +359,24 @@ class FirstDayOffenseTests(unittest.TestCase):
         self.assertEqual(worker.id, 10)
         self.assertEqual(ledger.commands['10'], command('sell', name='stone', num=1))
 
-    def test_no_route_or_money_never_returns_assigned_worker_to_mining(self):
+    def test_unfunded_purchase_releases_worker_even_when_wall_route_disappears(self):
         data = case(35, gold=0)
         data['teamOur']['roles'][1]['pos'] = {'x': 14, 'y': 20}
         agent = Agent(cfg(walls=[]))
         response = agent.decide(data)
         memory = next(iter(agent.sessions.values()))
-        self.assertNotIn('10', response['roleCommandMap'])
-        self.assertEqual(memory.first_day_offense['phase'], 'buy')
+        self.assertEqual(response['roleCommandMap']['10']['action'], 'move')
+        self.assertEqual(memory.first_day_offense['phase'], 'mining')
+        self.assertTrue(memory.night_scout.cancelled)
         data['roundNo'] = 54
         data['mapInfo']['zones'] = [z for z in data['mapInfo']['zones'] if z['neutralType'] != 'weaponShop']
         data['teamEnemy']['roles'] += [unit(300 + x * 32 + y, 'wall', x, y, health=1000)
             for x, y in ([(x, y) for x in range(28, 34) for y in (7, 12)]
                          + [(28, y) for y in range(8, 12)])]
         response = agent.decide(data)
-        self.assertNotIn('10', response['roleCommandMap'])
-        self.assertEqual(memory.first_day_offense['phase'], 'block')
+        self.assertEqual(memory.first_day_offense['phase'], 'mining')
+        self.assertIsNone(memory.night_scout.worker_id)
+        self.assertIsNone(memory.night_scout.wall_entry)
         self.assertEqual(memory.first_day_offense['worker_id'], 10)
 
     def test_late_worker_purchase_yields_to_the_pioneer(self):
@@ -391,8 +394,8 @@ class FirstDayOffenseTests(unittest.TestCase):
         memory = Memory()
         _, ledger = step(data, memory, walls=[])
         self.assertFalse(any(c['action'] == 'buy' for c in ledger.commands.values()))
-        self.assertEqual(memory.first_day_offense['phase'], 'block')
-        self.assertEqual(memory.first_day_offense['transition'], 'shop_or_wall_daylight_deadline')
+        self.assertEqual(memory.first_day_offense['phase'], 'mining')
+        self.assertEqual(memory.first_day_offense['transition'], 'insufficient_first_day_robots')
 
     def test_only_worker_finishes_guns_and_day_two_releases_the_role(self):
         data = case(35, ready=False)
