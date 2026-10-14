@@ -33,12 +33,32 @@ def geometry(turn, sites):
     base_x = [p[0] for p in turn.station.cells]
     rear = (min if right else max)(p[0] for p in sites)
     enclosed = rear < min(base_x) if right else rear > max(base_x)
-    # Blueprint boundaries survive destruction; the gate is for transit,
-    # not an outside patrol route through a breach or around the rear.
+    # Waiting/repair posts remain interior even when the boundary is breached.
+    # watch_route separately admits real empty boundary cells for transit.
     inside = {(x, y) for x in range(turn.width) for y in range(low + 1, high)
               if (x < front if right else x > front)
               and (not enclosed or (x > rear if right else x < rear))}
     return inside, front
+
+
+def patrol_area(turn, sites):
+    """Interior standing cells plus actual empty perimeter transit cells."""
+    inside, _ = geometry(turn, sites)
+    if not inside or not turn.station:
+        return inside
+    left, right = min(x for x, _ in sites), max(x for x, _ in sites)
+    low, high = min(y for _, y in sites), max(y for _, y in sites)
+    if not all(left < x < right and low < y < high for x, y in turn.station.cells):
+        return inside
+    structures = {p for u in (*turn.ours, *turn.enemies)
+                  if u.kind not in ('worker', 'pioneer', 'imp') for p in u.cells}
+    boundary = {(x, y) for x in range(left, right + 1) for y in range(low, high + 1)
+                if x in (left, right) or y in (low, high)}
+    passages = {p for p in boundary if turn.inside(p) and p not in structures
+                and turn.zones.get(p, 'land') == 'land'
+                and (turn.is_day or not any(turn.threatens_us(r)
+                     and distance(p, r.pos) <= r.attack_range for r in turn.robots))}
+    return inside | passages
 
 
 def watch_route(turn, nav, ledger, mem, hero, sites, target=None, *, standing=None,
@@ -53,9 +73,10 @@ def watch_route(turn, nav, ledger, mem, hero, sites, target=None, *, standing=No
             if turn.is_day else mem.gunner_post)
     if post:
         reserved.add(post)
-    if hero.pos in inside:
+    area = patrol_area(turn, sites)
+    if hero.pos in area:
         reserved.update((x, y) for x in range(turn.width) for y in range(turn.height)
-                        if (x, y) not in inside)
+                        if (x, y) not in area)
     return nav.search(hero, goals, reserved, with_endpoint=with_endpoint)
 
 
@@ -406,8 +427,9 @@ def repair_watch(turn, mem, nav, ledger, hero, sites):
                                 reason=risk.reason if risk.needed else 'preposition')
         return accepted
     state.patrol_target, state.patrol_post = None, None
-    threatened = bool(critical or pressure or any(distance(hero.pos, r.pos) <= r.attack_range + 2
-                                                 for r in hostile))
+    from .night_economy import awaiting_night_wave
+    threatened = bool(awaiting_night_wave(turn, mem) or critical or pressure
+                      or any(distance(hero.pos, r.pos) <= r.attack_range + 2 for r in hostile))
     if not held and not threatened:
         ledger.explain(hero.id, 'wall_watch_empty_released', held=0)
         mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, action='release',

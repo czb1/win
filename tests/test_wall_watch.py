@@ -291,7 +291,7 @@ class WallWatchTests(unittest.TestCase):
 
     def test_quiet_night_releases_watch_for_income_even_with_packs(self):
         for packs in (0, 4):
-            p = self.case(day=7, packs=packs, damaged=False)
+            p = self.case(day=7, tick=110, packs=packs, damaged=False)
             p['robot']['roles'] = []
             p['teamOur']['roles'][2]['pos'] = {'x': 10, 'y': 2}
             result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']

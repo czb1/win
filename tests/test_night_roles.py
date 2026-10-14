@@ -8,8 +8,8 @@ from agent.combat import block_enemy_workers
 
 
 class NightRolesTests(unittest.TestCase):
-    def test_first_two_nights_use_pioneer_and_both_workers_mine(self):
-        for round_no in (70, 200):
+    def test_cleared_first_two_nights_use_pioneer_and_both_workers_mine(self):
+        for round_no in (100, 230):
             data = test_shared_gunner.SharedGunnerTests().case(round_no)
             data['teamOur']['roles'][1]['pos'] = {'x': 11, 'y': 3}
             data['teamOur']['roles'].append(unit(11, 'pioneer', 4, 11))

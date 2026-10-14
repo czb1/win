@@ -18,6 +18,20 @@ def hostiles(turn):
             and (r.target_team not in ('challenger', 'defender') or r.target_team == turn.team)]
 
 
+def awaiting_night_wave(turn, mem):
+    """An empty opening request precedes spawning; it is never a cleared wave."""
+    if turn.is_day:
+        return False
+    state = mem.night_wave_observation
+    if turn.tick == 70:
+        if state.get('day') != turn.day:
+            state.clear()
+            state.update(day=turn.day, seen=False)
+    if hostiles(turn):
+        state.update(day=turn.day, seen=True)
+    return turn.tick == 70 or (state.get('day') == turn.day and not state.get('seen'))
+
+
 def rockets_sufficient(turn, pairs):
     """A conservative single-controller budget, independent of target ordering.
 
@@ -73,7 +87,7 @@ def rockets_sufficient(turn, pairs):
 
 def release_gatling(turn, mem, ledger, pairs):
     """Keep the assignment until it can be released for the rest of this night."""
-    if turn.is_day or turn.day < 2:
+    if turn.is_day or turn.day < 2 or awaiting_night_wave(turn, mem):
         return False
     actor = mem.gatling_operator_id
     if actor is None:
@@ -174,10 +188,11 @@ class WorkNavigator(Navigator):
 
 def _deliver(turn, mem, nav, ledger, hero, state, watcher=False):
     from .economy import voucher_for, wall_upgrade_allowed, upgrade_order, weapon_upgrade_allowed
-    from .wall_watch import geometry
+    from .wall_watch import geometry, patrol_area
     from .wall_batches import face_sites
     from .wall_health import WALL_MAX_HEALTH
     inside = geometry(turn, ledger.wall_cells)[0] if watcher else None
+    transit = patrol_area(turn, ledger.wall_cells) if watcher else None
     options = []
     for wall in turn.ours:
         if wall.kind not in (('wall',) if watcher else WEAPONS):
@@ -189,7 +204,7 @@ def _deliver(turn, mem, nav, ledger, hero, state, watcher=False):
                 or mem.movement.avoids(hero.id, wall.pos)):
             continue
         goals = (set(neighbours(wall.pos)) & inside) if watcher else wall.cells
-        route = nav.leg(hero, goals, exact=watcher, inside=inside)
+        route = nav.leg(hero, goals, exact=watcher, inside=transit)
         if not route or route[0] + 1 > state['end_round'] - turn.round:
             continue
         wounded = watcher and wall.health < WALL_MAX_HEALTH[wall.level - 1]
@@ -385,6 +400,9 @@ def _mine(turn, cfg, mem, nav, ledger, hero, state):
 def work(turn, cfg, mem, base_nav, ledger, hero, *, start=False):
     """Return ownership even on a bounded wait; no idle-home fallback can recall it."""
     if hero.kind != 'worker' or hero.id in ledger.used or turn.day < 2:
+        return False
+    if awaiting_night_wave(turn, mem):
+        mem.night_work.pop(hero.id, None)
         return False
     state = mem.night_work.get(hero.id)
     if not state and not start:

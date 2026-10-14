@@ -83,12 +83,12 @@ class ThreeRocketTests(unittest.TestCase):
                 self.assertEqual(ledger.commands['1'], command('build', TOWERS[missing], name='rocket'))
 
     def test_pioneer_rotates_three_rockets_and_workers_keep_mining(self):
-        data, agent = gate_case(70), Agent(Config(loadout=['rocket'] * 3, llm_enabled=False))
+        data, agent = gate_case(100), Agent(Config(loadout=['rocket'] * 3, llm_enabled=False))
         data['teamOur']['roles'].append(unit(2, 'worker', 13, 2, health=500))
         data['robot']['roles'] = [unit(90, 'largeRobot', 8, 10, health=500,
                                       targetTeam='challenger', attackRange=3)]
         for offset, expected in enumerate(('20', '21', '22')):
-            data['roundNo'] = 70 + offset
+            data['roundNo'] = 100 + offset
             for tower in data['teamOur']['roles'][4:7]:
                 tower['cooldown'] = 0 if str(tower['id']) == expected else 2
             commands = agent.decide(data)['roleCommandMap']
@@ -265,18 +265,18 @@ class GateGuardEligibilityTests(unittest.TestCase):
         self.assertEqual(mem.sabotage.gate_states, {})
 
     def test_guard_leaves_when_local_wave_clears_and_returns_for_new_wave(self):
-        data, agent = gate_case(), Agent(Config(llm_enabled=False))
+        data, agent = gate_case(210), Agent(Config(llm_enabled=False))
         self.assertNotIn('14', agent.decide(data)['roleCommandMap'])
         mem = next(iter(agent.sessions.values()))
-        mem.sabotage.gate_states[14].update(recalling=True, yield_until=205)
-        data['roundNo'] = 201
+        mem.sabotage.gate_states[14].update(recalling=True, yield_until=215)
+        data['roundNo'] = 211
         data['robot']['roles'] = []
         commands = agent.decide(data)['roleCommandMap']
         self.assertEqual(commands['14']['action'], 'move')
         self.assertIn(pos(commands['14']['targetPos'][0]), POSTS)
         self.assertTrue(mem.sabotage.gate_states[14]['traffic_only'])
         self.assertNotEqual(mem.sabotage.gate_states[14]['post'], pos(commands['14']['targetPos'][0]))
-        data['roundNo'] = 202
+        data['roundNo'] = 212
         data['teamOur']['roles'][3]['pos'] = commands['14']['targetPos'][0]
         data['robot']['roles'] = [unit(90, 'largeRobot', 9, 14, attackRange=3)]
         self.assertEqual(agent.decide(data)['roleCommandMap']['14'], command('move', GATE))
@@ -434,7 +434,7 @@ class GateGuardTests(unittest.TestCase):
         self.assertTrue(ledger.notes[14]['conditions']['at_gate'])
 
     def test_quiet_night_sabotage_clears_gate_before_worker_moves(self):
-        data, agent = gate_case(worker=(4, 9)), Agent(Config(llm_enabled=False))
+        data, agent = gate_case(210, worker=(4, 9)), Agent(Config(llm_enabled=False))
         data['robot']['roles'] = []
         data['mapInfo']['zones'].append(dict(neutralType='copper', pos=dict(x=1, y=7), remain=10))
         commands = agent.decide(data)['roleCommandMap']
@@ -452,7 +452,7 @@ class GateGuardTests(unittest.TestCase):
         advance(data, commands)
 
     def test_quiet_night_far_inside_worker_can_exit_after_imp_leaves(self):
-        data, agent = gate_case(worker=(7, 9)), Agent(Config(llm_enabled=False))
+        data, agent = gate_case(210, worker=(7, 9)), Agent(Config(llm_enabled=False))
         data['robot']['roles'] = []
         data['mapInfo']['zones'].append(dict(neutralType='copper', pos=dict(x=1, y=7), remain=10))
         commands = agent.decide(data)['roleCommandMap']
@@ -493,7 +493,7 @@ class GateGuardTests(unittest.TestCase):
         advance(data, commands)
 
     def test_accepted_local_collection_does_not_trigger_unneeded_yield(self):
-        data = gate_case(worker=(7, 9))
+        data = gate_case(210, worker=(7, 9))
         data['robot']['roles'][0]['pos'] = dict(x=1, y=14)
         data['mapInfo']['zones'] = [dict(neutralType='copper', pos=dict(x=7, y=10), remain=10),
                                   dict(neutralType='copper', pos=dict(x=1, y=7), remain=10)]
@@ -516,7 +516,7 @@ class GateGuardTests(unittest.TestCase):
         self.assertEqual(agent.decide(data)['roleCommandMap']['14'], command('move', GATE))
 
     def test_worker_occupying_gate_is_never_swapped_or_displaced(self):
-        data = gate_case(imp=(2, 9), worker=GATE)
+        data = gate_case(210, imp=(2, 9), worker=GATE)
         data['mapInfo']['zones'] = [dict(neutralType='copper', pos=dict(x=2, y=10), remain=10)]
         commands = Agent(Config(llm_enabled=False)).decide(data)['roleCommandMap']
         self.assertEqual(commands['1']['action'], 'collect')
@@ -593,7 +593,7 @@ class GateGuardTests(unittest.TestCase):
 
     def test_quiet_night_gate_clearance_and_worker_exit_mirror_in_four_corners(self):
         for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
-            data = gate_case(worker=(4, 9))
+            data = gate_case(210, worker=(4, 9))
             data['robot']['roles'] = []
             data['mapInfo']['zones'] = [dict(neutralType='copper', pos=dict(x=1, y=7), remain=10)]
             expected_posts = {(14-x if flip_x else x, 14-y if flip_y else y) for x, y in POSTS}

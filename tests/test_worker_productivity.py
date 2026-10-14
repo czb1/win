@@ -64,7 +64,7 @@ class WorkerProductivityTests(unittest.TestCase):
         memory = next(iter(agent.sessions.values()))
         memory.night_scout = ScoutMemory(key=(1, 99, (32, 8)), worker_id=12,
                                         post=(29, 6), wall_entry=(29, 7))
-        data['roundNo'] += 1
+        data['roundNo'] += 11
         response = agent.decide(data)['roleCommandMap']
         self.assertEqual(memory.night_scout, ScoutMemory())
         self.assertEqual(response['12'], command('collect', (10, 17)))
