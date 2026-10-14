@@ -74,7 +74,10 @@ def wait_cell_safe(turn, nav, ledger, hero, cell, forbidden):
 
 
 def task_options(turn, cfg, mem, nav, ledger, hero, *, switching=False):
+    from .daily_offense import daily_pioneer_active
     if not turn.is_day or (turn.phase_task and not switching) or hero.id in mem.return_targets:
+        return []
+    if daily_pioneer_active(turn, mem):
         return []
     if turn.day == 1 and (turn.tick >= FIRST_DAY_PIONEER_SHOP_TICK or mem.first_day_pioneer):
         return []

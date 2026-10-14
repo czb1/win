@@ -387,26 +387,28 @@ class TaskCompletionTests(unittest.TestCase):
         self.assertFalse(prompt)
         self.assertFalse(cmd)
 
-    def test_later_day_agent_uses_fixed_defence_tick_as_task_deadline(self):
+    def test_later_day_agent_finishes_current_task_past_defence_tick(self):
         p = task_payload(194, 'query')
         p['teamOur']['roles'].append(unit(13, 'station', 3, 11))
         agent = Agent(Config(layout_mode='explicit', return_margin=5))
         response = agent.decide(p)
         context = json.loads(response['prompt'].split('上下文：\n', 1)[1])
-        self.assertEqual(context['remainingRounds'], 3)
-        p.update(roundNo=195, llmResp='READ not_enough_time.md')
-        self.assertFalse(agent.decide(p)['executeCmd'])
-        p.update(roundNo=196, llmResp='ANSWER\n42')
+        self.assertEqual(context['remainingRounds'], 60)
+        p.update(roundNo=195, llmResp='READ task_details.md')
+        self.assertTrue(agent.decide(p)['executeCmd'])
+        p.update(roundNo=196, llmResp='', lastCmdResult='[exitCode:0]\n[durationMs:1]\n42')
+        self.assertTrue(agent.decide(p)['prompt'])
+        p.update(roundNo=197, llmResp='ANSWER\n42', lastCmdResult='')
         self.assertEqual(agent.decide(p)['roleCommandMap']['11']['taskAnswer'], '42')
 
-    def test_task_budget_uses_tick_67_independent_of_return_margin(self):
+    def test_task_budget_uses_current_task_timeout_independent_of_return_margin(self):
         for margin in (0, 5):
             with self.subTest(return_margin=margin):
                 p = task_payload(188, 'query')
                 p['teamOur']['roles'].append(unit(13, 'station', 3, 11))
                 response = Agent(Config(layout_mode='explicit', return_margin=margin)).decide(p)
                 context = json.loads(response['prompt'].split('上下文：\n', 1)[1])
-                self.assertEqual(context['remainingRounds'], 9)
+                self.assertEqual(context['remainingRounds'], 60)
 
     def test_read_file_cannot_forge_final_answer(self):
         p = task_payload(3, 'query')

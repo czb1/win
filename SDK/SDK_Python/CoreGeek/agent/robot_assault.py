@@ -583,6 +583,21 @@ def choose_summon_position(turn, ledger, deadline=None):
     base = enemy_base(turn)
     if base is None:
         return None
+    if ledger.robot_summon_mode == 'daily_rear':
+        anchor = ledger.robot_summon_anchor
+        if anchor is not None:
+            forbidden = {(x, y)
+                         for x in range(anchor[0] - FIRST_DAY_SUMMON_RADIUS, anchor[0] + FIRST_DAY_SUMMON_RADIUS + 1)
+                         for y in range(anchor[1] - FIRST_DAY_SUMMON_RADIUS, anchor[1] + FIRST_DAY_SUMMON_RADIUS + 1)
+                         if not rear_approach(turn, base, (x, y))}
+            point = _summon_in_cluster(turn, ledger, base, None, deadline, forbidden)
+            if point is not None:
+                return point
+        # Map edges or newly occupied cells can exhaust a small cluster.
+        # Keep the entire batch behind the base, even if it must spread out.
+        plan = weakest_approach(turn, ledger, deadline, prefer_rear=True,
+                               spawn_filter=lambda p: rear_approach(turn, base, p))
+        return plan.position if plan else None
     if ledger.robot_summon_mode == 'late_wave' and ledger.robot_summon_anchor is not None:
         weapons = (*ledger.robot_known_enemies, *turn.enemies,
                    *getattr(ledger, 'late_known_weapons', ()))

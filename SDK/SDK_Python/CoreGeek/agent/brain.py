@@ -40,6 +40,8 @@ from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scou
                        yield_wall_entry)
 from .task_schedule import task_options
 from .opening_offense import act_first_day_offense, observe_first_day_gatling
+from .daily_offense import (observe_daily_pioneer, daily_pioneer_active,
+                            daily_pioneer_work_pending, prepare_daily_pioneer)
 
 LOG = logging.getLogger(__name__)
 
@@ -131,6 +133,9 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                       use_only=False):
     """Use carried orders or prepare the strongest affordable surplus order."""
     state = observe_robot_summons(turn, mem)
+    if daily_pioneer_active(turn, mem):
+        excluded = set(excluded) | ({turn.pioneer.id} if turn.pioneer else set())
+        use_only = True
     if turn.day != 6 and mem.night_scout.cancelled:
         reason = mem.night_scout.cancel_reason or 'enemy_gatling_spotted'
         ledger.spending_plan['robot_blocked'] = reason
@@ -500,6 +505,7 @@ class Agent:
         ledger.robot_summon_mode = summons["mode"] if turn.day == 1 else None
         nav = Navigator(turn, started + self.cfg.decision_seconds, mem.movement)
         intel = Intelligence(turn, self.cfg, mem)
+        observe_daily_pioneer(turn, mem)
         prompt, execute = "", ""
         pairs = []
         shared = None
@@ -575,20 +581,24 @@ class Agent:
                 or distance(h.pos, r.pos) <= max(self.cfg.task_danger_radius, r.attack_range + 2))
                 for r in turn.robots))
             nav.vehicle_detours = not danger
-            # Every day shares one task/recall/wall cutoff, independent of
-            # the operator's distance or the general logistics margin.
+            # Shopping chains finish their current task before the usual
+            # task/recall cutoff; workers and wall construction keep it.
             defence_return_due = turn.is_day and bool(home) and turn.tick >= DEFENCE_RETURN_TICK
             first_watch = turn.day == 1 and defence_return_due
             finish_opening_task = (turn.day == 1 and turn.tick >= FIRST_DAY_PIONEER_SHOP_TICK
                                    and within_timeout and not mem.first_day_pioneer)
+            finish_daily_task = (daily_pioneer_active(turn, mem)
+                                 and mem.daily_pioneer_offense['phase'] == 'task' and within_timeout)
+            finish_current_task = finish_opening_task or finish_daily_task
             hold_task = (within_timeout and not danger and not mem.stop_reason
-                         and (not defence_return_due or finish_opening_task))
+                         and (not defence_return_due or finish_current_task))
             if turn.phase_task or mem.log_task_id:
                 emit_event("task_schedule", {"active": bool(turn.phase_task), "within_timeout": within_timeout,
                            "return_steps": task_return, "return_margin": self.cfg.return_margin,
                            "day_left": turn.day_left, "danger": danger, "first_watch": first_watch,
                            "defence_return_due": defence_return_due, "return_tick": DEFENCE_RETURN_TICK,
                            "finish_opening_task": finish_opening_task,
+                           "finish_daily_task": finish_daily_task,
                            "hold_task": hold_task, "stop_reason": mem.stop_reason}, "evolution")
             if not turn.is_day:
                 emergency_items(turn, ledger)
@@ -607,7 +617,7 @@ class Agent:
                                         home_roles=(mem.gatling_operator_id, mem.wall_watch_id),
                                         excluded=relief_ids)
             pioneer_gunner = bool(h and turn.weapons and
-                                 ((not turn.is_day and not finish_opening_task) or not hold_task))
+                                 ((not turn.is_day and not finish_current_task) or not hold_task))
             if not turn.is_day and pioneer_gunner:
                 hold_task = False
                 if turn.phase_task and not mem.stop_reason:
@@ -721,7 +731,9 @@ class Agent:
                     ledger.weapon_diagnostics[weapon.id] = current.copy()
             if turn.is_day:
                 ledger.daytime_gunner_post = mem.gunner_post if shared is not None else None
-            prepare_first_day_pioneer(turn, self.cfg, mem, nav, ledger)
+            prepare_daily_pioneer(turn, self.cfg, mem, nav, ledger)
+            if not daily_pioneer_active(turn, mem):
+                prepare_first_day_pioneer(turn, self.cfg, mem, nav, ledger)
             if mem.night_scout.cancelled:
                 scout = None
             if not turn.is_day:
@@ -729,7 +741,8 @@ class Agent:
             returning = set()
             for hero, tower in pairs:
                 if (hero.kind == 'pioneer'
-                        and first_day_pioneer_work_pending(turn, mem)):
+                        and (first_day_pioneer_work_pending(turn, mem)
+                             or daily_pioneer_work_pending(turn, mem))):
                     mem.return_targets.pop(hero.id, None)
                     mem.return_posts.pop(hero.id, None)
                     continue
@@ -781,10 +794,10 @@ class Agent:
                 # Submit a ready answer before a return movement can cancel it.
                 # LLM/sandbox work holds the pioneer at the task point and gets
                 # its own chance before expensive worker connectivity searches.
-                if (within_timeout and (not defence_return_due or finish_opening_task) and h.id not in ledger.used
+                if (within_timeout and (not defence_return_due or finish_current_task) and h.id not in ledger.used
                         and (mem.answer is not None or hold_task)):
                     available = min(mem.task_timeout, self.cfg.task_max_rounds) - (turn.round - mem.task_started)
-                    if home and not finish_opening_task:
+                    if home and not finish_current_task:
                         available = min(available, max(0, DEFENCE_RETURN_TICK - turn.tick))
                     prompt, execute = intel.task(ledger, available_rounds=available)
                 if hold_task:

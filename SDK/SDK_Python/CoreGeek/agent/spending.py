@@ -24,6 +24,9 @@ def first_day_robot_batch_allowed(turn, mem, ledger, quantity):
 
 def first_day_pioneer_work_pending(turn, mem):
     """Opening work owns daylight actions; unfinished orders yield to night guns."""
+    from .daily_offense import daily_pioneer_active
+    if daily_pioneer_active(turn, mem):
+        return False
     return bool(turn.is_day and turn.pioneer and mem.first_day_pioneer.get('phase') in
                 ('shop', 'station', 'robots'))
 
@@ -148,8 +151,7 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
     from .brain import DAILY_SUMMON_LIMIT, observe_robot_summons, summon_best_robot
     from .commands import command
     from .economy import station_voucher_needed, voucher_for
-    from .mining import return_destination
-    from .model import SUMMON_ORDERS, neighbours
+    from .model import SUMMON_ORDERS
     from .robot_assault import enemy_base
 
     hero, station = turn.pioneer, turn.station
@@ -302,22 +304,30 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
             state['robots_cancelled'] = True
         state['phase'] = 'return'
     if state['phase'] == 'return':
-        if not turn.weapons:
-            from .daytime import guard_station_with_pioneer
-            return guard_station_with_pioneer(turn, mem, nav, ledger)
-        tower = next((w for h, w in ledger.return_pairs if h.id == hero.id), None)
-        if tower:
-            mem.return_targets[hero.id] = tower.id
-            if hero.id in ledger.operator_posts:
-                mem.return_posts[hero.id] = ledger.operator_posts[hero.id]
-        else:
-            home, exact = return_destination(turn, nav, ledger, hero, mem)
-            if not home:
-                return False
-            route = nav.search(hero, home, ledger.reserved) if exact else nav.approach(hero, home, ledger.reserved)
-            if route and route[1] is not None:
-                goals = set(home) if exact else {p for cell in home for p in neighbours(cell)} - set(home)
-                return nav.move_along(hero, ledger, route, goals, returning=True)
+        return return_pioneer_to_post(turn, mem, nav, ledger, hero)
+    return False
+
+
+def return_pioneer_to_post(turn, mem, nav, ledger, hero):
+    """Use the existing cannon assignment immediately after a shopping chain."""
+    from .mining import return_destination
+    from .model import neighbours
+    if not turn.weapons:
+        from .daytime import guard_station_with_pioneer
+        return guard_station_with_pioneer(turn, mem, nav, ledger)
+    tower = next((w for h, w in ledger.return_pairs if h.id == hero.id), None)
+    if tower:
+        mem.return_targets[hero.id] = tower.id
+        if hero.id in ledger.operator_posts:
+            mem.return_posts[hero.id] = ledger.operator_posts[hero.id]
+    else:
+        home, exact = return_destination(turn, nav, ledger, hero, mem)
+        if not home:
+            return False
+        route = nav.search(hero, home, ledger.reserved) if exact else nav.approach(hero, home, ledger.reserved)
+        if route and route[1] is not None:
+            goals = set(home) if exact else {p for cell in home for p in neighbours(cell)} - set(home)
+            return nav.move_along(hero, ledger, route, goals, returning=True)
     return False
 
 
