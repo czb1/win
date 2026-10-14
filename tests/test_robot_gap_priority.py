@@ -53,7 +53,7 @@ class RobotGapPriorityTests(unittest.TestCase):
         self.assertEqual(ledger.commands['30035'], command('attack', ENTRY))
         for robot in data['teamOur']['summonRobotList']:
             facts = ledger.notes[robot['id']]['conditions']
-            self.assertEqual(facts['target_id'], 20010)
+            self.assertEqual(facts.get('clearance_target_id', facts['target_id']), 20010)
             self.assertTrue(facts['gap_priority'])
             self.assertLessEqual(facts.get('route_steps', 0), 1)
 
@@ -72,7 +72,8 @@ class RobotGapPriorityTests(unittest.TestCase):
                     ledger, memory = decide(data, entry=entry if known else None)
                     self.assertEqual(memory.clearance_entry, entry)
                     for note in ledger.notes.values():
-                        self.assertEqual(note['conditions']['target_id'], 20010)
+                        facts = note['conditions']
+                        self.assertEqual(facts.get('clearance_target_id', facts['target_id']), 20010)
                     self.assertEqual(data, before)
 
     def test_actual_arrivals_join_the_shooter_on_the_next_observation(self):
@@ -96,7 +97,8 @@ class RobotGapPriorityTests(unittest.TestCase):
                                                    (29, 12), 30, robot.pos)
         ledger, _ = decide(data, memory, entry=ENTRY)
         for note in ledger.notes.values():
-            self.assertEqual(note['conditions']['target_id'], 20010)
+            facts = note['conditions']
+            self.assertEqual(facts.get('clearance_target_id', facts['target_id']), 20010)
             self.assertFalse(note['conditions']['route_continued'])
 
     def test_collision_memory_does_not_hide_an_observed_attackable_gap_blocker(self):
@@ -111,7 +113,8 @@ class RobotGapPriorityTests(unittest.TestCase):
         self.assertEqual(ledger.commands['30035'], command('attack', ENTRY))
         self.assertIn(ENTRY, ledger.turn.blocked)
         for note in ledger.notes.values():
-            self.assertEqual(note['conditions']['target_id'], 20010)
+            facts = note['conditions']
+            self.assertEqual(facts.get('clearance_target_id', facts['target_id']), 20010)
 
     def test_priority_focus_is_released_when_the_battle_or_controlled_group_ends(self):
         for change in ('day', 'base', 'lost'):
@@ -172,7 +175,8 @@ class RobotGapPriorityTests(unittest.TestCase):
                 ledger, memory = decide(data, entry=ENTRY)
                 self.assertEqual(memory.focus_target_id, 20010)
                 for note in ledger.notes.values():
-                    self.assertEqual(note['conditions']['target_id'], 20010)
+                    facts = note['conditions']
+                    self.assertEqual(facts.get('clearance_target_id', facts['target_id']), 20010)
 
     def test_penetrable_turret_allows_a_nearby_base_shot_without_demolition(self):
         for kind in ('rocket', 'gatling', 'railgun'):
@@ -241,7 +245,8 @@ class RobotGapPriorityTests(unittest.TestCase):
         self.assertNotIn('30035', ledger.commands)
         self.assertEqual(ledger.notes[30035]['reason'], 'robot_dizzy')
         for uid in (30036, 30037):
-            self.assertEqual(ledger.notes[uid]['conditions']['target_id'], 20010)
+            facts = ledger.notes[uid]['conditions']
+            self.assertEqual(facts.get('clearance_target_id', facts['target_id']), 20010)
             self.assertNotEqual(ledger.commands[str(uid)], command('move', (31, 5)))
 
 

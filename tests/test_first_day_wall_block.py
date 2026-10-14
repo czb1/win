@@ -273,7 +273,8 @@ class FirstDayWallBlockTests(unittest.TestCase):
             ledger.robot_assault_entry = ENTRY
             act_robots(turn, RobotAssaultMemory(), nav, ledger)
             self.assertNotIn('30000', ledger.commands)
-            self.assertEqual(ledger.notes[30000]['reason'], 'robot_wait_scout_gap')
+            self.assertEqual(ledger.notes[30000]['reason'],
+                             'robot_wait_scout_gap' if dizzy else 'robot_wait_gap_queue')
             # The next request still reports the worker in the gap: wait again.
             data['roundNo'] = 71
             turn, _, nav, ledger = setup_case(data)

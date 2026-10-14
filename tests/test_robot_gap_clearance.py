@@ -156,9 +156,13 @@ class RobotGapClearanceTests(unittest.TestCase):
                     self.assertEqual(memory.clearance_entry, entry)
                     for uid in (30036, 30037):
                         self.assertEqual(ledger.commands[str(uid)], command('attack', entry))
-                    self.assertEqual(ledger.commands['30035']['action'], 'move')
+                    # This supporter's ray hits the flank wall first. Clear
+                    # that wall now while the others keep firing at the worker.
+                    wall = next(u for u in ledger.turn.enemies if u.id == 41015)
+                    self.assertEqual(ledger.commands['30035'], command('attack', wall.pos))
                     for uid in (30035, 30036, 30037):
-                        self.assertEqual(ledger.notes[uid]['conditions']['target_id'], 20010)
+                        facts = ledger.notes[uid]['conditions']
+                        self.assertEqual(facts.get('clearance_target_id', facts['target_id']), 20010)
                     self.assertEqual(data, original)
 
     def test_allocation_is_independent_of_robot_ids(self):
@@ -168,7 +172,8 @@ class RobotGapClearanceTests(unittest.TestCase):
         ledger, _ = decide(data, entry=ENTRY)
         for uid in (700, 800):
             self.assertEqual(ledger.commands[str(uid)], command('attack', ENTRY))
-        self.assertEqual(ledger.notes[900]['conditions']['target_id'], 20010)
+        self.assertEqual(ledger.notes[900]['conditions']['clearance_target_id'], 20010)
+        self.assertEqual(ledger.notes[900]['conditions']['target_id'], 41015)
 
     def test_live_blocker_is_not_skipped_then_observed_clearance_allows_ingress(self):
         data = gap_case()
@@ -222,7 +227,8 @@ class RobotGapClearanceTests(unittest.TestCase):
         ledger, memory = decide(data, entry=ENTRY)
         self.assertEqual(memory.focus_target_id, 20010)
         for note in ledger.notes.values():
-            self.assertEqual(note['conditions']['target_id'], 20010)
+            facts = note['conditions']
+            self.assertEqual(facts.get('clearance_target_id', facts['target_id']), 20010)
 
     def test_an_existing_base_shooter_does_not_join_gap_clearance(self):
         data = gap_case()
