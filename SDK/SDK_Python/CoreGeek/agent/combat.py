@@ -752,9 +752,17 @@ def relieve_night_pioneer(turn, mem, nav, ledger, excluded=()):
 
 def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=(), relief=None):
     """Return one persistent operator/post, or None for non-clustered layouts."""
-    mixed = (cfg.loadout.count("rocket") == 2 and cfg.loadout.count("gatling") == 1
-             and any(w.kind == "gatling" for w in turn.weapons))
-    if len(sites) != 3 or any(w.pos not in sites or
+    if len(sites) != 3:
+        return None
+    # Use the planned rocket pair even before the gatling is built, or while
+    # it is being rebuilt. Its site must not constrain the common rocket post.
+    mixed = cfg.loadout.count("rocket") == 2 and cfg.loadout.count("gatling") == 1
+    if mixed and any(w.kind == "rocket" and w.pos == sites[cfg.loadout.index("gatling")]
+                     for w in turn.weapons):
+        # A live match may still contain the previous three-rocket battery.
+        # Keep those observed guns working until the mixed layout can be built.
+        mixed = False
+    if any(w.pos not in sites or
             w.kind != (cfg.loadout[sites.index(w.pos)] if mixed else "rocket")
             for w in turn.weapons):
         return None
@@ -824,7 +832,7 @@ def shared_crew(turn, cfg, mem, nav, sites, walls, excluded=(), relief=None):
 
 
 def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6, corridor=()):
-    """One pioneer rotates ready rockets; explicit mixed crews remain supported."""
+    """One pioneer rotates ready rockets while the worker fires the gatling."""
     damage = {}
     protected = set(corridor) - ledger.reserved
     ledger.reserved.update(protected)

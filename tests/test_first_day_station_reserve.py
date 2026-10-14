@@ -149,7 +149,7 @@ class FirstDayStationReserveTests(unittest.TestCase):
         response = Agent(cfg).decide(data)['roleCommandMap']
         self.assertEqual(response['2'], command('buy', name='StationUpgradeVoucher1', num=1))
         self.assertEqual(response['1'], command('buy', name='BossRobotSummonOrder', num=3))
-        self.assertEqual(response['3'], command('build', TOWERS[0], name='rocket'))
+        self.assertEqual(response['3'], command('build', TOWERS[2], name='gatling'))
 
     def test_walking_buyers_reserve_each_cost_once_and_leave_the_tower_remainder(self):
         data = self.empty_guns_data()

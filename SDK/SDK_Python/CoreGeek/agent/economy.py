@@ -810,7 +810,8 @@ def build_options(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=
                  else nearest)
         if route:
             priority = (wall_priority(turn, cfg, sites, index, mem.wall_hits)[:3]
-                        if name_for(index) == "wall" else (0, 0, route[0]))
+                        if name_for(index) == "wall" else
+                        (0, int(turn.day == 1 and name_for(index) != "gatling"), route[0]))
             if name_for(index) == "wall":
                 # Close gaps first, then retain the established expansion order.
                 priority = (int(target not in gaps),) + priority[:3]
@@ -833,6 +834,13 @@ def build(turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell=None):
             turn, cfg, mem, nav, ledger, hero, sites, name_for, work_cell):
         name = name_for(index)
         if name in WEAPONS:
+            # A worker walking to the first gatling has claimed its site but
+            # has not spent its gold yet. Do not let another worker build a
+            # rocket first or consume that budget before the gatling is built.
+            if turn.day == 1 and name != "gatling" and any(
+                    kind == "gatling" and ledger.commands.get(str(uid), {}).get("action") != "build"
+                    for uid, kind in ledger.build_claims.values()):
+                continue
             from .spending import first_day_purchase_reserve
             if ledger.gold - first_day_purchase_reserve(turn, mem, ledger) < cfg.weapon_cost:
                 continue

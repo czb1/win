@@ -13,8 +13,9 @@ class Config:
     wall_stones: int = 1
     weapon_cells: list = field(default_factory=list)
     wall_cells: list = field(default_factory=list)
-    # One pioneer rotates three rockets from their common control cell.
-    loadout: list = field(default_factory=lambda: ["rocket", "rocket", "rocket"])
+    # The pioneer shares two adjacent rockets; a worker operates the gatling.
+    # Slot order describes the layout, not the first day's construction order.
+    loadout: list = field(default_factory=lambda: ["rocket", "rocket", "gatling"])
     # Keep inherited assumptions until verified against the official engine.
     projectile_origin: str = "weapon"
     projectile_characters_block: bool = True

@@ -59,7 +59,7 @@ class FirstDayWallBlockTests(unittest.TestCase):
         response = agent.decide(data)['roleCommandMap']
         mem = next(iter(agent.sessions.values()))
         self.assertEqual(response['10'], command('buy', name=BOSS, num=3))
-        self.assertEqual(response['12'], command('build', (8, 21), name='rocket'))
+        self.assertEqual(response['12'], command('build', (8, 21), name='gatling'))
         self.assertEqual(mem.first_day_offense['worker_id'], 10)
         self.assertEqual(mem.first_day_offense['phase'], 'buy')
 
@@ -73,7 +73,7 @@ class FirstDayWallBlockTests(unittest.TestCase):
         agent = Agent(Config(llm_enabled=False, layout_mode='explicit', wall_cells=[],
                              weapon_cells=[[8, 23], [9, 23], [8, 21]]))
         response = agent.decide(data)['roleCommandMap']
-        self.assertEqual(response['12'], command('build', (8, 21), name='rocket'))
+        self.assertEqual(response['12'], command('build', (8, 21), name='gatling'))
         self.assertEqual(next(iter(agent.sessions.values())).night_scout.worker_id, 10)
         self.assertEqual(response['10']['action'], 'move')
 
