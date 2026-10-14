@@ -173,7 +173,7 @@ class WorkNavigator(Navigator):
 
 
 def _deliver(turn, mem, nav, ledger, hero, state, watcher=False):
-    from .economy import voucher_for, wall_upgrade_allowed, upgrade_order
+    from .economy import voucher_for, wall_upgrade_allowed, upgrade_order, weapon_upgrade_allowed
     from .wall_watch import geometry
     from .wall_batches import face_sites
     from .wall_health import WALL_MAX_HEALTH
@@ -184,6 +184,7 @@ def _deliver(turn, mem, nav, ledger, hero, state, watcher=False):
             continue
         name = voucher_for(wall)
         if (not name or not hero.inventory[name] or wall.id in ledger.upgrade_claims
+                or not weapon_upgrade_allowed(turn, wall)
                 or not wall_upgrade_allowed(turn, wall, mem, paid=True)
                 or mem.movement.avoids(hero.id, wall.pos)):
             continue
@@ -248,7 +249,7 @@ def _sell(turn, cfg, mem, nav, ledger, hero, state):
 
 def _purchase(turn, cfg, mem, nav, ledger, hero, state):
     """Gatling courier buys its own applicable weapon vouchers, never watch packs."""
-    from .economy import voucher_for, upgrade_order
+    from .economy import voucher_for, upgrade_order, weapon_upgrade_allowed
     from .wall_supply import shopping_list, core_reserve
     if hero.id != mem.gatling_operator_id or not hero.space or state.get('shopping_done'):
         return False
@@ -262,6 +263,8 @@ def _purchase(turn, cfg, mem, nav, ledger, hero, state):
                                  ledger.gold - core_reserve(turn, cfg), watcher.space)['cost']
     demand = {}
     for weapon in sorted(turn.weapons, key=lambda w: upgrade_order(turn, w, mem)):
+        if not weapon_upgrade_allowed(turn, weapon):
+            continue
         name = voucher_for(weapon)
         if not name:
             continue

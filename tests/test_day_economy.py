@@ -42,7 +42,9 @@ class DayEconomyTests(unittest.TestCase):
     def test_shop_batch_reserves_the_cost_of_unbuilt_weapons(self):
         p = self.case(171, 374)
         p["teamOur"]["roles"][0]["pos"] = {"x": 9, "y": 5}
-        t, cfg, nav, ledger = setup_case(p, layout_mode="explicit", weapon_cells=[[5, 5], [5, 7], [5, 9]])
+        # Isolate the construction reserve from the mixed loadout's Gatling gate.
+        t, cfg, nav, ledger = setup_case(p, layout_mode="explicit", loadout=['rocket'] * 3,
+                                       weapon_cells=[[5, 5], [5, 7], [5, 9]])
         mem = Memory()
         planned = planned_weapons(t, cfg, mem, [(5, 5), (5, 7), (5, 9)])
         plan = supplies(t, cfg, mem, nav, ledger, t.workers[0], 75, planned=planned, bulk=True)
