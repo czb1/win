@@ -37,7 +37,8 @@ class Config:
     task_max_rounds: int = 1300
     # Deprecated compatibility field; no longer used to abandon active tasks.
     task_switch_rounds: int = 10
-    # Strategy policy: preserve opening purchases, stop new orders afterwards.
+    # Ordinary purchases stop after the opening. Day six has a separate,
+    # defense-first BOSS batch evaluation; this is not a day-two-to-six range.
     robot_purchase_last_day: int = 1
 
     @classmethod
