@@ -51,7 +51,7 @@ class SharedGunnerTests(unittest.TestCase):
         agent = Agent(Config(llm_enabled=False))
         p = self.case()
         for step, expected in enumerate((20, 21, 22, 20, 21, 22)):
-            p['roundNo'] = 70 + step
+            p['roundNo'] = 100 + step
             for tower in p['teamOur']['roles'][3:]:
                 tower['cooldown'] = 0 if tower['id'] == expected else 1
             result = agent.decide(p)['roleCommandMap']
@@ -116,7 +116,7 @@ class SharedGunnerTests(unittest.TestCase):
         self.assertNotEqual(result.get('2', {}).get('action'), 'collect')
 
     def test_no_targets_gunner_stays_and_two_dead_workers_do_not_attack(self):
-        p = self.case()
+        p = self.case(round_no=100)
         p['robot']['roles'] = []
         agent = Agent(Config(llm_enabled=False))
         result = agent.decide(p)['roleCommandMap']

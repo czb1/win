@@ -146,6 +146,7 @@ class NightPostTests(unittest.TestCase):
 
     def test_own_opponent_bound_and_dead_robots_do_not_pin_the_worker(self):
         data = night_case()
+        data['roundNo'] += 20
         data['robot']['roles'] = [
             unit(30139, 'largeRobot', 23, 25, health=0, targetTeam='challenger'),
             unit(31139, 'largeRobot', 26, 8, health=360, targetTeam='defender'),

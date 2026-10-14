@@ -24,7 +24,8 @@ from .economy import first_day_front, build
 from .economy_plan import via, reserve_income_worker, maxed_weapon_mining_phase
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
-from .night_economy import hostiles as night_hostiles, release_gatling, work as night_work, resume_morning
+from .night_economy import (hostiles as night_hostiles, release_gatling, work as night_work,
+                            resume_morning, awaiting_night_wave)
 from .wall_watch import select_watch, prepare_watch, repair_watch
 from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
@@ -701,10 +702,11 @@ class Agent:
             if not turn.is_day:
                 # An approaching wave is not a cleared wave. Keep assigned workers
                 # at their posts until it is gone and the local battery is safe.
+                opening_wave = awaiting_night_wave(turn, mem)
                 def needs_defence(hero, tower):
                     if hero.kind != "worker" or (relief and hero.id == relief[0].id):
                         return True
-                    return night_guard_reason(turn, tower, self.cfg.task_danger_radius) is not None
+                    return opening_wave or night_guard_reason(turn, tower, self.cfg.task_danger_radius) is not None
                 released = release_gatling(turn, mem, ledger, pairs) if mixed else False
                 pairs = [(hero, tower) for hero, tower in pairs
                          if (shared is not None and tower.kind == "rocket")
@@ -845,7 +847,7 @@ class Agent:
                             vacate_site(turn, nav, ledger, hero, towers + walls + [mem.gunner_post])
                         if hero.id in ledger.used:
                             continue
-                        if hero.kind == "worker":
+                        if hero.kind == "worker" and not awaiting_night_wave(turn, mem):
                             night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=pioneer_gunner or shared is not None)
                         elif turn.station:
                             walk(nav, ledger, hero, turn.station.cells)

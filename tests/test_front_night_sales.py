@@ -93,7 +93,7 @@ class NightMiningTests(unittest.TestCase):
         return p
 
     def test_clear_night_mines_without_vendor_or_daylight_budget(self):
-        for rno in (70, 80, 129):
+        for rno in (80, 110, 129):
             result = Agent(Config(llm_enabled=False)).decide(self.night_case(rno))
             self.assertEqual(result['roleCommandMap']['1']['action'], 'collect')
 

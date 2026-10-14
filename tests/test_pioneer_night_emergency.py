@@ -112,6 +112,7 @@ class PioneerNightEmergencyTests(unittest.TestCase):
         for dead in (False, True):
             with self.subTest(dead=dead):
                 data = self.case()
+                data['roundNo'] += 20
                 agent = Agent(Config(llm_enabled=False))
                 commands = agent.decide(data)['roleCommandMap']
                 mem = next(iter(agent.sessions.values()))

@@ -284,6 +284,7 @@ class Memory:
     gatling_operator_id: int | None = None
     gatling_targets: dict = field(default_factory=dict)
     night_release: dict = field(default_factory=dict)
+    night_wave_observation: dict = field(default_factory=dict)
     night_work: dict = field(default_factory=dict)
     operator_yields: dict = field(default_factory=dict)
     traffic_leases: dict = field(default_factory=dict)
