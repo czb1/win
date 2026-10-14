@@ -11,6 +11,7 @@ from .robot_assault import (base_distance, enemy_base, first_day_wall_entries,
 
 
 FIRST_DAY_SCOUT_TICK = 25
+INGRESS_CLEAR_ROUNDS = 5
 
 
 @dataclass
@@ -23,12 +24,54 @@ class ScoutMemory:
     # revive the opening assault or consume its remaining orders.
     cancelled: bool = False
     cancel_reason: str = ''
+    ingress_entry: tuple | None = None
+    ingress_until: int = 0
+    ingress_cleared: bool = False
+
+    def clear_ingress(self):
+        self.ingress_entry, self.ingress_until, self.ingress_cleared = None, 0, False
 
 
 def _sync_scout(turn, memory, base):
     key = (turn.day, base.id, base.pos) if base and turn.day == 1 and not memory.cancelled else None
     if memory.key != key or key is None:
         memory.key, memory.worker_id, memory.post, memory.wall_entry = key, None, None, None
+        memory.clear_ingress()
+
+
+def _ingress_guard(turn, memory, scout, base):
+    """Protect the doorway, its short approach and a Chebyshev one-cell margin.
+
+    Count five complete decisions from an observed exit, not a submitted move.
+    Only nearby robots still outside this wall face extend that minimum.
+    """
+    if memory.ingress_entry is None:
+        if scout.pos != memory.wall_entry:
+            return set()
+        memory.ingress_entry = memory.wall_entry
+    entry = memory.ingress_entry
+    axis = wall_entry_axis(base, entry)
+    outward = -1 if entry[axis] < base.pos[axis] else 1
+    corridor = set()
+    # One inner cell, the wall opening and two outer approach cells.
+    for offset in (-1, 0, 1, 2):
+        point = list(entry)
+        point[axis] += outward * offset
+        corridor.add(tuple(point))
+    protected = {p for cell in corridor for p in (cell, *neighbours(cell)) if turn.inside(p)}
+    if scout.pos in protected:
+        memory.ingress_cleared = False
+    elif not memory.ingress_cleared:
+        memory.ingress_cleared = True
+        memory.ingress_until = turn.round + INGRESS_CLEAR_ROUNDS
+    waiting = (open_assault_entry(turn, base, entry) is not None and any(
+        base_distance(base, robot.pos) >= 2 and distance(robot.pos, entry) <= 4
+        and (robot.pos[axis] - entry[axis]) * outward >= 0
+        for robot in turn.summon_robots))
+    if memory.ingress_cleared and turn.round >= memory.ingress_until and not waiting:
+        memory.clear_ingress()
+        return set()
+    return protected
 
 
 def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=None,
@@ -134,12 +177,15 @@ def prepare_first_day_wall_blocker(turn, memory, nav, ledger, excluded=(), jobs=
 
 
 def yield_wall_entry(turn, memory, nav, ledger):
-    """Vacate the occupied gap before robot planning; retain real occupancy."""
+    """Clear the gap and its margin before robot planning; retain occupancy."""
     base = enemy_base(turn)
     _sync_scout(turn, memory, base)
     scout = next((w for w in turn.workers if w.id == memory.worker_id), None)
     if (turn.is_day or turn.day != 1 or base is None or scout is None
-            or scout.pos != memory.wall_entry or scout.id in ledger.used):
+            or scout.id in ledger.used):
+        return None
+    protected = _ingress_guard(turn, memory, scout, base)
+    if scout.pos not in protected:
         return None
     if scout.abnormal_state == 'dizzy':
         ledger.used.add(scout.id)
@@ -156,15 +202,31 @@ def yield_wall_entry(turn, memory, nav, ledger):
     def risk(point):
         return sum(r.power for r in threats if distance(point, r.pos) <= r.attack_range + 1)
     avoided = nav.memory.blocked(scout.id) if nav.memory else set()
+    avoided |= set(nav.traffic_forbidden.get(scout.id, ()))
+    blocked = turn.blocked | ledger.reserved | lanes | avoided
+    exits = {p for cell in protected for p in neighbours(cell)
+             if turn.inside(p) and p not in protected | blocked}
+    distances = nav.distances_to(exits, vacated={scout.pos},
+                                 reserved=ledger.reserved | lanes | avoided, exact=True)
+    current_risk = risk(scout.pos)
     options = [p for p in neighbours(scout.pos) if turn.inside(p)
-               and p not in turn.blocked | ledger.reserved | lanes | avoided]
+               and p not in blocked and risk(p) <= current_risk
+               and distances.get(p, float('inf')) < distances.get(scout.pos, float('inf'))]
+    if not options:
+        # A trapped worker may reduce immediate danger without clearing the
+        # margin yet. Neither an unsafe move nor its submission starts the clock.
+        options = [p for p in neighbours(scout.pos) if turn.inside(p)
+                   and p not in blocked and risk(p) < current_risk]
     if options:
-        step = min(options, key=lambda p: (risk(p), base_distance(base, p) < 3,
+        step = min(options, key=lambda p: (risk(p), distances.get(p, float('inf')),
+                   base_distance(base, p) < 3,
                    -sum(distance(p, cell) <= 4 for cell in base.cells), p))
         if ledger.add(scout.id, command('move', step)):
             memory.post = step
-            ledger.explain(scout.id, 'night_scout_yield_wall_entry', entry=memory.wall_entry,
-                           next_risk=risk(step))
+            reason = ('night_scout_yield_wall_entry' if scout.pos == memory.ingress_entry
+                      else 'night_scout_clear_ingress')
+            ledger.explain(scout.id, reason, entry=memory.ingress_entry,
+                           next_risk=risk(step), minimum_clear_rounds=INGRESS_CLEAR_ROUNDS)
             return scout
     ledger.used.add(scout.id)
     ledger.reserved.add(scout.pos)
@@ -268,12 +330,16 @@ def act_night_scout(turn, memory, nav, ledger, home_roles=(), excluded=()):
     workers = {h.id: h for h in turn.workers if h.id not in excluded}
     scout = workers.get(memory.worker_id)
     if scout is None:
+        memory.clear_ingress()
         candidates = [h for h in workers.values() if h.id not in ledger.used]
         scout = min(candidates, key=lambda h: (tuple(h.id == uid for uid in home_roles if uid is not None),
                     bool(h.inventory['WallFixer']), base_distance(base, h.pos), -h.health, h.id), default=None)
         memory.worker_id, memory.post = (scout.id if scout else None), None
     if scout is None or scout.id in ledger.used:
         return scout
+    ingress = _ingress_guard(turn, memory, scout, base)
+    if scout.pos in ingress:
+        return yield_wall_entry(turn, memory, nav, ledger)
     if scout.abnormal_state == 'dizzy':
         ledger.used.add(scout.id)
         ledger.reserved.add(scout.pos)
@@ -303,7 +369,7 @@ def act_night_scout(turn, memory, nav, ledger, home_roles=(), excluded=()):
         else:
             target = min(base.cells, key=lambda p: (distance(robot.pos, p), p))
             lanes.update(line_cells(robot.pos, target))
-    reserved = ledger.reserved | danger | lanes
+    reserved = ledger.reserved | danger | lanes | ingress
     routes = _routes(turn, memory, nav, ledger, scout, base, reserved)
     if routes:
         goal, route, score, base_cells = routes[0]
@@ -330,10 +396,16 @@ def act_night_scout(turn, memory, nav, ledger, home_roles=(), excluded=()):
                and p not in lanes and p not in (nav.memory.blocked(scout.id) if nav.memory else ())
                and (risk(p) < current_risk or scout.pos in lanes and risk(p) <= current_risk)]
     if choices:
+        outside = [p for p in choices if p not in ingress]
+        # Returning to the protected strip is a last-resort escape only, never
+        # a way to improve observation coverage or resume the old scout post.
+        choices = outside or [p for p in choices if risk(p) < current_risk]
+    if choices:
         step = min(choices, key=lambda p: (risk(p), -min((distance(p, r.pos) for r in threats.values()), default=0), p))
         if ledger.add(scout.id, command('move', step)):
             memory.post = None
-            ledger.explain(scout.id, 'night_scout_escape', observed_risk=current_risk, next_risk=risk(step))
+            ledger.explain(scout.id, 'night_scout_escape', observed_risk=current_risk,
+                           next_risk=risk(step), ingress_emergency=step in ingress)
             return scout
     ledger.used.add(scout.id)
     ledger.reserved.add(scout.pos)

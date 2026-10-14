@@ -28,6 +28,7 @@ def cancel_first_day_offense(turn, mem, reason, *, phase='mining', ledger=None, 
     scout.cancelled = True
     scout.cancel_reason = reason
     scout.key, scout.worker_id, scout.post, scout.wall_entry = None, None, None, None
+    scout.clear_ingress()
     mem.first_day_offense.clear()
     mem.first_day_offense.update(worker_id=worker_id, phase=phase, transition=reason)
     # Release both the worker's old task chain and any other robot buyer.
