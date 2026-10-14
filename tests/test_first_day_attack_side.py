@@ -35,9 +35,14 @@ def mirror(data, flip_x, flip_y):
     return data
 
 
-def assert_base_attack(test, data, spawn):
+def assert_base_attack(test, data, spawn, yielded_entry=None):
     night = copy.deepcopy(data)
     night['roundNo'] = 71
+    if yielded_entry is not None:
+        # Observe the scout one step aside before testing the gap's firing lane.
+        for role in night['teamOur']['roles']:
+            if role['roleType'] == 'worker' and pos(role['pos']) == yielded_entry:
+                role['pos'] = {'x': yielded_entry[0] - 1, 'y': yielded_entry[1]}
     night['teamOur']['summonRobotList'] = [controlled_robot(x=spawn[0], y=spawn[1])]
     turn, _, nav, ledger = setup_case(night)
     act_robots(turn, RobotAssaultMemory(), nav, ledger)
@@ -76,12 +81,11 @@ class FirstDayAttackSideTests(unittest.TestCase):
                     self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger,
                                                      [], [], use_only=True))
                     spawn = pos(ledger.commands['12']['targetPos'][0])
-                    self.assertEqual(ledger.robot_summon_mode, 'rear_direct')
-                    self.assertTrue(rear_approach(turn, turn.enemies[0], spawn))
-                    self.assertTrue(spawn[1] >= 24 if flip_y else spawn[1] <= 7)
+                    self.assertEqual(ledger.robot_summon_mode, 'scout_gap')
+                    self.assertEqual(spawn, (entry[0], entry[1] + (1 if flip_y else -1)))
                     self.assertTrue(turn.summon_position_legal(spawn))
                     self.assertNotIn(spawn, turn.blocked)
-                    assert_base_attack(self, data, spawn)
+                    assert_base_attack(self, data, spawn, yielded_entry=entry)
 
     def test_equal_clearance_keeps_route_and_incumbent_ties(self):
         for armed in (False, True):
@@ -114,26 +118,26 @@ class FirstDayAttackSideTests(unittest.TestCase):
         self.assertEqual(memory.wall_entry, LOWER_ENTRY)
         self.assertEqual(first_day_clear_sides(turn, turn.enemies[0]), {7, 12})
 
-    def test_new_weapon_reselects_gap_but_open_rear_does_not_wait_for_occupation(self):
+    def test_new_weapon_reselects_gap_and_summons_wait_for_occupation(self):
         data = turret(block_case(46, held=True, stock=[BOSS]))
         turn, cfg, nav, ledger = setup_case(data)
         memory = Memory(night_scout=memory_for())
         scout = prepare_first_day_wall_blocker(turn, memory.night_scout, nav, ledger)
         self.assertEqual(scout.id, 10)
         self.assertEqual(memory.night_scout.wall_entry, LOWER_ENTRY)
-        self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger, [], [], use_only=True))
-        first = pos(ledger.commands['12']['targetPos'][0])
-        self.assertEqual(ledger.robot_summon_mode, 'rear_direct')
-        assert_base_attack(self, data, first)
+        self.assertFalse(summon_best_robot(turn, cfg, memory, nav, ledger, [], [], use_only=True))
+        self.assertNotIn('12', ledger.commands)
+        self.assertEqual(memory.robot_summon_state['count'], 0)
         data['roundNo'] = 55
         data['teamOur']['roles'][1]['pos'] = {'x': 30, 'y': 7}
         turn, cfg, nav, ledger = setup_case(data)
         prepare_first_day_wall_blocker(turn, memory.night_scout, nav, ledger)
         self.assertTrue(summon_best_robot(turn, cfg, memory, nav, ledger, [], [], use_only=True))
-        second = pos(ledger.commands['12']['targetPos'][0])
-        self.assertNotEqual(first, second)
-        self.assertEqual(memory.robot_summon_state['count'], 2)
-        assert_base_attack(self, data, second)
+        first = pos(ledger.commands['12']['targetPos'][0])
+        self.assertEqual(first, LOWER_SPAWN)
+        self.assertEqual(memory.robot_summon_state['mode'], 'scout_gap')
+        self.assertEqual(memory.robot_summon_state['count'], 1)
+        assert_base_attack(self, data, first, yielded_entry=LOWER_ENTRY)
 
     def test_reserved_uses_keep_existing_gap_when_a_weapon_is_revealed(self):
         agent = Agent(Config(llm_enabled=False))
@@ -150,7 +154,7 @@ class FirstDayAttackSideTests(unittest.TestCase):
         self.assertIn(SPAWN, memory.robot_summon_state['positions'])
         self.assertNotIn('10', response['roleCommandMap'])
 
-    def test_worker_keeps_reachable_gap_while_summons_use_other_open_rear_lanes(self):
+    def test_summons_follow_worker_gap_instead_of_other_open_rear_lanes(self):
         for sealed in (False, True):
             with self.subTest(sealed=sealed):
                 data = turret(block_case(40 if sealed else 67, held=True, stock=[BOSS]))
@@ -165,8 +169,8 @@ class FirstDayAttackSideTests(unittest.TestCase):
                 self.assertEqual(memory.wall_entry, entry)
                 ledger.robot_assault_entry = memory.wall_entry
                 spawn = choose_summon_position(turn, ledger)
-                self.assertEqual(ledger.robot_summon_mode, 'rear_direct')
-                self.assertTrue(rear_approach(turn, turn.enemies[0], spawn))
+                self.assertEqual(ledger.robot_summon_mode, 'scout_gap')
+                self.assertEqual(spawn, (entry[0] - 1, entry[1]))
                 assert_base_attack(self, data, spawn)
 
     def test_summon_without_scout_prefers_clear_face_over_rear(self):

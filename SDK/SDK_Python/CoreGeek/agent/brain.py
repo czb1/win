@@ -29,7 +29,7 @@ from .wall_watch import select_watch, prepare_watch, repair_watch
 from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
 from .robot_assault import (FIRST_DAY_SUMMON_RADIUS, RobotAssaultMemory, act_robots,
-                           choose_summon_position, enemy_base, scouted_rear_summon_position)
+                           choose_summon_position, enemy_base)
 from .spending import (first_day_guns_built, first_day_purchase_reserve, plan_day_spending, robot_purchase_plan,
                        prepare_paid_upgrades, prepare_defense_purchase, FIRST_DAY_ROBOT_PURCHASE_LIMIT,
                        heal_station_with_pioneer, prepare_station_reserve,
@@ -157,25 +157,26 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                                                        and not pioneer_summoning)), key=lambda row: row[:3])
     can_use = (turn.is_day and state["count"] < DAILY_SUMMON_LIMIT
                and not (state["pending"] and state["pending"][0] == turn.round))
-    rear = (scouted_rear_summon_position(turn, ledger, nav.deadline)
-            if carriers and can_use and turn.tick >= FIRST_DAY_SCOUT_TICK else None)
-    if turn.day == 1 and not pioneer_summoning:
+    wait_for_scout = turn.day == 1 and not pioneer_summoning
+    if wait_for_scout:
         scout = mem.night_scout
         base = enemy_base(turn)
         entry = None
         if scout.key == (turn.day, base.id, base.pos):
             entry = ledger.robot_assault_entry = scout.wall_entry
         occupying = any(w.id == scout.worker_id and w.pos == entry for w in turn.workers)
+    previous_mode = ledger.robot_summon_mode
+    position = (choose_summon_position(turn, ledger, nav.deadline)
+                if carriers and can_use and (not wait_for_scout or turn.tick >= FIRST_DAY_SCOUT_TICK)
+                else None)
+    if wait_for_scout:
+        rear_selected = position is not None and ledger.robot_summon_mode == 'rear_direct'
         if (turn.tick < FIRST_DAY_SCOUT_TICK or
-                (not occupying and rear is None and turn.tick < DEFENCE_RETURN_TICK)):
+                (not occupying and not rear_selected and turn.tick < DEFENCE_RETURN_TICK)):
             can_use = False
+            ledger.robot_summon_mode = previous_mode
             ledger.spending_plan['robot_use_blocked'] = 'first_day_wall_block_pending'
     if carriers and can_use:
-        if rear is not None:
-            position = rear
-            ledger.robot_summon_mode = 'rear_direct'
-        else:
-            position = choose_summon_position(turn, ledger, nav.deadline)
         ledger.robot_summon_target = position
         if position is not None:
             for _, _, _, hero, name in carriers:
