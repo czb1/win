@@ -736,8 +736,10 @@ class Memory:
             observation = result if snapshot is not None else raw
             self.cmd_result = excerpt(str(observation), 12000)
             self.history.append({'sandbox': self.cmd_result})
+            # Keep the latest solver evidence intact; older attempts are budgeted in the prompt.
             self.last_attempt = {'python': self.running_python if not tool else '',
-                                 'sandbox': excerpt(str(observation), 16000), 'status': status,
+                                 'sandbox': str(observation) if not tool else excerpt(str(observation), 16000),
+                                 'status': status,
                                  'hasFinalAnswer': answer is not None,
                                  'runtimeError': tail_excerpt(observation, 2000) if status != 'ok' else '',
                                  'tool': tool.get('kind', 'python')}
