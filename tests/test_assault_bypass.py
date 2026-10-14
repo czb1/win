@@ -105,7 +105,7 @@ class AssaultBypassTests(unittest.TestCase):
                 facts = ledger.notes[30036]['conditions']
                 self.assertEqual(facts['target_id'], 112)
                 self.assertEqual(facts['assault_choice'], 'shared_clearance')
-                self.assertFalse(facts['focus_unreachable'])
+                self.assertFalse(facts['focus_target_differs'])
 
     def test_support_can_move_onto_a_shared_attack_ray(self):
         ledger, memory = decide(reported_frontage(closed=True))
@@ -113,7 +113,7 @@ class AssaultBypassTests(unittest.TestCase):
         facts = ledger.notes[30036]['conditions']
         self.assertEqual(facts['target_id'], 107)
         self.assertEqual(facts['assault_choice'], 'shared_clearance')
-        self.assertFalse(facts['focus_unreachable'])
+        self.assertFalse(facts['focus_target_differs'])
         self.assertEqual(ledger.commands['30036']['action'], 'move')
         self.assertEqual(pos(ledger.commands['30036']['targetPos'][0]), (30, 5))
 

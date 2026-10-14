@@ -156,10 +156,12 @@ class RobotGapClearanceTests(unittest.TestCase):
                     self.assertEqual(memory.clearance_entry, entry)
                     for uid in (30036, 30037):
                         self.assertEqual(ledger.commands[str(uid)], command('attack', entry))
-                    # This supporter's ray hits the flank wall first. Clear
-                    # that wall now while the others keep firing at the worker.
-                    wall = next(u for u in ledger.turn.enemies if u.id == 41015)
-                    self.assertEqual(ledger.commands['30035'], command('attack', wall.pos))
+                    # A one-step firing stance is cheaper than opening a new
+                    # wall; the two current shooters keep attacking the worker.
+                    # Reflection can change the deterministic BFS tie-break.
+                    self.assertEqual(ledger.commands['30035']['action'], 'move')
+                    self.assertEqual(ledger.notes[30035]['conditions']['route_steps'], 1)
+                    self.assertNotIn(pos(ledger.commands['30035']['targetPos'][0]), ledger.turn.blocked)
                     for uid in (30035, 30036, 30037):
                         facts = ledger.notes[uid]['conditions']
                         self.assertEqual(facts.get('clearance_target_id', facts['target_id']), 20010)
@@ -172,8 +174,9 @@ class RobotGapClearanceTests(unittest.TestCase):
         ledger, _ = decide(data, entry=ENTRY)
         for uid in (700, 800):
             self.assertEqual(ledger.commands[str(uid)], command('attack', ENTRY))
-        self.assertEqual(ledger.notes[900]['conditions']['clearance_target_id'], 20010)
-        self.assertEqual(ledger.notes[900]['conditions']['target_id'], 41015)
+        self.assertEqual(ledger.commands['900'], command('move', (36, 8)))
+        self.assertEqual(ledger.notes[900]['conditions']['target_id'], 20010)
+        self.assertEqual(ledger.notes[900]['conditions']['route_steps'], 1)
 
     def test_live_blocker_is_not_skipped_then_observed_clearance_allows_ingress(self):
         data = gap_case()

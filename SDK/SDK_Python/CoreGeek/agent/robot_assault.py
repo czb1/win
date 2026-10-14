@@ -15,6 +15,7 @@ ASSAULT_STALL_LIMIT = 3
 OCCUPANCY_EVIDENCE_ROUNDS = 8
 FAILED_BASE_LANE_ROUNDS = 4
 GAP_QUEUE_STALL_LIMIT = 3
+GAP_SHORT_ROUTE_LIMIT = 3
 
 
 _OCCUPIED_MOVE = re.compile(
@@ -750,7 +751,7 @@ def _assault_reserved(memory, ledger, robot):
 
 
 def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, attack_only=False,
-                       move_within=None, continuation=None):
+                       move_within=None, continuation=None, max_steps=None):
     phase = "base" if target.kind == "station" else "breach" if target.kind == "wall" else "clear"
     facts = dict(phase=phase, target_id=target.id, target_kind=target.kind,
                  target_source="visible" if target in turn.enemies else "last_seen_building",
@@ -761,7 +762,7 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
                  failed_base_lane_count=len(memory.failed_base_lanes),
                  assault_choice="base_route" if phase == "base" else
                  "shared_clearance" if target.id == memory.focus_target_id else "local_clearance",
-                 focus_unreachable=memory.focus_target_id is not None and target.id != memory.focus_target_id)
+                 focus_target_differs=memory.focus_target_id is not None and target.id != memory.focus_target_id)
     facts['route_continued'] = continuation is not None
     point = _firing_point(robot.pos, robot, target, memory, occupied)
     if point is not None and ledger.add(robot.id, command("attack", point)):
@@ -798,6 +799,8 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
                 and _firing_point(origin, robot, target, memory, occupied) is not None):
             goals.add(origin)
     route = nav.search(robot, goals, reserved, with_endpoint=True)
+    if route is not None and max_steps is not None and route[0] > max_steps:
+        return False
     if continuation and route is not None and route[0] >= continuation.steps:
         return False
     if route is not None and route[1] is not None and ledger.add(robot.id, command("move", route[1])):
@@ -814,7 +817,8 @@ def _act_toward_target(turn, memory, nav, ledger, robot, target, occupied, *, at
     return False
 
 
-def _continue_assault_route(turn, memory, nav, ledger, robot, occupied, *, move_within=None):
+def _continue_assault_route(turn, memory, nav, ledger, robot, occupied, *, move_within=None,
+                            max_steps=None):
     route = memory.routes.get(robot.id)
     if route is None or route.issued != turn.round - 1:
         return False
@@ -824,7 +828,7 @@ def _continue_assault_route(turn, memory, nav, ledger, robot, occupied, *, move_
     if (target is not None and target.pos == route.target_pos
             and memory.approach_stalls.get(robot.id, 0) < ASSAULT_STALL_LIMIT
             and _act_toward_target(turn, memory, nav, ledger, robot, target, occupied,
-                                   continuation=route, move_within=move_within)):
+                                   continuation=route, move_within=move_within, max_steps=max_steps)):
         return True
     # Disappearance, movement, a blocked stance or a non-shrinking path releases
     # the intent. Never chase a remembered character or wait on a stale route.
@@ -994,7 +998,7 @@ def _gap_clearance_target(turn, memory, nav, ledger, base, occupied, *, priority
 
 
 def _clear_gap_ray(turn, memory, nav, ledger, robot, target, occupied):
-    """Clear the actual first enemy before walking around the shared target."""
+    """Clear the first enemy after short firing routes have been exhausted."""
     entry = memory.clearance_entry
     if entry is None or distance(robot.pos, entry) > 4:
         return False
@@ -1006,7 +1010,9 @@ def _clear_gap_ray(turn, memory, nav, ledger, robot, target, occupied):
                 and _act_toward_target(turn, memory, nav, ledger, robot, hit[0], occupied,
                                        attack_only=True)):
             ledger.notes[robot.id]['conditions'].update(clearance_target_id=target.id,
-                                                       clearance_entry=entry)
+                                                       clearance_entry=entry,
+                                                       clearance_fallback='no_short_firing_route',
+                                                       short_route_limit=GAP_SHORT_ROUTE_LIMIT)
             return True
     return False
 
@@ -1386,6 +1392,8 @@ def act_robots(turn, memory, nav, ledger):
     if early_focus is not None:
         memory.focus_target_id = early_focus.id
         region = _gap_region(turn, base, memory.clearance_entry)
+        # Allocate current focus shots first. An obstructed ray is not proof
+        # that moving to a firing stance is impossible or slower than a breach.
         for attack_only in (True, False):
             for robot in sorted(turn.summon_robots, key=lambda unit: unit.id):
                 check_time(nav.deadline)
@@ -1393,14 +1401,26 @@ def act_robots(turn, memory, nav, ledger):
                     continue
                 route = memory.routes.get(robot.id)
                 continued = (not attack_only and route is not None
-                             and route.target_id == early_focus.id
+                             and route.target_id in (early_focus.id, base.id)
                              and _continue_assault_route(turn, memory, nav, ledger, robot, occupied,
-                                                         move_within=region))
+                                                         move_within=region,
+                                                         max_steps=GAP_SHORT_ROUTE_LIMIT))
                 accepted = continued or _act_toward_target(
                     turn, memory, nav, ledger, robot, early_focus, occupied,
-                    attack_only=attack_only, move_within=region)
-                if not accepted and attack_only:
-                    accepted = _clear_gap_ray(turn, memory, nav, ledger, robot, early_focus, occupied)
+                    attack_only=attack_only, move_within=region, max_steps=GAP_SHORT_ROUTE_LIMIT)
+                if not accepted and not attack_only:
+                    # Keep a short base approach available after a restart too,
+                    # but do not restart a route that already stalled. Longer
+                    # detours still yield to useful clearance at this entrance.
+                    accepted = (memory.approach_stalls.get(robot.id, 0) < ASSAULT_STALL_LIMIT
+                                and _act_toward_target(turn, memory, nav, ledger, robot, base, occupied,
+                                                       move_within=region,
+                                                       max_steps=GAP_SHORT_ROUTE_LIMIT))
+                    accepted = accepted or _clear_gap_ray(
+                        turn, memory, nav, ledger, robot, early_focus, occupied)
+                    if not accepted:
+                        accepted = _act_toward_target(
+                            turn, memory, nav, ledger, robot, early_focus, occupied, move_within=region)
                 if accepted:
                     ledger.notes[robot.id]['conditions']['gap_priority'] = True
     else:
