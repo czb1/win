@@ -629,8 +629,12 @@ class Agent:
                 scout = scout or act_night_scout(turn, mem.night_scout, nav, ledger,
                                         home_roles=(mem.gatling_operator_id, mem.wall_watch_id),
                                         excluded=relief_ids)
+            if mixed:
+                gatling_pairs = fixed_gatling_crew(turn, mem, nav, ledger,
+                    excluded={scout.id} if scout else (), allow_pioneer=True)
+            pioneer_gatling = any(hero.kind == 'pioneer' for hero, _ in gatling_pairs)
             pioneer_gunner = bool(h and turn.weapons and
-                                 ((not turn.is_day and not finish_current_task) or not hold_task))
+                                 (pioneer_gatling or (not turn.is_day and not finish_current_task) or not hold_task))
             if not turn.is_day and pioneer_gunner:
                 hold_task = False
                 if turn.phase_task and not mem.stop_reason:
@@ -659,11 +663,16 @@ class Agent:
                 excluded.update(worker.id for worker in turn.workers)
             mem.return_targets = {uid: wid for uid, wid in mem.return_targets.items() if uid not in excluded}
             mem.return_posts = {uid: post for uid, post in mem.return_posts.items() if uid not in excluded}
-            shared = shared_crew(turn, self.cfg, mem, nav, towers, walls, excluded=excluded,
-                                 relief=relief[0] if relief else None)
-            if mixed:
-                gatling_pairs = fixed_gatling_crew(turn, mem, nav, ledger,
-                                                  excluded={scout.id} if scout else ())
+            if pioneer_gatling:
+                # The pioneer can control only one gun per turn. Do not let
+                # rocket rotation reclaim it while it returns to the gatling.
+                excluded.add(h.id)
+                mem.gunner_id, mem.gunner_post = None, None
+                mem.gunner_observation, mem.gunner_stalled = None, 0
+                shared = None
+            else:
+                shared = shared_crew(turn, self.cfg, mem, nav, towers, walls, excluded=excluded,
+                                     relief=relief[0] if relief else None)
             if shared is not None:
                 pairs, posts = shared
                 if mixed:

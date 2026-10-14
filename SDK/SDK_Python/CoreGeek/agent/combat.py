@@ -147,12 +147,23 @@ def block_enemy_workers(turn, nav, ledger, hero):
     return True
 
 
-def fixed_gatling_crew(turn, mem, nav, ledger, excluded=()):
-    """Keep the operator unless lost or explicitly assigned to night scouting."""
+def fixed_gatling_crew(turn, mem, nav, ledger, excluded=(), allow_pioneer=False):
+    """Keep worker ownership, with a scout-safe first-night pioneer fallback."""
     workers = {h.id: h for h in turn.workers if h.id not in excluded}
     previous = mem.gatling_operator_id
     holder = workers.get(previous)
     gatling = next((w for w in turn.weapons if w.kind == 'gatling'), None)
+    lost = previous is not None and not any(h.id == previous for h in turn.workers)
+    boss_relief = (not turn.is_day and turn.day >= 4 and gatling and lost
+                   and mem.wall_watch_id in workers
+                   and sum(r.kind == 'bossRobot' and turn.threatens_us(r)
+                           for r in turn.robots) >= 2)
+    if boss_relief:
+        holder = workers[mem.wall_watch_id]
+        mem.gatling_relief.update(day=turn.day, actor_id=holder.id, reason='boss_wave')
+        mem.night_work.pop(holder.id, None)
+        mem.night_release.clear()
+        ledger.explain(holder.id, 'gatling_boss_relief', fallen_operator=previous)
     if holder is None and workers:
         # Initial assignment considers equipment and travel. Once selected,
         # loss or explicit role exclusion can make another worker take over.
@@ -171,6 +182,23 @@ def fixed_gatling_crew(turn, mem, nav, ledger, excluded=()):
         logging.getLogger(__name__).info(
             'round=%s night_gatling_owner=%s->%s reason=%s', turn.round,
             previous, mem.gatling_operator_id, 'initial' if previous is None else 'owner_unavailable')
+    if allow_pioneer:
+        state = mem.gatling_relief
+        if not turn.is_day and turn.day == 1 and gatling and holder is None and turn.pioneer:
+            hero = turn.pioneer
+            if state.get('actor_id') != hero.id or state.get('reason') != 'first_night':
+                mem.return_targets.pop(hero.id, None)
+                mem.return_posts.pop(hero.id, None)
+            state.update(day=turn.day, actor_id=hero.id, reason='first_night')
+            # Keep fixed worker ownership separate from this temporary operator.
+            # An earlier base-heal action remains locked in the ledger.
+            if hero.id not in ledger.used:
+                ledger.explain(hero.id, 'gatling_first_night_relief', tower=gatling.id)
+            return [(hero, gatling)]
+        if state.get('reason') == 'first_night':
+            mem.return_targets.pop(state['actor_id'], None)
+            mem.return_posts.pop(state['actor_id'], None)
+            state.clear()
     return [(holder, gatling)] if holder and gatling else []
 
 

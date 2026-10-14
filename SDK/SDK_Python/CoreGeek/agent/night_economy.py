@@ -95,6 +95,16 @@ def release_gatling(turn, mem, ledger, pairs):
     state = mem.night_release
     from .combat import night_guard_reason
     tower = next((w for w in turn.weapons if w.kind == 'gatling'), None)
+    relief = mem.gatling_relief
+    if (relief.get('reason') == 'boss_wave' and relief.get('day') == turn.day
+            and relief.get('actor_id') == actor):
+        if tower and night_guard_reason(turn, tower, ledger.cfg.task_danger_radius):
+            # Once recalled, finish defending this wave even when only one
+            # boss remains or the ordinary rocket budget would release us.
+            mem.night_work.pop(actor, None)
+            ledger.explain(actor, 'gatling_boss_relief_hold', tower=tower.id)
+            return False
+        relief.clear()
     nearby_enemy = bool(tower and night_guard_reason(turn, tower, ledger.cfg.task_danger_radius) == 'nearby_enemy')
     threats = {r.id for r in hostiles(turn)}
     walls = {w.id for w in turn.ours if w.kind == 'wall'}

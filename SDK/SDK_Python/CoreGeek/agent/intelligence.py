@@ -282,6 +282,7 @@ class Memory:
     gunner_post: tuple | None = None
     pioneer_relief: dict = field(default_factory=dict)
     gatling_operator_id: int | None = None
+    gatling_relief: dict = field(default_factory=dict)
     gatling_targets: dict = field(default_factory=dict)
     night_release: dict = field(default_factory=dict)
     night_wave_observation: dict = field(default_factory=dict)
@@ -407,6 +408,12 @@ class Memory:
     station_health_peaks: dict = field(default_factory=dict)
 
     def observe(self, turn, cfg):
+        if self.gatling_relief and (turn.is_day or self.gatling_relief['day'] != turn.day):
+            if self.gatling_relief['reason'] == 'first_night':
+                actor = self.gatling_relief['actor_id']
+                self.return_targets.pop(actor, None)
+                self.return_posts.pop(actor, None)
+            self.gatling_relief.clear()
         gatlings = {w.id: w for w in turn.weapons if w.kind == "gatling"}
         hostiles = {r.id: r for r in turn.robots if turn.threatens_us(r)}
         self.gatling_targets = {
