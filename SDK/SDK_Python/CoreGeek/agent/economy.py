@@ -258,7 +258,7 @@ def delivery_trip(turn, nav, ledger, hero, shop_cell, targets):
 
 
 def upgrade_order(turn, building, mem=None):
-    """Upgrade all weapons to level 2, then 3, before a healthy base.
+    """Maximize Gatlings before other weapons, then upgrade a healthy base.
 
     Critical base healing leads feasible upgrades, then rebuilt walls catch
     up. Ordinary walls follow level-3 weapons and precede healthy base upgrades.
@@ -268,7 +268,7 @@ def upgrade_order(turn, building, mem=None):
     if building.kind == "station":
         return (-1 if critical_station(turn, building, mem) else 2 if building.level == 1 else 3, building.id)
     if building.kind in WEAPONS:
-        return (0 if building.level == 1 else 1, building.id)
+        return (0 if building.kind == 'gatling' else 1, building.level, building.id)
     stage = wall_three_stage(turn, building) if building.level == 2 else (
         int(wall_sector(turn, building) != "front"), 0)
     if mem is not None and exposed_wall(turn, building, mem):
@@ -370,12 +370,14 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
         # Keep emergency base healing and replacement-wall upgrades ahead of
         # the current delivery; hold the target among ordinary deliveries.
         nearest_tick = 0 if late_wall_phase(turn) else DUSK_SPEND_TICK if turn.day >= RESOURCE_POLICY_DAY else DUSK_USE_TICK
+        # A feasible Gatling upgrade outranks rocket delivery continuity and
+        # dusk proximity, while emergency healing retains its higher priority.
         if turn.is_day and turn.tick >= nearest_tick:
             # Finish nearby paid upgrades instead of crossing the base to
             # preserve a stale target. Emergency healing still goes first.
-            key = lambda o: (min(0, o[0][0]), o[1], o[0], o[3].id)
+            key = lambda o: (min(1, o[0][0]), o[1], o[0], o[3].id)
         else:
-            key = lambda o: (min(0, o[0][0]), o[3].pos != previous, o[0], o[1], o[3].id)
+            key = lambda o: (min(1, o[0][0]), o[3].pos != previous, o[0], o[1], o[3].id)
         _, _, name, building, route = min(upgrades, key=key)
         if route[1] is None:
             used = ledger.add(hero.id, command("use", building.nearest_cell(hero.pos), name=name))
@@ -615,7 +617,9 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                             options.append((-num, cost, to_shop, shop))
                             break
         if options:
-            neg_num, _, route, shop = min(options, key=lambda o: o[:2])
+            # Equal complete trips should buy now when already at the shop,
+            # rather than move to another equally good shopping tile first.
+            neg_num, _, route, shop = min(options, key=lambda o: (o[0], o[1], o[2][0]))
             ledger.supply_targets[hero.id] = shop
             report['selected'] = dict(item=name, quantity=-neg_num, route_steps=route[0])
             return name, route, -neg_num

@@ -516,7 +516,10 @@ class Agent:
             # including at night and on the final daylight turn.
             nav.vehicle_detours = False
             heal_station_with_pioneer(turn, mem, nav, ledger)
-            prepare_station_reserve(turn, self.cfg, mem, nav, ledger)
+            scout_shopping = (turn.is_day and turn.day == 1 and mem.night_scout.cancelled
+                              and mem.first_day_offense.get('phase') == 'upgrade_buy')
+            if not scout_shopping:
+                prepare_station_reserve(turn, self.cfg, mem, nav, ledger)
             nav.vehicle_detours = True
             opening_scout_excluded = ({w.id for w in turn.workers}
                 if turn.day == 1 and len(turn.workers) < 2
@@ -528,6 +531,12 @@ class Agent:
                 scout = act_first_day_offense(turn, self.cfg, mem, nav, ledger, towers, walls)
             else:
                 scout = yield_wall_entry(turn, mem.night_scout, nav, ledger)
+            if scout_shopping:
+                # Fund the recalled scout's whole feasible cart first. If no
+                # trip is possible, the pioneer can still buy the base heal.
+                nav.vehicle_detours = False
+                prepare_station_reserve(turn, self.cfg, mem, nav, ledger)
+                nav.vehicle_detours = True
             if scout and turn.is_day:
                 mem.daytime_jobs.pop(scout.id, None)
                 if ledger.first_day_offense_worker_id != scout.id:

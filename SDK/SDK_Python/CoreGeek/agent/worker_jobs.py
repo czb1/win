@@ -95,8 +95,13 @@ def _continue(turn, cfg, mem, nav, ledger, hero, job, towers, walls, excluded=()
                                    reserve=reserve, item_only=job['name'],
                                    quantity_limit=job['quantity'])
     elif kind == 'use':
-        ok = use_inventory(turn, nav, ledger, hero, mem=mem,
-                           target_only=target, name_only=job['name'])
+        # A saved rocket delivery must not bypass the Gatling-first policy.
+        ok = (job['name'].startswith('WeaponUpgradeVoucher')
+              and use_inventory(turn, nav, ledger, hero, mem=mem,
+                                target_sites={w.pos for w in turn.weapons if w.kind == 'gatling'}))
+        if not ok:
+            ok = use_inventory(turn, nav, ledger, hero, mem=mem,
+                               target_only=target, name_only=job['name'])
     elif kind == 'build':
         name = job['name']
         if target not in (walls if name == 'wall' else towers) or not _fits_return(
