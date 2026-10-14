@@ -29,7 +29,7 @@ class WallWatchTests(unittest.TestCase):
         p = payload((day - 1) * 130 + tick, [unit(13, 'station', 5, 11, health=1500),
             unit(1, 'worker', 4, 11, health=220),
             unit(2, 'worker', 7, 10, health=220, backpack=['WallFixer'] * packs)])
-        t, cfg, _, _ = setup_case(p)
+        t, cfg, _, _ = setup_case(p, loadout=['rocket'] * 3)
         towers, walls = layout(t, cfg)
         p['teamOur']['roles'] += [unit(20+i, 'rocket', *s) for i, s in enumerate(towers)]
         p['teamOur']['roles'] += [unit(100+i, 'wall', *s, health=99 if damaged else 1000)

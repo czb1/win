@@ -3,7 +3,7 @@ from dataclasses import replace
 from .commands import command
 from .model import HEROES, distance, neighbours, pos
 from .navigation import DeadlineExceeded
-from .projectiles import wall_gates
+from .projectiles import line_cells, wall_gates
 from .sabotage import escape, exposed, threats, rear_waiting_posts
 
 
@@ -254,7 +254,15 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     else:
         inward = (0, -1)
     facing = gate[0] + inward[0], gate[1] + inward[1]
-    if facing not in towers:
+    # The inferred Y-flank gatling still covers the unchanged side gate.
+    # Explicit layouts retain the original directly-facing requirement.
+    covered = False
+    if (cfg.layout_mode != 'explicit' and len(towers) == 3
+            and cfg.loadout.count('rocket') == 2 and cfg.loadout.count('gatling') == 1):
+        gatling = towers[cfg.loadout.index('gatling')]
+        obstacles = set(walls) | turn.station.cells | (set(towers) - {gatling})
+        covered = not set(line_cells(gatling, gate)) & obstacles
+    if facing not in towers and not covered:
         return None  # Explicit layouts are authoritative; never invent a gate.
     posts = rear_waiting_posts(turn, walls, gate)
     if not posts:

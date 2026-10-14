@@ -78,7 +78,7 @@ def wall_gates(turn, walls):
 
 
 def mixed_layout(turn, cfg, sites, walls):
-    """Give the gatling a gate-facing site within the inherited three-cell ring.
+    """Give the gatling a clear gate ray within the supplied weapon ring.
 
     Built weapons constrain the permutation. Explicit layouts never call this.
     A closed wall ring makes the gatling an entrance guard, not a front sniper.
@@ -119,5 +119,5 @@ def mixed_layout(turn, cfg, sites, walls):
     selected = min(choices)[1] if choices else sites
     turn.weapon_layout = {"mode": "gate_guard", "sites": selected, "gates": sorted(gates),
                           "preserved_existing": bool(turn.weapons),
-                          "scope": "inherited_ring_only; construction_area_unverified"}
+                          "scope": "base_adjacent_ring_only; construction_area_unverified"}
     return selected

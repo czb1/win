@@ -41,6 +41,54 @@ def enemy_walls(data, count=6):
 
 
 class MixedBatteryTests(unittest.TestCase):
+    def test_gatling_is_on_inward_y_flank_without_moving_rockets_or_walls(self):
+        for cfg in (Config(), Config.load(ROOT / 'config/default.json'),
+                    Config(loadout=['gatling', 'rocket', 'rocket'])):
+            for station, expected in (((8, 23), (8, 21)), ((31, 10), (32, 11))):
+                with self.subTest(loadout=cfg.loadout, station=station):
+                    data = payload(roles=[unit(13, 'station', *station)])
+                    data['mapInfo'].update(width=41, height=32)
+                    turn = Turn(data, cfg)
+                    sites, walls = layout(turn, cfg)
+                    self.assertEqual(sites[cfg.loadout.index('gatling')], expected)
+                    old_cfg = Config(loadout=['rocket'] * 3)
+                    old_sites, old_walls = layout(Turn(data, old_cfg), old_cfg)
+                    rockets = {p for kind, p in zip(cfg.loadout, sites) if kind == 'rocket'}
+                    self.assertEqual(rockets, set(old_sites[:2]))
+                    self.assertEqual(walls, old_walls)
+                    self.assertEqual(turn.base_distance(expected), 1)
+                    ys = [p[1] for p in turn.station.cells]
+                    self.assertEqual(expected[1], min(ys) - 1 if station[0] < 20 else max(ys) + 1)
+
+    def test_new_flank_battery_keeps_pioneer_rotation_and_worker_fire_on_both_sides(self):
+        for station in ((3, 11), (10, 4)):
+            data = payload(80, [unit(13, 'station', *station, health=1500)])
+            cfg = Config(llm_enabled=False)
+            sites, walls = layout(Turn(data, cfg), cfg)
+            sx, sy = (1, -1) if station[0] < 7 else (-1, 1)
+            pioneer_post = (sites[0][0], sites[0][1] + sy)
+            worker_post = (sites[2][0] + sx, sites[2][1])
+            target = (sites[2][0] - 2 * sx, sites[2][1] - sy)
+            data['teamOur']['roles'] += [unit(11, 'pioneer', *pioneer_post, health=500),
+                unit(1, 'worker', *worker_post, health=500),
+                *[unit(20+i, kind, *p, attackRange=3 if kind == 'gatling' else 10, level=1)
+                  for i, (kind, p) in enumerate(zip(cfg.loadout, sites))],
+                *[unit(100+i, 'wall', *p) for i, p in enumerate(walls)]]
+            data['robot']['roles'] = [unit(90, 'largeRobot', *target, health=500,
+                                           targetTeam='challenger', attackRange=1)]
+            agent = Agent(cfg)
+            for offset, expected in enumerate(('20', '21')):
+                data['roundNo'] = 80 + offset
+                commands = agent.decide(data)['roleCommandMap']
+                self.assertEqual([uid for uid in ('20', '21') if uid in commands], [expected])
+                self.assertEqual(commands[expected]['controllerId'], '11')
+                self.assertEqual(commands['22']['controllerId'], '1')
+
+    def test_existing_side_gatling_battery_is_preserved(self):
+        data = mixed_case()
+        cfg = Config()
+        self.assertEqual(layout(Turn(data, cfg), cfg)[0], [(4, 12), (5, 12), (4, 10)])
+
     def test_defaults_build_two_rockets_and_one_gatling(self):
         for cfg in (Config(), Config.load(ROOT / 'config/default.json')):
             self.assertEqual(cfg.loadout, ['rocket', 'rocket', 'gatling'])
@@ -314,7 +362,7 @@ class FirstDayGatlingConstructionTests(unittest.TestCase):
 
     def test_same_turn_gatling_build_allows_affordable_rocket_next(self):
         data = payload(10, [unit(13, 'station', 5, 11),
-                           unit(1, 'worker', 4, 11), unit(2, 'worker', 5, 13)])
+                           unit(1, 'worker', 4, 9), unit(2, 'worker', 5, 13)])
         data['teamOur']['goldNum'] = 50
         turn, cfg, nav, ledger = setup_case(data)
         context = (turn, cfg, nav, ledger, Memory(), layout(turn, cfg)[0])

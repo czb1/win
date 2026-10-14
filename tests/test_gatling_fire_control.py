@@ -16,9 +16,9 @@ from agent.combat import (operator_posts, select_targets, yield_gate_operators,
 from agent.commands import Ledger
 from agent.config import Config
 from agent.intelligence import Memory
-from agent.model import Turn, distance
+from agent.model import Turn, distance, neighbours
 from agent.navigation import Navigator, layout, DeadlineExceeded
-from agent.projectiles import projectile_obstacles, wall_gates
+from agent.projectiles import line_cells, projectile_obstacles, wall_gates
 
 
 FRAMES = Path(__file__).parent / 'fixtures/gatling_blocked_turns.json'
@@ -317,11 +317,17 @@ class GateAndLayoutTests(unittest.TestCase):
         self.assertEqual(walls, [])
         self.assertFalse(hasattr(turn, 'weapon_layout'))
 
-    def test_new_mixed_layout_has_independent_gate_facing_post(self):
+    def test_new_mixed_layout_has_independent_post_and_clear_gate_ray(self):
         data = payload(1, [unit(13, 'station', 5, 11, health=1500)])
         turn, cfg, _, _, sites, walls = setup(data)
         gates = wall_gates(turn, walls)
         self.assertEqual(len(gates), 1)
         gatling = sites[cfg.loadout.index('gatling')]
-        self.assertEqual(distance(gatling, next(iter(gates))), 1)
+        gate = next(iter(gates))
+        self.assertEqual(distance(gatling, gate), 2)
+        obstacles = set(walls) | turn.station.cells | (set(sites) - {gatling})
+        ray = set(line_cells(gatling, gate))
+        self.assertFalse(ray & obstacles)
+        common = set(neighbours(sites[0])) & set(neighbours(sites[1]))
+        self.assertTrue(set(neighbours(gatling)) - obstacles - ray - common)
         self.assertEqual(turn.weapon_layout['mode'], 'gate_guard')

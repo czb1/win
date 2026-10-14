@@ -35,7 +35,7 @@ class SharedGunnerTests(unittest.TestCase):
     def test_four_corners_share_reachable_post_inside_wall_perimeter(self):
         for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
             p = payload(roles=[unit(13, 'station', x, y), unit(1, 'worker', 7, 7)])
-            t, cfg, _, _ = setup_case(p)
+            t, cfg, _, _ = setup_case(p, loadout=['rocket'] * 3)
             sites, walls = layout(t, cfg)
             p['teamOur']['roles'] += [unit(20+i, 'rocket', *s) for i, s in enumerate(sites)]
             p['teamOur']['roles'] += [unit(100+i, 'wall', *s) for i, s in enumerate(walls)]
