@@ -917,8 +917,7 @@ class Memory:
                                 hints=clue_status(self.treasure_clues), rejected=rejected_clues,
                                 status="hints_only_not_actionable")
             self.treasure_materials, material_status = merge_material_plan(
-                self.treasure_materials, parsed.get("treasureMaterials"), self.news,
-                self.treasure_clues, turn.shop)
+                self.treasure_materials, parsed.get("treasureMaterials"), turn.shop)
             self.trace_treasure(turn, "treasure_materials", dedupe=True,
                                 result=material_status, plan=self.treasure_materials)
             if material_status == "confirmed" and self.treasure:
@@ -1173,8 +1172,9 @@ class Intelligence:
                   '格式：{"treasureClues":[],"treasureMaterials":{"status":"unknown","items":[]},'
                   '"treasure":null,"oreOutages":[],"marketSignals":[]}。\n'
                   '材料及数量已明确时，status为confirmed，items为'
-                  '[{"name":"商店原名","quantity":正整数,"day":来源天数,"quote":"原文摘录"}]。'
-                  "每种材料一条，引用应支持材料及数量；不限制种类数，不默认每种一件。"
+                  '[{"name":"商店原名","quantity":正整数}]。'
+                  "每种材料一条，根据累计原文推断材料及数量；不限制种类数，不默认每种一件。"
+                  "依据记录在treasureClues，treasureMaterials中不必重复day和quote。"
                   "材料明确就可confirmed，不必等待地点或时间；有冲突用conflict，不确定用unknown。"
                   "不得猜测新商品用途，不因旧计划存在就继续确认；结合最新原文复核。\n"
                   "treasureClues每条仅含kind、day、quote、meaning四个字段。"
