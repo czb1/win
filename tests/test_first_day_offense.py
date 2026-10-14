@@ -276,7 +276,7 @@ class FirstDayOffenseTests(unittest.TestCase):
         _, ledger = step(data, memory, walls=[])
         self.assertFalse(any(c['action'] == 'buy' for c in ledger.commands.values()))
         self.assertTrue(memory.night_scout.cancelled)
-        self.assertEqual(memory.first_day_offense['phase'], 'mining')
+        self.assertEqual(memory.first_day_offense['phase'], 'upgrade_buy')
         data['teamOur']['goldNum'] = 240
         _, ledger = step(data, Memory(), walls=[])
         self.assertEqual(ledger.commands['10'], command('buy', name=BOSS, num=2))
@@ -366,7 +366,7 @@ class FirstDayOffenseTests(unittest.TestCase):
         response = agent.decide(data)
         memory = next(iter(agent.sessions.values()))
         self.assertEqual(response['roleCommandMap']['10']['action'], 'move')
-        self.assertEqual(memory.first_day_offense['phase'], 'mining')
+        self.assertEqual(memory.first_day_offense['phase'], 'upgrade_buy')
         self.assertTrue(memory.night_scout.cancelled)
         data['roundNo'] = 54
         data['mapInfo']['zones'] = [z for z in data['mapInfo']['zones'] if z['neutralType'] != 'weaponShop']
@@ -374,7 +374,7 @@ class FirstDayOffenseTests(unittest.TestCase):
             for x, y in ([(x, y) for x in range(28, 34) for y in (7, 12)]
                          + [(28, y) for y in range(8, 12)])]
         response = agent.decide(data)
-        self.assertEqual(memory.first_day_offense['phase'], 'mining')
+        self.assertEqual(memory.first_day_offense['phase'], 'upgrade_buy')
         self.assertIsNone(memory.night_scout.worker_id)
         self.assertIsNone(memory.night_scout.wall_entry)
         self.assertEqual(memory.first_day_offense['worker_id'], 10)
@@ -394,7 +394,7 @@ class FirstDayOffenseTests(unittest.TestCase):
         memory = Memory()
         _, ledger = step(data, memory, walls=[])
         self.assertFalse(any(c['action'] == 'buy' for c in ledger.commands.values()))
-        self.assertEqual(memory.first_day_offense['phase'], 'mining')
+        self.assertEqual(memory.first_day_offense['phase'], 'upgrade_buy')
         self.assertEqual(memory.first_day_offense['transition'], 'insufficient_first_day_robots')
 
     def test_only_worker_finishes_guns_and_day_two_releases_the_role(self):

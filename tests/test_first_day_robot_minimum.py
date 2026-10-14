@@ -16,7 +16,19 @@ from agent.worker_jobs import resume_daytime_jobs
 
 
 BOSS, BASE = shopping.BOSS, shopping.BASE
+V1, V2 = 'WeaponUpgradeVoucher1', 'WeaponUpgradeVoucher2'
 REASON = 'insufficient_first_day_robots'
+
+
+def upgrade_case(tick=35, gold=220, stock=(), worker_pos=(14, 19)):
+    data = offense.case(tick, gold=gold, stock=stock)
+    data['teamOur']['roles'][1]['pos'] = dict(zip(('x', 'y'), worker_pos))
+    data['teamOur']['roles'][-1]['roleType'] = 'gatling'
+    pioneer = next(r for r in data['teamOur']['roles'] if r['roleType'] == 'pioneer')
+    pioneer['backpack'] = [BASE]
+    data['weaponShopList'] += [dict(name=name, price=price) for name, price in
+                              ((V1, 100), (V2, 150), (BASE, 100))]
+    return data
 
 
 class FirstDayRobotMinimumTests(unittest.TestCase):
@@ -52,6 +64,97 @@ class FirstDayRobotMinimumTests(unittest.TestCase):
                 self.assertEqual(summon_best_robot(turn, cfg, memory, nav, ledger, TOWERS, WALLS),
                                  quantity > 0)
                 self.assertEqual(ledger.commands.get('1', {}).get('num', 0), quantity)
+
+    def test_unfunded_agent_buys_and_delivers_both_gatling_upgrade_tiers(self):
+        data = upgrade_case()
+        agent = Agent(offense.cfg(walls=[]))
+        response = agent.decide(copy.deepcopy(data))
+        memory = next(iter(agent.sessions.values()))
+        self.assertEqual(memory.night_scout.cancel_reason, REASON)
+        self.assertEqual(response['roleCommandMap']['10'], command('buy', name=V1, num=1))
+        self.assert_no_robot_orders(response['roleCommandMap'])
+        self.assertEqual(agent.decide(copy.deepcopy(data)), response)
+
+        for tick, stock, gold, level, location, expected in (
+                (36, [V1], 150, 1, (14, 19), command('buy', name=V2, num=1)),
+                (37, [V1, V2], 0, 1, (7, 21), command('use', (8, 21), name=V1)),
+                (38, [V2], 0, 2, (7, 21), command('use', (8, 21), name=V2))):
+            with self.subTest(tick=tick):
+                data['roundNo'] = tick
+                data['teamOur']['goldNum'] = gold
+                data['teamOur']['roles'][1].update(backpack=stock, pos=dict(zip(('x', 'y'), location)))
+                data['teamOur']['roles'][-1]['level'] = level
+                data['lastRoundRoleActionResults'] = {'10': True}
+                commands = agent.decide(copy.deepcopy(data))['roleCommandMap']
+                self.assertEqual(commands['10'], expected)
+                self.assert_no_robot_orders(commands)
+
+        data['roundNo'] = 39
+        data['teamOur']['roles'][1]['backpack'] = []
+        data['teamOur']['roles'][-1]['level'] = 3
+        commands = agent.decide(data)['roleCommandMap']
+        self.assertEqual(memory.first_day_offense['phase'], 'mining')
+        self.assert_no_robot_orders(commands)
+
+    def test_zero_budget_mines_then_new_income_funds_day_one_upgrade(self):
+        data = upgrade_case(gold=0, worker_pos=(9, 20))
+        agent = Agent(offense.cfg(walls=[]))
+        commands = agent.decide(copy.deepcopy(data))['roleCommandMap']
+        self.assertEqual(commands['10'], command('collect', (8, 20)))
+        self.assertEqual(next(iter(agent.sessions.values())).night_scout.cancel_reason, REASON)
+        data['roundNo'] = 36
+        data['teamOur']['goldNum'] = 1000
+        data['teamOur']['roles'][1]['pos'] = dict(x=14, y=19)
+        commands = agent.decide(data)['roleCommandMap']
+        self.assertEqual(commands['10'], command('buy', name=V1, num=1))
+        self.assert_no_robot_orders(commands)
+
+    def test_unfunded_worker_uses_carried_weapon_voucher_on_same_turn(self):
+        data = upgrade_case(gold=0, stock=[V1], worker_pos=(7, 21))
+        agent = Agent(offense.cfg(walls=[]))
+        commands = agent.decide(data)['roleCommandMap']
+        self.assertEqual(next(iter(agent.sessions.values())).night_scout.cancel_reason, REASON)
+        self.assertEqual(commands['10'], command('use', (8, 21), name=V1))
+        self.assert_no_robot_orders(commands)
+
+    def test_pioneer_budget_cancellation_hands_worker_to_weapon_upgrades(self):
+        data = upgrade_case(gold=339)
+        data['teamOur']['playerTasks'] = shopping.FirstDayPioneerShoppingTests().data()['teamOur']['playerTasks']
+        data['teamOur']['roles'][3].update(backpack=[], pos=dict(x=14, y=21))
+        agent = Agent(offense.cfg(walls=[]))
+        commands = agent.decide(copy.deepcopy(data))['roleCommandMap']
+        memory = next(iter(agent.sessions.values()))
+        self.assertEqual(memory.night_scout.cancel_reason, REASON)
+        self.assertEqual(commands['11'], command('buy', name=BASE, num=1))
+        self.assert_no_robot_orders(commands)
+
+        data['roundNo'] = 36
+        data['teamOur']['goldNum'] = 239
+        data['teamOur']['roles'][3]['backpack'] = [BASE]
+        data['lastRoundRoleActionResults'] = {'11': True}
+        commands = agent.decide(data)['roleCommandMap']
+        self.assertEqual(commands['10'], command('buy', name=V1, num=1))
+        self.assertTrue(memory.first_day_pioneer['robots_cancelled'])
+        self.assert_no_robot_orders(commands)
+
+    def test_cancelled_opening_still_builds_all_three_weapons(self):
+        data = upgrade_case(gold=0, worker_pos=(9, 20))
+        data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] not in (20, 21, 22)]
+        agent = Agent(offense.cfg(walls=[]))
+        agent.decide(copy.deepcopy(data))
+        self.assertEqual(next(iter(agent.sessions.values())).night_scout.cancel_reason, REASON)
+        for tick, index, kind, location in ((36, 2, 'gatling', (7, 21)),
+                                            (37, 0, 'rocket', (7, 23)),
+                                            (38, 1, 'rocket', (10, 23))):
+            with self.subTest(kind=kind, index=index):
+                data['roundNo'] = tick
+                data['teamOur']['goldNum'] = (39 - tick) * 25
+                data['teamOur']['roles'][2]['pos'] = dict(zip(('x', 'y'), location))
+                commands = agent.decide(copy.deepcopy(data))['roleCommandMap']
+                target = tuple(offense.TOWERS[index])
+                self.assertEqual(commands['12'], command('build', target, name=kind))
+                self.assert_no_robot_orders(commands)
+                data['teamOur']['roles'].append(offense.unit(20 + index, kind, *target, health=1000))
 
     def test_pioneer_buys_base_then_two_orders_at_exact_budget(self):
         fixture = shopping.FirstDayPioneerShoppingTests()
@@ -111,14 +214,14 @@ class FirstDayRobotMinimumTests(unittest.TestCase):
                 self.assert_no_robot_orders(ledger.commands)
                 self.assertTrue(memory.night_scout.cancelled)
 
-    def test_unfunded_worker_returns_to_mining_instead_of_waiting_at_shop(self):
+    def test_unfunded_worker_mines_when_no_weapon_upgrades_are_available(self):
         for gold in (0, 119, 120, 239):
             with self.subTest(gold=gold):
                 memory = Memory()
                 worker, ledger = offense.step(offense.case(35, gold=gold), memory, walls=[])
                 self.assertIsNone(worker)
                 self.assertEqual(ledger.commands['10'], command('collect', (8, 20)))
-                self.assertEqual(memory.first_day_offense['phase'], 'mining')
+                self.assertEqual(memory.first_day_offense['phase'], 'upgrade_buy')
                 self.assertIsNone(ledger.first_day_offense_worker_id)
                 self.assert_no_robot_orders(ledger.commands)
 
@@ -190,7 +293,7 @@ class FirstDayRobotMinimumTests(unittest.TestCase):
         memory = next(iter(agent.sessions.values()))
         self.assertTrue(memory.night_scout.cancelled)
         self.assertEqual(memory.robot_summon_state['purchased'], 0)
-        self.assertEqual(memory.first_day_offense['phase'], 'mining')
+        self.assertEqual(memory.first_day_offense['phase'], 'upgrade_buy')
         self.assert_no_robot_orders(response)
 
     def test_two_confirmed_orders_allow_the_remaining_third_order(self):

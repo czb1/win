@@ -18,7 +18,9 @@ def first_day_robot_batch_allowed(turn, mem, ledger, quantity):
     if purchased + quantity >= FIRST_DAY_ROBOT_PURCHASE_MINIMUM:
         return True
     from .opening_offense import cancel_first_day_offense
-    cancel_first_day_offense(turn, mem, 'insufficient_first_day_robots', ledger=ledger,
+    # Use the same day-one weapon upgrade fallback as an enemy Gatling sighting.
+    cancel_first_day_offense(turn, mem, 'insufficient_first_day_robots',
+                             phase='upgrade_buy', ledger=ledger,
                              purchased=purchased, available_quantity=quantity,
                              minimum=FIRST_DAY_ROBOT_PURCHASE_MINIMUM, gold=ledger.gold)
     return False
