@@ -47,16 +47,18 @@ class RobotGapQueueTests(unittest.TestCase):
                     self.assertEqual(memory.clearance_entry, entry)
                     self.assertEqual(data, before)
 
-    def test_wall_in_front_of_gap_target_is_attacked_without_walking_around(self):
+    def test_short_support_routes_precede_walls_in_front_of_gap_target(self):
         data = reported_gap(73)
         data['teamEnemy']['roles'].append(unit(10011, 'pioneer', *ENTRY, health=500))
         for r, p in zip(data['teamOur']['summonRobotList'], ((13, 23), (12, 18), (11, 25))):
             r['pos'] = dict(zip(('x', 'y'), p))
         ledger, memory = decide(data, entry=ENTRY)
         self.assertEqual(memory.focus_target_id, 10011)
-        for uid, point in ((31035, (12, 23)), (31036, (12, 19)), (31037, (11, 24))):
-            self.assertEqual(ledger.commands[str(uid)], command('attack', point))
-            self.assertEqual(ledger.notes[uid]['conditions']['clearance_target_id'], 10011)
+        for uid, point, steps in ((31035, (13, 22), 1), (31036, (13, 19), 3), (31037, (12, 25), 3)):
+            self.assertEqual(ledger.commands[str(uid)], command('move', point))
+            self.assertNotIn(point, ledger.turn.blocked)
+            self.assertEqual(ledger.notes[uid]['conditions']['target_id'], 10011)
+            self.assertEqual(ledger.notes[uid]['conditions']['route_steps'], steps)
 
     def test_outer_lead_moves_through_gap_and_followers_wait_for_observation(self):
         data = reported_gap()
