@@ -106,20 +106,19 @@ class DaylightSpendingTests(unittest.TestCase):
         mem=Memory(wall_watch_id=1)
         locked,funds=prepare_watch(turn,cfg,mem,nav,ledger,turn.workers[0],list(ledger.wall_cells))
         self.assertTrue(locked)
-        self.assertEqual(funds,0)
-        self.assertEqual(ledger.wall_orders[2], {'WallUpgradeVoucher2': 14})
+        self.assertEqual(funds,420)
         self.assertEqual(ledger.commands['1'],command('buy',name='WallFixer',num=8))
         self.assertEqual(ledger.gold,461)
 
-    def test_fully_stocked_watcher_leaves_wall_vouchers_to_builder(self):
+    def test_fully_stocked_watcher_still_collects_wall_vouchers(self):
         data,cfg=case(tick=40,packs=9)
         next(r for r in data['teamOur']['roles'] if r['roleType']=='wall' and pos(r['pos'])==(8,5))['health']=1
         turn,cfg,nav,ledger=setup(data,cfg)
         locked,funds=prepare_watch(turn,cfg,Memory(wall_watch_id=1),nav,ledger,
                                     turn.workers[0],list(ledger.wall_cells))
-        self.assertEqual((locked,funds),(True,0))
-        self.assertNotIn(1, ledger.work_jobs)
-        self.assertEqual(ledger.wall_orders[2], {'WallUpgradeVoucher2': 14})
+        self.assertEqual((locked,funds),(True,420))
+        self.assertEqual(ledger.work_jobs[1]['kind'], 'buy')
+        self.assertEqual(ledger.work_jobs[1]['name'], 'WallUpgradeVoucher2')
 
     def test_daytime_damage_does_not_trigger_fixer_purchase(self):
         data,cfg=case()

@@ -117,7 +117,7 @@ class DaytimeProductivityTests(unittest.TestCase):
         self.assertEqual(ledger.commands['1'], command('collect', (5, 5)))
         self.assertFalse(mem.daytime_jobs[1]['want_stone'])
 
-    def test_late_construction_worker_owns_its_purchase_after_sale_sweep(self):
+    def test_dusk_purchase_cannot_take_reserved_income_worker(self):
         data = income_case(50)
         data['teamOur']['goldNum'] = 300
         data['teamOur']['roles'] += [unit(31, 'wall', 7, 8)]
@@ -127,8 +127,7 @@ class DaytimeProductivityTests(unittest.TestCase):
         dusk_resources(turn, cfg, mem, nav, ledger, ledger.tower_cells)
         self.assertNotIn(1, ledger.used)
         workers(turn, cfg, mem, nav, ledger, list(ledger.tower_cells), list(ledger.wall_cells))
-        self.assertEqual(ledger.work_jobs[1]['kind'], 'buy')
-        self.assertEqual(ledger.work_jobs[1]['name'], 'WallUpgradeVoucher1')
+        self.assertEqual(ledger.commands['1'], command('collect', (5, 5)))
 
     def test_existing_wall_face_batch_releases_reserved_income_worker(self):
         for phase in ('build', 'maintain', 'economy'):

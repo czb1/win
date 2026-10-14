@@ -268,7 +268,7 @@ class WorkerProductivityTests(unittest.TestCase):
                                   dict(name='WallUpgradeVoucher1', price=20)]
         return data, cfg
 
-    def test_successful_pack_batch_closes_watcher_visit_despite_new_gold(self):
+    def test_safety_packs_finish_at_same_shop_before_paid_delivery(self):
         data, cfg = self.shopping_case(tick=35)
         memory = Memory(wall_watch_id=12, daytime_jobs={12: dict(
             kind='use', target=(12, 21), name='WallUpgradeVoucher1')})
@@ -283,11 +283,16 @@ class WorkerProductivityTests(unittest.TestCase):
         turn, cfg, nav, ledger = setup(data, cfg)
         self.assertEqual(prepare_watch(turn, cfg, memory, nav, ledger, turn.units[12], ledger.wall_cells),
                          (True, 0))
-        self.assertNotEqual(ledger.commands.get('12', {}).get('action'), 'buy')
-        self.assertTrue(memory.wall_supply_trip['closed'])
-        self.assertNotEqual(ledger.commands.get('12', {}).get('name'), 'WallUpgradeVoucher1')
+        self.assertEqual(ledger.commands['12'], command('buy', name='WallFixer', num=9))
+        data['roundNo'] += 1
+        data['teamOur']['goldNum'] = 65
+        data['teamOur']['roles'][1]['backpack'] += ['WallFixer'] * 9
+        turn, cfg, nav, ledger = setup(data, cfg)
+        prepare_watch(turn, cfg, memory, nav, ledger, turn.units[12], ledger.wall_cells)
+        self.assertEqual(memory.wall_supply_trip['phase'], 'deliver')
+        self.assertEqual(ledger.commands['12']['action'], 'move')
 
-    def test_single_worker_watch_does_not_inherit_wall_shopping(self):
+    def test_shared_shop_order_reserves_safety_stock_once(self):
         data, cfg = self.shopping_case(tick=35)
         data['teamOur']['goldNum'] = 100
         data['teamOur']['roles'][1]['backpack'] = []
@@ -296,20 +301,19 @@ class WorkerProductivityTests(unittest.TestCase):
         turn, cfg, nav, ledger = setup(data, cfg)
         locked, funds = prepare_watch(turn, cfg, memory, nav, ledger, turn.units[12], ledger.wall_cells)
         self.assertTrue(locked)
-        self.assertEqual(ledger.commands['12'], command('buy', name='WallFixer', num=6))
-        self.assertEqual(funds, 0)
+        self.assertEqual(ledger.commands['12'], command('buy', name='WallFixer', num=4))
+        self.assertEqual(funds, 40)
         ledger.gold -= funds
-        self.assertEqual(ledger.gold, 10)
+        self.assertEqual(ledger.gold, 0)
         data['roundNo'] += 1
         data['teamOur']['goldNum'] = 40
-        data['teamOur']['roles'][1]['backpack'] = ['WallFixer'] * 6
+        data['teamOur']['roles'][1]['backpack'] = ['WallFixer'] * 4
         turn, cfg, nav, ledger = setup(data, cfg)
         locked, funds = prepare_watch(turn, cfg, memory, nav, ledger, turn.units[12], ledger.wall_cells)
         self.assertTrue(locked)
         self.assertEqual(funds, 0)
-        self.assertNotEqual(ledger.commands.get('12', {}).get('action'), 'buy')
-        self.assertTrue(memory.wall_supply_trip['closed'])
-        self.assertEqual(ledger.gold, 40)
+        self.assertEqual(ledger.commands['12'], command('buy', name='WallUpgradeVoucher1', num=2))
+        self.assertEqual(ledger.gold, 0)
 
     def test_daytime_wall_delivery_uses_outside_but_still_requires_return_time(self):
         for tick, accepted, mirror in ((40, True, False), (69, False, False),
@@ -324,9 +328,8 @@ class WorkerProductivityTests(unittest.TestCase):
                 cfg.wall_cells = [[40-x, y] for x, y in cfg.wall_cells]
                 cfg.weapon_cells = [[40-x, y] for x, y in cfg.weapon_cells]
                 target = (28, 21)
-            data['teamOur']['roles'].append(unit(14, 'worker', 4, 4))
             turn, _, nav, ledger = setup(data, cfg)
-            memory = Memory(wall_watch_id=14)
+            memory = Memory(wall_watch_id=12)
             self.assertEqual(use_inventory(turn, nav, ledger, turn.units[12], mem=memory,
                                            target_only=target), accepted)
             if accepted:

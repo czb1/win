@@ -184,28 +184,28 @@ class WallDaylightPriorityTests(unittest.TestCase):
         self.assertTrue(batch_sale_ready(t, cfg, mem, nav, ledger, t.workers[0]))
         locked, funds = prepare_watch(t, cfg, mem, nav, ledger, t.workers[0], ledger.wall_cells)
         self.assertTrue(locked)
-        self.assertEqual(funds, 0)
-        self.assertNotIn('WallUpgradeVoucher1', ledger.wall_orders[1])
+        self.assertEqual(funds, 650)
         self.assertEqual(ledger.work_jobs[1]['kind'], 'sell')
         self.assertEqual(ledger.work_jobs[1]['target'], (20, 16))
         self.assertIn(1, mem.sale_workers)
         self.assertEqual(mem.wall_supply_trip['phase'], 'sell')
 
-    def test_stocked_watch_sells_before_return_even_with_legacy_vouchers(self):
+    def test_stocked_watch_finishes_remaining_shop_order_before_paid_delivery(self):
         p = self.watch_case(vouchers=['WallUpgradeVoucher2'] * 6)
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(wall_watch_id=1, sold_workers={1})
         prepare_watch(t, cfg, mem, nav, ledger, t.workers[0], ledger.wall_cells)
-        self.assertEqual(ledger.work_jobs[1]['kind'], 'sell')
-        self.assertIn(1, mem.sale_workers)
+        self.assertEqual(ledger.work_jobs[1]['kind'], 'buy')
+        self.assertEqual(ledger.work_jobs[1]['name'], 'WallUpgradeVoucher1')
+        self.assertNotIn(1, mem.sale_workers)
 
-    def test_watcher_does_not_use_legacy_wall_v2_on_final_daylight_turn(self):
+    def test_watch_uses_adjacent_paid_v2_on_final_daylight_turn(self):
         p = self.watch_case(tick=69, vouchers=['WallUpgradeVoucher2'], worker_pos=(29, 11))
         t, cfg, nav, ledger = setup_case(p)
         mem = Memory(wall_watch_id=1, gunner_post=(32, 9))
         locked, _ = prepare_watch(t, cfg, mem, nav, ledger, t.workers[0], ledger.wall_cells)
         self.assertTrue(locked)
-        self.assertNotEqual(ledger.commands.get('1', {}).get('name'), 'WallUpgradeVoucher2')
+        self.assertEqual(ledger.commands['1'], command('use', (28, 10), name='WallUpgradeVoucher2'))
         self.assertNotIn((32, 9), ledger.reserved)
 
     def test_watch_does_not_resume_build_that_cannot_finish_before_night(self):

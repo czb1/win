@@ -107,12 +107,7 @@ def return_destination(turn, nav, ledger, hero, mem=None):
         from .wall_watch import geometry
         inside, _ = geometry(turn, ledger.wall_cells)
         post = getattr(ledger, 'daytime_gunner_post', mem.gunner_post)
-        return ({p for wall in ledger.wall_cells for p in neighbours(wall)} & inside
-                - set(ledger.operator_posts.values()) - {post}), True
-    if mem is not None and turn.is_day and hero.kind == 'worker':
-        from .wall_supply import active, builder_home
-        if active(turn, mem):
-            return builder_home(turn, mem, nav, ledger, hero, ledger.wall_cells)
+        return inside - set(ledger.operator_posts.values()) - {post}, True
     if hero.id in ledger.operator_posts:
         return [ledger.operator_posts[hero.id]], True
     tower = next((w for h, w in ledger.return_pairs if h.id == hero.id), None)
@@ -278,10 +273,6 @@ def spare_mine(turn, cfg, mem, nav, ledger, hero, *, home=None, exact=False,
         LOG.debug("round=%s worker=%s spare_mining=no_safe_mine_within_two_steps day_left=%s",
                   turn.round, hero.id, turn.day_left)
         return False
-    from .wall_supply import active
-    if active(turn, mem):
-        independent = [o for o in options if not o.claimants]
-        options = independent or options
     preferred = preferred_stock(turn, cfg, mem, ledger, hero)
     sale_dist = first_day_sale_distances(turn, cfg, mem, nav, ledger, hero)
     order = lambda o: (o.route[0], -o.score, o.return_steps, o.target, o.cell)
@@ -388,14 +379,6 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
          deadline=None, stockpile=False, dedicated=False, target_only=None, stone_goal=None,
          stone_sites=None, cashout_today=False, run=None):
     hero = reserve_watch_space(turn, mem, hero, ledger)
-    from .wall_supply import active, mining_tail
-    split_trip = turn.is_day and active(turn, mem) and not want_stone
-    if split_trip and target_only is not None:
-        _, partners = mining_yield(turn, mem, nav, ledger, hero, target_only, 0, 1)
-        if partners:
-            # Reopen candidate selection when a continued job now shares a
-            # deposit; otherwise target_only would bypass the separation rule.
-            target_only = None
     if not hero.space:
         LOG.debug("round=%s worker=%s mining=backpack_full", turn.round, hero.id)
         return False
@@ -415,7 +398,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
     wave_budget = min((turn.base_distance(r.pos) - r.attack_range - cfg.return_margin
                        for r in turn.robots if turn.threatens_us(r)), default=None)
     vendor_home = 0
-    if vendors and home and not want_stone and not split_trip:
+    if vendors and home and not want_stone:
         corridors = []
         for vendor in vendors:
             home_legs = [home_dist[q] for q in neighbours(vendor) if q in home_dist]
@@ -461,23 +444,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         if not value:
             skipped["no_positive_price"] += 1
             continue
-        tail = None
-        if split_trip:
-            arrivals = []
-            cutoff = cfg.economy_rounds if turn.tick < cfg.economy_rounds else 70
-            for landing in neighbours(p):
-                leg = nav.search(hero, {landing}, ledger.reserved, with_endpoint=True)
-                if leg is None or leg[0] + 1 > cutoff - turn.tick:
-                    continue
-                forecast_units, _ = mining_yield(turn, mem, nav, ledger, hero, p, leg[0], hero.space)
-                suffix = mining_tail(turn, cfg, mem, nav, ledger, hero, landing, kind, forecast_units)
-                if suffix and leg[0] + 1 + suffix[0] + cfg.return_margin <= turn.day_left:
-                    arrivals.append((leg[0] + suffix[0], leg[0], landing, leg, suffix))
-            chosen_arrival = min(arrivals, key=lambda o: o[:3], default=None)
-            arrival = chosen_arrival[3] if chosen_arrival else None
-            tail = chosen_arrival[4] if chosen_arrival else None
-        else:
-            arrival = nav.approach(hero, [p], ledger.reserved, with_endpoint=True)
+        arrival = nav.approach(hero, [p], ledger.reserved, with_endpoint=True)
         if arrival is None:
             skipped["unreachable"] += 1
             continue
@@ -502,7 +469,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
                 skipped['wall_material_deadline'] += 1
                 continue
             amount = material.amount
-        if not split_trip and not want_stone and (stockpile or late and not vendors) and home and not dedicated and (turn.is_day or wave_budget is not None):
+        if not want_stone and (stockpile or late and not vendors) and home and not dedicated and (turn.is_day or wave_budget is not None):
             home_walk = home_dist.get(cell)
             if home_walk is None:
                 skipped['no_return_route'] += 1
@@ -517,19 +484,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
             if amount <= 0:
                 skipped["return_deadline"] += 1
                 continue
-        if split_trip:
-            if tail is None:
-                skipped['no_complete_worker_itinerary'] += 1
-                continue
-            # Mining stops at 35; selling, procurement, construction and the
-            # actual night landing have their separate remaining-day budget.
-            cutoff = cfg.economy_rounds if turn.tick < cfg.economy_rounds else 70
-            amount = min(amount, cutoff - turn.tick - route[0],
-                         turn.day_left - route[0] - tail[0] - cfg.return_margin)
-            if amount <= 0:
-                skipped['worker_itinerary_deadline'] += 1
-                continue
-        if not want_stone and vendors and not split_trip:
+        if not want_stone and vendors:
             if sale_walk is None:
                 skipped["no_sale_route"] += 1
                 continue
@@ -545,8 +500,6 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         if material is not None:
             # construction_steps already contains both delivery and build actions.
             score = amount / (route[0] + amount + material.construction_steps + material.return_steps)
-        elif tail is not None:
-            score = value * amount / (amount + route[0] + tail[0])
         else:
             score = value * amount / (amount + route[0] +
                                      (amount * (sale_walk + 1) / max(1, batch) if sale_walk is not None else 0))
@@ -554,11 +507,8 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
         if turn.is_day and not want_stone:
             plan = dict(run) if run else dict(
                 day=turn.day, mode='sell_today' if vendors else 'carry_for_later',
-                vendor=tail[1] if tail else vendors[0] if vendors else None,
-                end_tick=(cfg.economy_rounds if turn.tick < cfg.economy_rounds else 70) if split_trip else finish_tick,
+                vendor=vendors[0] if vendors else None, end_tick=finish_tick,
                 collect_goal=hero.inventory[kind] + amount)
-            if tail:
-                plan.update(shop=tail[2], itinerary_steps=tail[3], construction_actions=tail[4])
         options.append(MineOption(p, route, score, amount, claimants, cell=cell, material=material, run=plan))
     if not options:
         ledger.explain(hero.id, "no_mining_candidate", skipped=dict(skipped),
@@ -567,11 +517,6 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
                   turn.round, hero.id, dict(skipped), turn.day_left, deadline)
         mem.mine_targets.pop(hero.id, None)
         return False
-    if split_trip:
-        # A retained target or sector preference must not override a separate
-        # feasible deposit. Sharing is a fallback only if no independent work fits.
-        independent = [o for o in options if not o.claimants]
-        options = independent or options
     order = lambda o: (-o.score, o.route[0], turn.base_distance(o.target), o.target)
     best = min(options, key=order)
     previous = next((o for o in options if o.target == mem.mine_targets.get(hero.id)), None)
@@ -625,9 +570,7 @@ def mine(turn, cfg, mem, nav, ledger, hero, want_stone=False, local_only=False,
 def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, allow_spare=True,
          vendor_only=None):
     from .economy_plan import maxed_weapon_mining_phase
-    from .wall_supply import active
-    split_trip = turn.is_day and active(turn, mem)
-    if maxed_weapon_mining_phase(turn, cfg) and not split_trip:
+    if maxed_weapon_mining_phase(turn, cfg):
         # Sale continuation, news cashout and batch deadlines must obey the
         # same mining window as newly allocated work after maxing firepower.
         if force_sale:
@@ -654,7 +597,7 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
         if mine(turn, cfg, mem, nav, ledger, hero, stockpile=True):
             return True
         return allow_spare and spare_mine(turn, cfg, mem, nav, ledger, hero)
-    late = split_trip or late_economy_allowed(turn, cfg, mem, ledger, hero)
+    late = late_economy_allowed(turn, cfg, mem, ledger, hero)
     if not late and hero.id in mem.sold_workers and hero.id not in mem.sale_workers and not force_sale and not cashout:
         if turn.tick < cfg.economy_rounds and mine(turn, cfg, mem, nav, ledger, hero, stockpile=True, local_only=True):
             return True
@@ -680,7 +623,7 @@ def earn(turn, cfg, mem, nav, ledger, hero, deadline=None, force_sale=False, all
     vendor, route = (choice[3], choice[4]) if choice else (None, None)
     due = False
     sale_fits = False
-    home, exact = return_destination(turn, nav, ledger, hero, mem)
+    home, exact = return_destination(turn, nav, ledger, hero)
     if route:
         trip = via(nav, hero, [[vendor], home], ledger.reserved, final_exact=exact,
                    future_return=turn.tick < cfg.economy_rounds) if home else route[0]

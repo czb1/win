@@ -157,8 +157,7 @@ class MaxedWeaponMiningPhaseTests(unittest.TestCase):
                         self.assertEqual((locked, funds), (False, 30))
                         self.assertFalse(l.commands)
                     else:
-                        self.assertEqual((locked, funds), (True, 0))
-                        self.assertEqual(l.wall_orders[2], {'WallUpgradeVoucher2': 14})
+                        self.assertEqual((locked, funds), (True, 420))
                         self.assertEqual(l.commands['1'], command('buy', name='WallFixer', num=8))
 
     def test_new_robot_purchase_waits_but_paid_order_can_be_used(self):
