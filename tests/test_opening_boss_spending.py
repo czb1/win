@@ -38,6 +38,9 @@ class OpeningBossSpendingTests(unittest.TestCase):
 
     def test_first_day_owned_weapon_voucher_waits_until_day_two(self):
         data = self.data()
+        for role in data['teamOur']['roles']:
+            if role['roleType'] == 'gatling':
+                role['level'] = 3
         data['teamOur']['roles'][1].update(pos={'x': 4, 'y': 9},
                                           backpack=['WeaponUpgradeVoucher1'])
         for round_no, expected in ((10, False), (140, True)):
@@ -79,7 +82,7 @@ class OpeningBossSpendingTests(unittest.TestCase):
         plan = supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0],
                         item_only='WeaponUpgradeVoucher1', bulk=True)
         self.assertIsNotNone(plan)
-        self.assertEqual((plan[0], plan[2]), ('WeaponUpgradeVoucher1', 3))
+        self.assertEqual((plan[0], plan[2]), ('WeaponUpgradeVoucher1', 1))
 
     def test_incomplete_walls_rebuild_and_missing_night_stock_do_not_gate_purchase(self):
         data = self.data(round_no=270)
@@ -133,6 +136,9 @@ class OpeningBossSpendingTests(unittest.TestCase):
 
     def test_recovery_cannot_use_first_day_weapon_voucher(self):
         data = self.data()
+        for role in data['teamOur']['roles']:
+            if role['roleType'] == 'gatling':
+                role['level'] = 3
         data['teamOur']['roles'][1].update(pos={'x': 4, 'y': 9},
                                           backpack=['WeaponUpgradeVoucher1'])
         for round_no, allowed in ((10, False), (140, True)):
@@ -168,5 +174,5 @@ class OpeningBossSpendingTests(unittest.TestCase):
         cfg.robot_purchase_last_day = Config().robot_purchase_last_day
         response = Agent(cfg).decide(data)
         buys = [c for c in response['roleCommandMap'].values() if c['action'] == 'buy']
-        self.assertIn(command('buy', name='WeaponUpgradeVoucher1', num=3), buys)
+        self.assertIn(command('buy', name='WeaponUpgradeVoucher1', num=1), buys)
         self.assertFalse(any(c['name'].endswith('RobotSummonOrder') for c in buys))

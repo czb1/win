@@ -4,7 +4,7 @@ from dataclasses import replace
 
 from .commands import command
 from .economy import (build, build_options, buy_supply, delivery_trip, upgrade_order,
-                      use_inventory, voucher_for)
+                      use_inventory, voucher_for, weapon_upgrade_allowed)
 from .economy_plan import via
 from .logging_system import emit_event
 from .model import DEFENCE_RETURN_TICK, ORES, SUMMON_ORDERS, neighbours
@@ -260,7 +260,8 @@ def _upgrade_cart(turn, ledger, hero, weapons, limit):
 def _buy_upgrade_cart(turn, cfg, mem, nav, ledger, hero, state):
     """Finish both voucher tiers at one shop before starting the return trip."""
     weapons = [w for w in sorted(turn.weapons, key=lambda w: upgrade_order(turn, w, mem))
-               if w.level < 3 and not mem.movement.avoids(hero.id, w.pos)
+               if w.level < 3 and weapon_upgrade_allowed(turn, w)
+               and not mem.movement.avoids(hero.id, w.pos)
                and nav.approach(hero, w.cells, ledger.reserved) is not None]
     limit = min(hero.space, sum(3 - w.level for w in weapons))
     options = []
@@ -319,12 +320,15 @@ def _upgrade_after_abort(turn, cfg, mem, nav, ledger):
     if hero is None or hero.id in ledger.used:
         return None
     if state.get('phase') in ('upgrade_buy', 'upgrade_use'):
-        targets = {w.pos for w in turn.weapons}
-        held = any(hero.inventory[voucher_for(w)] for w in turn.weapons if voucher_for(w))
+        weapons = [w for w in turn.weapons if weapon_upgrade_allowed(turn, w)]
+        targets = {w.pos for w in weapons}
+        held = any(hero.inventory[voucher_for(w)] for w in weapons if voucher_for(w))
         # Already-carried vouchers away from an active shopping trip still
         # take the direct delivery path. Newly bought stock must not end a
         # two-category shopping visit after only its first purchase.
-        if held and 'upgrade_shop' not in state:
+        at_shop = any(kind == 'weaponShop' and turn.adjacent(hero.pos, shop)
+                      for shop, kind in turn.zones.items())
+        if held and 'upgrade_shop' not in state and not at_shop:
             state['phase'] = 'upgrade_use'
         elif not held and state['phase'] == 'upgrade_use':
             _advance(mem, ledger, hero, state, 'mining', 'weapon_vouchers_delivered')

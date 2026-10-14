@@ -257,6 +257,17 @@ def delivery_trip(turn, nav, ledger, hero, shop_cell, targets):
         turn.blocked = original
 
 
+def weapon_upgrade_allowed(turn, building, planned=()):
+    """Other weapons wait until every observed/planned Gatling reaches L3.
+
+    Carried vouchers, delivery claims and submitted uses are not completed
+    upgrades. Keep this gate independent of route and voucher availability.
+    """
+    return (building.kind not in WEAPONS or building.kind == 'gatling'
+            or not any(w.kind == 'gatling' and w.level < 3
+                       for w in (*turn.weapons, *planned)))
+
+
 def upgrade_order(turn, building, mem=None):
     """Maximize Gatlings before other weapons, then upgrade a healthy base.
 
@@ -305,6 +316,8 @@ def use_inventory(turn, nav, ledger, hero, local_only=False, mem=None,
     upgrades = []
     pioneer_emergency = hero.kind == 'pioneer' and pioneer_needs_night_relief(turn)
     for building in turn.ours:
+        if not weapon_upgrade_allowed(turn, building):
+            continue
         if building.kind == 'station' and hero.kind != 'pioneer':
             continue
         station_heal = (building.kind == 'station' and building.level < 3
@@ -447,6 +460,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
         buildings = list(turn.ours) + [w for w in planned if w.id < 0]
         first_level_gun = any(b.kind in WEAPONS and b.level == 1 for b in buildings)
         for building in sorted(buildings, key=lambda b: upgrade_order(turn, b, mem)):
+            if not weapon_upgrade_allowed(turn, building, planned):
+                continue
             if opening_upgrades and building.kind not in WEAPONS:
                 continue
             if (building.kind == 'station' and hero.kind != 'pioneer'
@@ -737,6 +752,7 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
             continue
         # Do not add a second delivery while a paid, applicable voucher waits.
         if any(hero.inventory[voucher_for(b)] for b in turn.ours if voucher_for(b)
+               and weapon_upgrade_allowed(turn, b)
                and (b.kind != "wall" or b.level < wall_level_limit(turn, b.pos))):
             continue
         plan = supplies(turn, cfg, mem, nav, ledger, hero, reserve, planned=planned)
@@ -1311,7 +1327,8 @@ def workers(turn, cfg, mem, nav, ledger, tower_sites, wall_sites, excluded=()):
         if h.id not in developing:
             continue
         if any(h.inventory[voucher_for(b)] for b in turn.ours
-                                          if voucher_for(b) and wall_upgrade_allowed(turn, b, mem, paid=True)):
+               if voucher_for(b) and weapon_upgrade_allowed(turn, b)
+               and wall_upgrade_allowed(turn, b, mem, paid=True)):
             continue
         p = supplies(turn, cfg, mem, nav, ledger, h, reserve, planned=planned, bulk=True)
         if p:

@@ -146,7 +146,7 @@ class NightEconomyTests(unittest.TestCase):
         data = self.case(gold=700)
         data['teamOur']['roles'][1]['pos'] = dict(x=9, y=7)
         for role in data['teamOur']['roles'][4:7]:
-            role['level'] = 1
+            role.update(roleType='gatling', level=1)
         data['teamOur']['roles'][2]['backpack'].append('WeaponUpgradeVoucher1')
         t, cfg, mem, nav, ledger = self.setup(data)
         work(t, cfg, mem, nav, ledger, t.units[1], start=True)
@@ -163,7 +163,8 @@ class NightEconomyTests(unittest.TestCase):
     def test_complete_same_shop_order_before_delivery_then_no_second_visit(self):
         data = self.case(gold=700)
         data['teamOur']['roles'][1]['pos'] = dict(x=9, y=7)
-        data['teamOur']['roles'][4]['level'] = 2
+        # Both coupons serve eligible Gatlings; rockets wait for their cap.
+        data['teamOur']['roles'][4].update(roleType='gatling', level=2)
         t, cfg, mem, nav, ledger = self.setup(data)
         work(t, cfg, mem, nav, ledger, t.units[1], start=True)
         self.assertEqual(ledger.commands['1']['name'], 'WeaponUpgradeVoucher1')

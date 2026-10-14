@@ -58,7 +58,8 @@ class Recovery:
                 return None
             action = command("collect", target)
         else:
-            from .economy import voucher_for, wall_upgrade_allowed, replacement_work_pending, critical_station
+            from .economy import (voucher_for, wall_upgrade_allowed, replacement_work_pending,
+                                  critical_station, weapon_upgrade_allowed)
             building = next((b for b in turn.ours if b.pos == target), None)
             if building and building.kind == 'station':
                 return None
@@ -69,6 +70,7 @@ class Recovery:
                     and (not critical_station(turn, building, mem) or replacement_work_pending(turn, mem))):
                 return None
             if (not name or not hero.inventory[name] or building.id in ledger.upgrade_claims
+                    or not weapon_upgrade_allowed(turn, building)
                     or not wall_upgrade_allowed(turn, building, mem, paid=True)):
                 return None
             action = command("use", building.nearest_cell(hero.pos), name=name)

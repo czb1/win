@@ -296,12 +296,12 @@ class ScoutDefenseUpgradeTests(unittest.TestCase):
                 self.assertEqual(mem.first_day_offense['phase'], 'upgrade_use')
                 self.assertEqual(ledger.gold, 250 if price else 0)
 
-    def test_unaffordable_second_tier_spends_remainder_on_usable_first_tier(self):
+    def test_unaffordable_second_tier_keeps_remainder_for_gatling(self):
         data = case(worker_pos=(14, 19), gold=220)
         data['teamOur']['roles'][-1]['roleType'] = 'gatling'
         _, ledger = step(data, memory())
-        self.assertEqual(ledger.commands['10'], command('buy', name=V1, num=2))
-        self.assertEqual(ledger.gold, 20)
+        self.assertEqual(ledger.commands['10'], command('buy', name=V1, num=1))
+        self.assertEqual(ledger.gold, 120)
 
     def test_new_income_during_delivery_does_not_send_scout_back_to_shop(self):
         data, mem = case(stock=[V1, V2], gold=1000, worker_pos=(7, 23)), memory()
@@ -350,7 +350,7 @@ class ScoutDefenseUpgradeTests(unittest.TestCase):
         plan = supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0], bulk=True)
         self.assertEqual((plan[0], plan[2]), (V2, 1))
 
-    def test_saved_rocket_delivery_yields_only_to_a_usable_gatling_upgrade(self):
+    def test_saved_rocket_delivery_waits_for_gatling_even_without_its_voucher(self):
         for has_second_tier in (False, True):
             with self.subTest(has_second_tier=has_second_tier):
                 data = case(165, stock=[V1] + ([V2] if has_second_tier else []),
@@ -364,7 +364,7 @@ class ScoutDefenseUpgradeTests(unittest.TestCase):
                     self.assertEqual(mem.upgrade_targets[10], (8, 21))
                     self.assertIn(22, ledger.upgrade_claims)
                 else:
-                    self.assertEqual(ledger.commands['10'], command('use', (8, 23), name=V1))
+                    self.assertNotIn('10', ledger.commands)
 
     def test_missing_second_tier_and_full_backpack_still_leave_for_delivery(self):
         for reason in ('item', 'capacity', 'deadline'):
