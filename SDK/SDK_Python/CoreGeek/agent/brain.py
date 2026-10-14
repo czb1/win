@@ -516,6 +516,7 @@ class Agent:
             if turn.day != 1:
                 mem.night_scout.key, mem.night_scout.worker_id = None, None
                 mem.night_scout.post, mem.night_scout.wall_entry = None, None
+                mem.night_scout.clear_ingress()
             if not hasattr(mem, "robot_assault"):
                 mem.robot_assault = RobotAssaultMemory()
             # A paid base heal takes the pioneer before task or gun allocation,
