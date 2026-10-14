@@ -1377,12 +1377,7 @@ def treasure_purchase_plan(turn, cfg, mem, nav, ledger, hero):
     missing = required - hero.inventory
     if not missing:
         return None
-    emergency = (any(h.health <= (150 if h.kind == "pioneer" else 110) for h in turn.heroes)
-                 or any(w.kind == "wall" and w.health < 500 for w in turn.ours)
-                 or bool(turn.station and turn.station.health < 500)
-                 or any(turn.threatens_us(r) and (turn.base_distance(r.pos) <= max(6, r.attack_range)
-                        or distance(hero.pos, r.pos) <= max(6, r.attack_range + 2)) for r in turn.robots))
-    reason = ("emergency" if emergency else "backpack_full" if hero.space < sum(missing.values())
+    reason = ("backpack_full" if hero.space < sum(missing.values())
               else "item_unavailable" if any(k not in turn.shop or turn.shop[k] < 0 for k in missing)
               else "buy_retry_cooldown" if any((hero.id, k) in mem.buy_failures for k in missing)
               else "no_feasible_trip")

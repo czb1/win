@@ -7,7 +7,7 @@ from run_checks import replay_test
 
 ITEMS = ["AcientTablet", "StarSand", "FlameBreath"]
 from test_agent import payload, setup_case, unit
-from agent.economy import pioneer, reserve_treasure_gold
+from agent.economy import pioneer, prepare_treasure, reserve_treasure_gold
 from agent.brain import Agent, summon_best_robot
 from agent.config import Config
 from agent.intelligence import Memory, Intelligence
@@ -162,21 +162,59 @@ class TreasurePreparationTests(unittest.TestCase):
         data['teamOur']['roles'][0]['backpack'] = ['MoonKey', 'BlueDust']
         self.assertEqual(self.decide(data, m).commands['11']['action'], 'acceptTask')
 
-    def test_budget_capacity_emergency_and_failure_cooldown(self):
+    def test_budget_capacity_and_failure_cooldown(self):
         m = memory()
         for gold in (10, 60, 200):
             t,c,n,l = setup_case(case(gold=gold))
             self.assertEqual(reserve_treasure_gold(t,c,m,n,l,t.pioneer), min(60,gold))
-        for state in ('night', 'first_day', 'full', 'active', 'hurt', 'failed', 'done'):
+        for state in ('night', 'first_day', 'full', 'active', 'failed', 'done'):
             data = case(); m = memory()
             if state == 'night': data['roundNo'] = 200
             if state == 'first_day': data['roundNo'] = 10
             if state == 'full': data['teamOur']['roles'][0]['backPackCapability'] = 1
             if state == 'active': data['phaseTask'] = 'active task'
-            if state == 'hurt': data['teamOur']['roles'][0]['health'] = 100
             if state == 'failed': m.buy_failures[(11,'MoonKey')] = 145
             if state == 'done': m.treasure_done = True
             self.assertFalse(self.decide(data,m).commands, state)
+
+    def test_emergencies_allow_treasure_reservation_and_purchase(self):
+        for state in ('pioneer_hurt', 'worker_hurt', 'wall_hurt', 'station_hurt',
+                      'robot_near_pioneer', 'robot_near_base'):
+            with self.subTest(state=state):
+                data = case()
+                roles = data['teamOur']['roles']
+                roles.append(unit(20, 'station', 1, 13, health=1500))
+                if state == 'pioneer_hurt': roles[0]['health'] = 150
+                if state == 'worker_hurt': roles.append(unit(10, 'worker', 1, 1, health=110))
+                if state == 'wall_hurt': roles.append(unit(30, 'wall', 10, 10, health=95))
+                if state == 'station_hurt': roles[-1]['health'] = 499
+                if state.startswith('robot_near_'):
+                    pos = (8, 5) if state == 'robot_near_pioneer' else (1, 14)
+                    data['robot']['roles'] = [unit(99, 'smallRobot', *pos,
+                        attackRange=1, targetTeam='challenger')]
+                t, c, n, l = setup_case(data)
+                m = memory()
+                self.assertEqual(reserve_treasure_gold(t, c, m, n, l, t.pioneer), 60)
+                self.assertTrue(prepare_treasure(t, c, m, n, l, t.pioneer))
+                self.assertEqual(l.commands['11'], dict(action='buy', name='MoonKey', num=1))
+
+    def test_emergency_does_not_bypass_other_purchase_constraints(self):
+        for state in ('night', 'insufficient_gold', 'full', 'unavailable', 'failed', 'no_shop'):
+            with self.subTest(state=state):
+                data = case()
+                data['teamOur']['roles'].append(unit(30, 'wall', 10, 10, health=95))
+                m = memory()
+                if state == 'night': data['roundNo'] = 200
+                if state == 'insufficient_gold': data['teamOur']['goldNum'] = 59
+                if state == 'full': data['teamOur']['roles'][0]['backPackCapability'] = 1
+                if state == 'unavailable': data['weaponShopList'].pop()
+                if state == 'failed': m.buy_failures[(11, 'MoonKey')] = 145
+                if state == 'no_shop': data['mapInfo']['zones'] = []
+                t, c, n, l = setup_case(data)
+                expected = 59 if state == 'insufficient_gold' else 0
+                self.assertEqual(reserve_treasure_gold(t, c, m, n, l, t.pioneer), expected)
+                self.assertFalse(prepare_treasure(t, c, m, n, l, t.pioneer))
+                self.assertFalse(l.commands)
 
     def test_complete_trip_deadline_and_early_material_purchase(self):
         m=memory(); m.treasure=dict(position=[13,13],items=['MoonKey'],startRound=140,endRound=142)
