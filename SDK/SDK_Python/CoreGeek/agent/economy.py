@@ -6,6 +6,7 @@ from dataclasses import replace
 from .commands import command
 from .model import ORES, WEAPONS, HEROES, CHARACTERS, DEFENCE_RETURN_TICK, FIRST_DAY_PIONEER_SHOP_TICK, pos, distance, neighbours
 from .navigation import wall_priority, wall_gaps
+from .projectiles import wall_gates
 from .mining import mine, earn, spare_mine, sale_inventory, return_destination
 from .economy_plan import planned_weapons, via, trade_available, preparation_start, front_sites, wall_level_limit, delivery_destination, development_pending, reserve_income_worker
 from .economy_plan import maxed_weapon_mining_phase, late_economy_allowed
@@ -759,8 +760,41 @@ def dusk_resources(turn, cfg, mem, nav, ledger, tower_sites):
         buy_supply(turn, ledger, hero, plan)
 
 
+def open_wall_gate(turn, cfg, nav, ledger):
+    """Move an old wall entrance only in daylight, before ordinary work."""
+    if (cfg.layout_mode == "explicit" or not turn.is_day
+            or turn.tick >= DEFENCE_RETURN_TICK
+            or cfg.loadout.count("rocket") != 2 or cfg.loadout.count("gatling") != 1):
+        return False
+    gates = wall_gates(turn, ledger.wall_cells)
+    targets = gates & {wall.pos for wall in turn.ours if wall.kind == "wall"}
+    if not targets:
+        return False
+    target = next(iter(targets))
+    options = []
+    for hero in turn.workers:
+        if hero.id in ledger.used or hero.health <= 110:
+            continue
+        route = nav.approach(hero, {target}, ledger.reserved)
+        if route is not None and route[0] + 1 <= DEFENCE_RETURN_TICK - turn.tick:
+            options.append((route[0], hero.id, route))
+    for _, uid, route in sorted(options):
+        action = command("remove", target) if route[1] is None else command("move", route[1])
+        if ledger.add(uid, action):
+            ledger.explain(uid, "open_gatling_wall_gate", gate=target, route_steps=route[0])
+            return True
+    return False
+
+
 def wall_keeps_access(turn, nav, ledger, target):
     if not turn.is_day or turn.tick >= DEFENCE_RETURN_TICK:
+        return False
+    if (ledger.cfg.layout_mode != "explicit"
+            and ledger.cfg.loadout.count("rocket") == 2 and ledger.cfg.loadout.count("gatling") == 1
+            and wall_gates(turn, ledger.wall_cells)
+            & {wall.pos for wall in turn.ours if wall.kind == "wall"}):
+        # Wait for observed removal, even when it was ordered this turn. Do
+        # not seal the old entrance before the new one is actually passable.
         return False
     destinations = [turn.station.cells] if turn.station else []
     for kind in ("vendor", "weaponShop", *ORES):

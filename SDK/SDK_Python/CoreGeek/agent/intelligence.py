@@ -433,6 +433,9 @@ class Memory:
         # Keep repair intent across day boundaries and replacement unit IDs.
         sites = layout(turn, cfg)[1]
         turn.planned_wall_sites = sites
+        # A relocated intentional entrance must not inherit an old repair job.
+        self.wall_rebuild_levels = {p: level for p, level in self.wall_rebuild_levels.items()
+                                    if p in sites}
         lost = set(self.wall_health) - set(current_walls)
         replaced = {p for p, (uid, _) in current_walls.items()
                     if p in self.wall_health and self.wall_health[p][0] != uid}

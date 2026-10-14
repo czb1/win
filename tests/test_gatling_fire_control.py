@@ -324,7 +324,8 @@ class GateAndLayoutTests(unittest.TestCase):
         self.assertEqual(len(gates), 1)
         gatling = sites[cfg.loadout.index('gatling')]
         gate = next(iter(gates))
-        self.assertEqual(distance(gatling, gate), 2)
+        self.assertEqual(distance(gatling, gate), 1)
+        self.assertEqual(gatling[0], gate[0])
         obstacles = set(walls) | turn.station.cells | (set(sites) - {gatling})
         ray = set(line_cells(gatling, gate))
         self.assertFalse(ray & obstacles)

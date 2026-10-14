@@ -148,9 +148,10 @@ class PerimeterTests(unittest.TestCase):
             self.assertEqual({p[0] for p in walls[:6]}, {x + 3 if x < 7 else x - 2})
             self.assertEqual(len(set(walls)), 19)
             rear_x = x - 2 if x < 7 else x + 3
-            gate_y = y - 1 if y > 7 else y
             self.assertEqual({p[1] for p in walls if p[0] == rear_x},
-                             set(range(y - 3, y + 3)) - {gate_y})
+                             set(range(y - 3, y + 3)))
+            gate = (x if x < 7 else x + 1, y - 3 if y > 7 else y + 2)
+            self.assertNotIn(gate, walls)
 
     def test_wall_preserves_short_access_until_gun_is_built(self):
         roles = [unit(1, 'worker', 1, 1)] + [unit(100+y, 'wall', 3, y)

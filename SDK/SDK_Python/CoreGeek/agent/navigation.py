@@ -230,7 +230,7 @@ class Navigator:
 
 
 def layout(turn, cfg):
-    """A full wall perimeter with one side gate; explicit layouts are authoritative."""
+    """A full perimeter with one gate facing the gatling; explicit sites win."""
     if cfg.layout_mode == "explicit":
         return (list(dict.fromkeys(tuple(p) for p in cfg.weapon_cells if turn.inside(tuple(p)))),
                 list(dict.fromkeys(tuple(p) for p in cfg.wall_cells if turn.inside(tuple(p)))))
@@ -249,21 +249,23 @@ def layout(turn, cfg):
     # top-left base and above a bottom-right base. Keep existing batteries
     # in place, including the previous side gatling and three-rocket layout.
     tower_order = [(-1, -1), (0, -1), (-1, 1)]
+    gate = (-2, 1)
     if cfg.loadout.count("rocket") == 2 and cfg.loadout.count("gatling") == 1:
         preferred = [world(p) for p in [(-1, -1), (0, -1), (0, 2)]]
         if all(w.pos in preferred for w in turn.weapons):
             tower_order = [(-1, -1), (0, -1), (0, 2)]
+            gate = (0, 3)
     towers = [world(p) for p in tower_order[:len(cfg.loadout)] if turn.inside(world(p))]
-    # Preserve the original six-cell front and flanks, then close the rear.
-    # The sole gate (-2, 1) and wall coordinates stay unchanged. The gatling
-    # on the Y flank retains a clear ray to the gate. Legal diagonal steps keep the
-    # shared control post (-1, 0) and the inner aisle accessible to workers.
-    # It is absent from the blueprint, including breach repairs.
+    # Keep the six-cell front priority, then fill the remaining perimeter.
+    # Leave only the cell immediately outside the gatling open; the former
+    # side gate becomes a wall in the Y-flank battery. Legacy side batteries
+    # retain their aligned gate. Legal diagonal steps keep both inner aisles
+    # accessible around the gatling. Never queue the gate as a breach repair.
     order = [(3, v) for v in (0, 1, -1, 2, -2, 3)]
     order += [(u, v) for u in (2, 1, 0) for v in (-2, 3)]
     order += [(-1, v) for v in (-2, 3)]
-    order += [(-2, v) for v in range(-2, 4) if v != 1]
-    walls = [world(p) for p in order if turn.inside(world(p))]
+    order += [(-2, v) for v in range(-2, 4)]
+    walls = [world(p) for p in order if p != gate and turn.inside(world(p))]
     return mixed_layout(turn, cfg, towers, walls), walls
 
 
