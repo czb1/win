@@ -2,7 +2,7 @@
 from dataclasses import dataclass, field
 from heapq import heappop, heappush
 from .commands import command
-from .model import CHARACTERS, distance, neighbours
+from .model import CHARACTERS, WEAPONS, distance, neighbours
 from .navigation import check_time, DeadlineExceeded
 
 DESTROY_ROUNDS = 4
@@ -17,6 +17,7 @@ class ImpMemory:
     enemies: dict = field(default_factory=dict)
     gate_states: dict = field(default_factory=dict)
     night_wave: dict = field(default_factory=dict)
+    scout: dict = field(default_factory=dict)
 
     def observe(self, turn, mem):
         alive = {h.id for h in turn.imps}
@@ -58,7 +59,7 @@ class Threat:
     catch: bool = False
 
 
-def threats(turn, memory):
+def threats(turn, memory, friendly_robot_ids=()):
     result = []
     for enemy, seen_round in memory.enemies.values():
         speed = 2 if enemy.is_driving and turn.is_day else 1
@@ -69,6 +70,8 @@ def threats(turn, memory):
     # documented robot types have range 3; targetTeam is NOT ownership and does
     # not make an opponent-bound robot safe for an imp blocking its route.
     for robot in turn.robots:
+        if robot.id in friendly_robot_ids:
+            continue
         power = {"smallRobot": 5, "middleRobot": 10, "largeRobot": 20, "bossRobot": 40}
         result.append(Threat(robot.pos, max(3, robot.attack_range), 1,
                              max(1, robot.power or power.get(robot.kind, 40))))
@@ -119,9 +122,9 @@ def escape_route(turn, nav, ledger, hero, dangers, avoided):
     return None
 
 
-def escape(turn, nav, ledger, hero, dangers):
+def escape(turn, nav, ledger, hero, dangers, forbidden=()):
     """Always decide a legal local escape before any expensive route search."""
-    avoided = nav.memory.blocked(hero.id) if nav.memory else set()
+    avoided = (nav.memory.blocked(hero.id) if nav.memory else set()) | set(forbidden)
     options = [hero.pos] + [p for p in neighbours(hero.pos)
                             if turn.inside(p) and p not in turn.blocked
                             and p not in ledger.reserved and p not in avoided]
@@ -149,6 +152,121 @@ def escape(turn, nav, ledger, hero, dangers):
         ledger.used.add(hero.id)
     ledger.explain(hero.id, "imp_escape" if destination != hero.pos else "imp_no_safe_escape",
                    destination=destination, safe_exit=safe, threats=len(dangers))
+
+
+def sync_imp_scout(turn, mem):
+    """Keep one imp on a confirmed daily offense until that night's end."""
+    from .robot_assault import enemy_base
+    base = enemy_base(turn)
+    plan = mem.daily_pioneer_offense
+    summons = getattr(mem, 'robot_summon_state', {}) or {}
+    committed = (summons.get('day') == turn.day and summons.get('count', 0) > 0
+                 or bool(turn.summon_robots) and not turn.is_day)
+    planned = (plan.get('attack_day') == turn.day and turn.pioneer is not None
+               and plan.get('phase') in ('shop', 'robots', 'return'))
+    scout = mem.sabotage.scout
+    if turn.day < 2 or not turn.imps or base is None or not (planned or committed):
+        scout.clear()
+        return False
+    hero = turn.imps[0]  # The same imp selected for the existing gate duty.
+    identity = dict(day=turn.day, hero_id=hero.id, base=(base.id, base.pos))
+    if any(scout.get(key) != value for key, value in identity.items()):
+        scout.clear()
+        scout.update(identity, post=None)
+    mem.sabotage.gate_states.pop(hero.id, None)
+    mem.sabotage.targets.pop(hero.id, None)
+    mem.sabotage.progress.pop(hero.id, None)
+    return True
+
+
+def act_imp_scout(turn, memory, nav, ledger):
+    """Observe the assault from a safe post without taking a worker's role."""
+    from .model import pos
+    from .projectiles import line_cells
+    from .robot_assault import base_distance, enemy_base
+    from .scouting import _observation_points
+
+    state = memory.scout
+    hero = next((h for h in turn.imps if h.id == state.get('hero_id')), None)
+    base = enemy_base(turn)
+    if (hero is None or hero.id in ledger.used or state.get('day') != turn.day
+            or base is None):
+        return
+    dangers = threats(turn, memory, turn.summon_robot_ids)
+    lanes = set(ledger.summon_pending_positions)
+    for robot in turn.summon_robots:
+        action = ledger.commands.get(str(robot.id), {})
+        targets = action.get('targetPos', [])
+        aim = pos(targets[0]) if action.get('action') == 'attack' and targets else min(
+            base.cells, key=lambda p: (distance(robot.pos, p), p))
+        lanes.update(line_cells(robot.pos, aim))
+        if action.get('action') == 'move':
+            lanes.update(pos(p) for p in targets)
+    forbidden = lanes | ledger.tower_cells | set(ledger.operator_posts.values())
+    if hero.abnormal_state == 'dizzy':
+        ledger.used.add(hero.id)
+        ledger.reserved.add(hero.pos)
+        ledger.explain(hero.id, 'imp_scout_dizzy')
+        return
+    if exposed(hero.pos, dangers):
+        catches = {p for p in neighbours(hero.pos)
+                   if any(t.catch and distance(p, t.position) <= t.reach for t in dangers)}
+        escape(turn, nav, ledger, hero, dangers, forbidden | catches)
+        return
+    routes = []
+    try:
+        reserved = ledger.reserved | forbidden | danger_cells(turn, dangers, 1, nav.deadline)
+        weapons = {u.id: u for u in (*ledger.robot_known_enemies, *turn.enemies)
+                   if u.kind in WEAPONS}
+        points = _observation_points(turn, base)
+        for point in ledger.summon_pending_positions:
+            target = min(base.cells, key=lambda p: (distance(point, p), p))
+            points.update({p: 4 for p in line_cells(point, target) if base_distance(base, p) <= 4})
+        xs, ys = zip(*base.cells)
+        goals = {(x, y) for x in range(max(0, min(xs)-4), min(turn.width, max(xs)+5))
+                 for y in range(max(0, min(ys)-4), min(turn.height, max(ys)+5))
+                 if 3 <= base_distance(base, (x, y)) <= 4
+                 and (x, y) not in (turn.blocked - {hero.pos}) | reserved}
+        for goal in sorted(goals):
+            route = nav.search(hero, {goal}, reserved)
+            if route is not None:
+                coverage = sum(weight for p, weight in points.items() if distance(goal, p) <= 4)
+                base_cells = sum(distance(goal, p) <= 4 for p in base.cells)
+                routes.append((goal, route, coverage, base_cells))
+        routes.sort(key=lambda row: (
+            -row[3],
+            -sum(distance(row[0], u.pos) <= 4 for u in weapons.values()),
+            -(row[2] + (2 if row[0] == state.get('post') else 0)) / (4 + row[1][0]),
+            row[1][0], row[0]))
+    except DeadlineExceeded:
+        pass  # Still retain the role and a cheap legal lane-clearance step.
+    if routes:
+        goal, route, coverage, base_cells = routes[0]
+        state['post'] = goal
+        if route[1] is not None and ledger.add(hero.id, command('move', route[1])):
+            ledger.explain(hero.id, 'imp_scout_approach', post=goal, coverage=coverage,
+                           post_base_cells=base_cells, route_steps=route[0])
+            return
+        if route[1] is None:
+            ledger.used.add(hero.id)
+            ledger.reserved.add(hero.pos)
+            ledger.explain(hero.id, 'imp_scout_hold', post=goal, coverage=coverage,
+                           post_base_cells=base_cells)
+            return
+    if hero.pos in lanes:
+        avoided = nav.memory.blocked(hero.id) if nav.memory else set()
+        options = [p for p in neighbours(hero.pos) if turn.inside(p)
+                   and p not in turn.blocked | ledger.reserved | forbidden | avoided
+                   and not exposed(p, dangers)]
+        if options:
+            step = min(options, key=lambda p: (abs(base_distance(base, p) - 3), p))
+            if ledger.add(hero.id, command('move', step)):
+                state['post'] = None
+                ledger.explain(hero.id, 'imp_scout_yield', destination=step)
+                return
+    ledger.used.add(hero.id)
+    ledger.reserved.add(hero.pos)
+    ledger.explain(hero.id, 'imp_scout_route_blocked', post=state.get('post'))
 
 
 def rear_waiting_posts(turn, walls=(), gate=None):

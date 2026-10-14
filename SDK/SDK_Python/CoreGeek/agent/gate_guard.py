@@ -413,6 +413,10 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     if not turn.imps:
         return None
     hero = turn.imps[0]
+    if (mem.sabotage.scout.get('day') == turn.day
+            and mem.sabotage.scout.get('hero_id') == hero.id):
+        mem.sabotage.gate_states.pop(hero.id, None)
+        return None
     if turn.day == 1 and turn.is_day and turn.tick >= FIRST_DAY_IMP_RETURN_TICK and turn.station:
         # The fixed recall takes priority even with unfinished walls or an
         # almost-complete destroy channel, and lasts until night scheduling.

@@ -96,6 +96,7 @@ def prepare_daily_pioneer(turn, cfg, mem, nav, ledger):
 
     def skip(reason):
         state.update(phase='skipped', reason=reason)
+        state.pop('attack_day', None)
         ledger.spending_plan['daily_pioneer_offense'] = dict(day=turn.day, blocked=reason)
         return False
 
@@ -125,6 +126,9 @@ def prepare_daily_pioneer(turn, cfg, mem, nav, ledger):
         if len(_placements(turn, ledger, nav, state, BATCH_SIZE)) < BATCH_SIZE:
             return skip('insufficient_rear_positions')
         state['phase'] = 'shop'
+        # This day's funded, reachable trip is now an actual offense plan.
+        # Carry-over work must pass this check again or submit a new use.
+        state['attack_day'] = turn.day
         mem.task_target = mem.task_wait_cell = None
         mem.return_targets.pop(hero.id, None)
         mem.return_posts.pop(hero.id, None)
@@ -154,6 +158,7 @@ def prepare_daily_pioneer(turn, cfg, mem, nav, ledger):
             if positions and not (summons['pending'] and summons['pending'][0] == turn.round):
                 point = positions[0]
                 if ledger.add(hero.id, command('use', point, name=BOSS)):
+                    state['attack_day'] = turn.day
                     state['pending_use'] = turn.round, hero.inventory[BOSS], point
                     state['anchor'] = state['anchor'] or point
                     summons['count'] += 1
