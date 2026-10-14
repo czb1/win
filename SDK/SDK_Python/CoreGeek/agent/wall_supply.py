@@ -366,6 +366,9 @@ def other_worker(turn, cfg, mem, nav, ledger, hero, towers, sites):
         if buy_supply(turn, ledger, hero, supplies(turn, cfg, mem, nav, ledger, hero, urgent_only=True)):
             return
     from .economy import use_inventory
+    from .front_rebuild import act as rebuild_front
+    if rebuild_front(turn, cfg, mem, nav, ledger, hero):
+        return
     if job and job.get('kind') == 'sell':
         from .worker_jobs import _continue
         if _continue(turn, cfg, mem, nav, ledger, hero, job, towers, sites)[0]:

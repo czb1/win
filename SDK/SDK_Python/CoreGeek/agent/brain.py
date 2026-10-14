@@ -874,6 +874,10 @@ class Agent:
                 from .wall_supply import request_wall_passage
                 request_wall_passage(turn, self.cfg, mem, nav, ledger, watcher, walls)
                 coordinate_traffic(turn, self.cfg, mem, nav, ledger, returning)
+                from .front_rebuild import act as rebuild_front
+                for hero in turn.workers:
+                    if hero.id not in returning and hero.id not in ledger.traffic_holds:
+                        rebuild_front(turn, self.cfg, mem, nav, ledger, hero)
                 resume_morning(turn, self.cfg, mem, nav, ledger, returning)
                 # Reserve the watcher's repair budget before other dusk buyers
                 # spend it. The watcher may sell its own ore first.
