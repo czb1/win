@@ -755,7 +755,7 @@ class Agent:
                                   siege_radius=self.cfg.task_danger_radius, corridor=corridor or ())
                     ledger.reserved.update(corridor or ())
                 else:
-                    defend(turn, nav, ledger, pairs, ledger.operator_posts)
+                    defend(turn, nav, ledger, pairs, ledger.operator_posts, mem=mem)
                 if shared is not None and mem.gunner_post:
                     ledger.reserved.add(mem.gunner_post)
                 if not opening_boss:
@@ -822,7 +822,8 @@ class Agent:
                         finish_preparation(turn, self.cfg, mem, nav, ledger, hero, tower, walls)
                 corridor = (clear_gunner_route(turn, nav, ledger, mem, pairs)
                             if shared is not None and mem.gunner_id in returning else None)
-                defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning], ledger.operator_posts)
+                defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id in returning],
+                       ledger.operator_posts, mem=mem)
                 ledger.reserved.update(corridor or ())
                 if not turn.phase_task:
                     mem.recovery.resume(turn, self.cfg, mem, nav, ledger, returning)

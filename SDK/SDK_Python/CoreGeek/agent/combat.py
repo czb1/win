@@ -314,12 +314,15 @@ def threat(turn, robot):
     return score + {"bossRobot": 2, "largeRobot": 1, "middleRobot": .5}.get(robot.kind, .2)
 
 
-def select_targets(turn, tower, damage, deadline, controller=None, actor_positions=None, diagnostics=None):
+def select_targets(turn, tower, damage, deadline, controller=None, actor_positions=None, diagnostics=None,
+                   focus_id=None):
     def empty(reason):
         if diagnostics is not None:
             diagnostics["reason"] = reason
         return []
     if diagnostics is not None:
+        if tower.kind == "gatling":
+            diagnostics["focus_target_id"] = None
         diagnostics.update(controller_id=controller.id if controller else None,
                            origin_mode=turn.projectile_origin,
                            characters_block=turn.projectile_characters_block,
@@ -417,6 +420,13 @@ def select_targets(turn, tower, damage, deadline, controller=None, actor_positio
     shots = {point: hits for point, hits in shots.items() if not protected.intersection(hits)}
     if not shots:
         return empty("protected_robot_in_path")
+    if tower.kind == "gatling":
+        # A remembered aim point is insufficient: the same robot must still
+        # be the first physical hit on a legal ray at its observed position.
+        if not any(focus_id in hits for hits in shots.values()):
+            focus_id = None
+        if diagnostics is not None:
+            diagnostics["focus_target_id"] = focus_id
     result = []
     for _ in range(tower.level):
         check_time(deadline)
@@ -432,13 +442,17 @@ def select_targets(turn, tower, damage, deadline, controller=None, actor_positio
         if not ranked:
             return empty("no_legal_cone_targets")
         if tower.kind == "gatling":
-            # Rank the robot actually hit, rather than a high-HP aim point
-            # hidden behind a smaller robot. Health is the observed current HP;
-            # planned damage only avoids spending more bullets on a covered kill.
+            # Finish the remembered robot before comparing current HP. Planned
+            # lethal damage frees spare bullets, but does not confirm a death.
             health = {r.id: r.health for r in turn.robots}
             score, target, hits = min(ranked, key=lambda x: (
+                -int(x[2].get(focus_id, 0) > 0),
                 -max((health[uid] for uid, amount in x[2].items() if amount > 0), default=0),
                 -x[0], x[1]))
+            if focus_id is None and score > 0:
+                focus_id = next(uid for uid, amount in hits.items() if amount > 0)
+                if diagnostics is not None:
+                    diagnostics["focus_target_id"] = focus_id
         else:
             score, target, hits = min(ranked, key=lambda x: (-x[0], x[1]))
         if score <= 0 and not result:
@@ -527,7 +541,7 @@ def enemy_wall_targets(turn, tower, deadline, radius=6):
     return targets + [targets[0]] * (tower.level - len(targets))
 
 
-def defend(turn, nav, ledger, pairs=None, posts=None, damage=None):
+def defend(turn, nav, ledger, pairs=None, posts=None, damage=None, mem=None):
     damage = {} if damage is None else damage
     pairs = pairs if pairs is not None else assignments(turn, nav, ledger)
     for hero, tower in pairs:
@@ -556,7 +570,11 @@ def defend(turn, nav, ledger, pairs=None, posts=None, damage=None):
             ledger.explain(hero.id, "operator_waiting_for_passage", tower=tower.id)
         elif route and not turn.is_day and not tower.cooldown:
             planned = damage.copy()
-            targets = select_targets(turn, tower, planned, nav.deadline, controller=hero, diagnostics=report)
+            focus_id = mem.gatling_targets.get(tower.id) if mem is not None else None
+            targets = select_targets(turn, tower, planned, nav.deadline, controller=hero,
+                                     diagnostics=report, focus_id=focus_id)
+            if mem is not None and tower.kind == "gatling" and report["focus_target_id"] is None:
+                mem.gatling_targets.pop(tower.id, None)
             if not targets:
                 targets = enemy_wall_targets(turn, tower, nav.deadline, ledger.cfg.task_danger_radius)
             if targets:
@@ -564,6 +582,10 @@ def defend(turn, nav, ledger, pairs=None, posts=None, damage=None):
                                         "targetPos": [dump(p) for p in targets]}):
                     damage.update(planned)
                     report["reason"] = "fired"
+                    # Preview/crew scoring and rejected commands never acquire
+                    # a lock. Keep the first target until observation kills it.
+                    if mem is not None and tower.kind == "gatling":
+                        mem.gatling_targets[tower.id] = report["focus_target_id"]
                 else:
                     report["reason"] = "attack_rejected"
             else:
@@ -838,7 +860,7 @@ def shared_defend(turn, nav, ledger, mem, pairs, sites, siege_radius=6, corridor
     ledger.reserved.update(protected)
     try:
         defend(turn, nav, ledger, [(h, w) for h, w in pairs if h.id != mem.gunner_id],
-               ledger.operator_posts, damage=damage)
+               ledger.operator_posts, damage=damage, mem=mem)
     finally:
         ledger.reserved.difference_update(protected)
     hero = next((h for h, _ in pairs if h.id == mem.gunner_id), None)

@@ -11,7 +11,7 @@ from pathlib import PurePosixPath
 import re
 import shlex
 from .commands import command
-from .model import ORES, pos
+from .model import ORES, pos, distance
 from .recovery import Recovery
 from .treasure_clues import ITEM_DESCRIPTIONS, merge_clues, clue_status, merge_material_plan, resolve_location, retry_allowed
 from .wall_watch_state import WallWatchState
@@ -282,6 +282,7 @@ class Memory:
     gunner_post: tuple | None = None
     pioneer_relief: dict = field(default_factory=dict)
     gatling_operator_id: int | None = None
+    gatling_targets: dict = field(default_factory=dict)
     operator_yields: dict = field(default_factory=dict)
     traffic_leases: dict = field(default_factory=dict)
     pioneer_wait_post: tuple | None = None
@@ -401,6 +402,13 @@ class Memory:
     station_health_peaks: dict = field(default_factory=dict)
 
     def observe(self, turn, cfg):
+        gatlings = {w.id: w for w in turn.weapons if w.kind == "gatling"}
+        hostiles = {r.id: r for r in turn.robots if turn.threatens_us(r)}
+        self.gatling_targets = {
+            tower_id: robot_id for tower_id, robot_id in self.gatling_targets.items()
+            if not turn.is_day and tower_id in gatlings and robot_id in hostiles
+            and distance(gatlings[tower_id].pos, hostiles[robot_id].pos) <= gatlings[tower_id].attack_range
+        }
         self.sabotage.observe(turn, self)
         self.wall_watch.observe(turn, self)
         if turn.station:
