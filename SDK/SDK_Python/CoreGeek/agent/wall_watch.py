@@ -368,12 +368,10 @@ def repair_watch(turn, mem, nav, ledger, hero, sites):
     # Stunned robots may wake next turn: stop spending, but retain late watch.
     hostile = [r for r in turn.robots if turn.threatens_us(r)]
     held = hero.inventory['WallFixer']
-    pressure = False
     for wall in turn.ours:
         if wall.kind != 'wall' or wall.pos not in sites or wall.id in ledger.repair_claims:
             continue
         risk = repair_risk(turn, wall, mem)
-        pressure |= bool(risk.nearby)
         if risk.needed:
             critical.append(wall)
         if not held:
@@ -427,26 +425,30 @@ def repair_watch(turn, mem, nav, ledger, hero, sites):
                                 reason=risk.reason if risk.needed else 'preposition')
         return accepted
     state.patrol_target, state.patrol_post = None, None
-    from .night_economy import awaiting_night_wave
-    threatened = bool(awaiting_night_wave(turn, mem) or critical or pressure
-                      or any(distance(hero.pos, r.pos) <= r.attack_range + 2 for r in hostile))
-    if not held and not threatened:
-        ledger.explain(hero.id, 'wall_watch_empty_released', held=0)
+    if not held:
+        # Empty-handed watchers cannot repair, even while walls are under fire.
+        # The income allocator still checks real robot danger along its route.
+        ledger.explain(hero.id, 'wall_watch_empty_released', held=0,
+                       critical=[w.id for w in critical])
         mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, action='release',
-                                reason='no_pack_safe_work', held=0)
+                                reason='no_pack_income', held=0)
         return False
-    # Stay at a valid inside post instead of chasing the weakest wall without
-    # a pack or a repair target. An outside watcher still returns to shelter.
+    # A stocked watcher stays inside even without an immediate repair target.
+    # An outside watcher returns to shelter before waiting for damage.
     stage = staging_wall(turn, sites)
     home = (watch_route(turn, nav, ledger, mem, hero, sites, stage)
             if hero.pos not in inside and stage else None)
+    if hero.pos not in inside and home is None:
+        # Re-enter a reachable interior pocket before seeking a specific wall.
+        # A gunner separating the pockets must not strand a stocked watcher.
+        home = watch_route(turn, nav, ledger, mem, hero, sites)
     action = 'move' if home and home[1] is not None else 'hold'
     if action == 'move':
         ledger.add(hero.id, command('move', home[1]))
     elif hero.pos in inside:
         ledger.used.add(hero.id)
         ledger.reserved.add(hero.pos)
-    reason = 'no_pack' if not held else 'no_route' if critical else 'inside_watch'
+    reason = 'no_route' if critical else 'inside_watch'
     ledger.explain(hero.id, 'wall_watch_' + reason, held=held, critical=[w.id for w in critical])
     mem.wall_watch.decision(turn, 'wall_watch_decision', actor=hero.id, action=action,
                             reason=reason, held=held, critical=[w.id for w in critical])

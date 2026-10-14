@@ -109,7 +109,7 @@ class WorkerProductivityTests(unittest.TestCase):
         self.assertEqual(memory.wall_watch.patrol_target, target)
         self.assertEqual(ledger.commands['12']['action'], 'move')
 
-    def test_empty_watch_releases_safe_worker_but_holds_under_attack(self):
+    def test_empty_watch_releases_worker_even_under_attack(self):
         for threatened in (False, True):
             data, cfg = perimeter(packs=0)
             if threatened:
@@ -118,8 +118,9 @@ class WorkerProductivityTests(unittest.TestCase):
             turn, _, nav, ledger = setup(data, cfg)
             locked = repair_watch(turn, Memory(wall_watch_id=12), nav, ledger,
                                   turn.units[12], ledger.wall_cells)
-            self.assertEqual(locked, threatened)
-            self.assertEqual(12 in ledger.used, threatened)
+            self.assertFalse(locked)
+            self.assertNotIn(12, ledger.used)
+            self.assertEqual(ledger.notes[12]['reason'], 'wall_watch_empty_released')
             self.assertFalse(ledger.commands)
 
     def test_occupied_patrol_post_is_replanned_without_entering_teammate(self):

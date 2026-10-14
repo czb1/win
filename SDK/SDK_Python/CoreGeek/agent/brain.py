@@ -830,6 +830,8 @@ class Agent:
                 if not opening_boss:
                     summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls)
                 for hero in turn.heroes:
+                    empty_watch = bool(watcher and hero.id == watcher.id
+                                       and not hero.inventory['WallFixer'])
                     if (hero.kind == 'worker' and hero.id not in ledger.used and turn.day >= 2
                             and hero.id not in {h.id for h, _ in pairs}
                             and (not night_hostiles(turn)
@@ -849,8 +851,9 @@ class Agent:
                             vacate_site(turn, nav, ledger, hero, towers + walls + [mem.gunner_post])
                         if hero.id in ledger.used:
                             continue
-                        if hero.kind == "worker" and not awaiting_night_wave(turn, mem):
-                            night_mine(turn, self.cfg, mem, nav, ledger, hero, dedicated=pioneer_gunner or shared is not None)
+                        if hero.kind == "worker" and (empty_watch or not awaiting_night_wave(turn, mem)):
+                            night_mine(turn, self.cfg, mem, nav, ledger, hero,
+                                       dedicated=empty_watch or pioneer_gunner or shared is not None)
                         elif turn.station:
                             walk(nav, ledger, hero, turn.station.cells)
             else:
