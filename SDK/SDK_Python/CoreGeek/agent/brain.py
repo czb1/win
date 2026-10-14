@@ -27,7 +27,7 @@ from .mining import night_mine
 from .night_economy import (hostiles as night_hostiles, release_gatling, work as night_work,
                             resume_morning, awaiting_night_wave)
 from .wall_watch import select_watch, prepare_watch, repair_watch
-from .sabotage import act_imps
+from .sabotage import act_imps, sync_imp_scout, act_imp_scout
 from .gate_guard import prepare_gate_guard
 from .robot_assault import (FIRST_DAY_SUMMON_RADIUS, RobotAssaultMemory, act_robots,
                            choose_summon_position, enemy_base)
@@ -569,9 +569,12 @@ class Agent:
                     if worker.id not in ledger.used:
                         build(turn, self.cfg, mem, nav, ledger, worker, towers,
                               lambda i: self.cfg.loadout[i % len(self.cfg.loadout)])
+            if turn.day >= 2:
+                sync_imp_scout(turn, mem)
             gate_guard = prepare_gate_guard(turn, self.cfg, mem, nav, ledger, towers, walls)
             nav.gate_guard = gate_guard
-            act_imps(turn, mem.sabotage, nav, ledger)
+            if turn.day == 1:
+                act_imps(turn, mem.sabotage, nav, ledger)
             if not turn.is_day:
                 act_robots(turn, mem.robot_assault, nav, ledger)
             h = turn.pioneer
@@ -958,6 +961,26 @@ class Agent:
         # Workers plan first. Their failed gate routes and accepted movements
         # decide whether the imp holds, yields, or returns to the opening.
         nav.gate_guard = None
+        if turn.day >= 2:
+            was_scout = bool(mem.sabotage.scout)
+            if sync_imp_scout(turn, mem):
+                # Gate movement is finalized here, after the daily purchase
+                # and all submitted summons. Release its provisional lock so
+                # a new same-turn offense cannot send the imp home first.
+                if gate_guard is not None:
+                    if str(gate_guard.hero.id) not in ledger.commands:
+                        ledger.used.discard(gate_guard.hero.id)
+                    gate_guard = None
+                act_imp_scout(turn, mem.sabotage, nav, ledger)
+            elif was_scout:
+                try:
+                    gate_guard = prepare_gate_guard(turn, self.cfg, mem, nav, ledger, towers, walls)
+                except DeadlineExceeded:
+                    budget_reached = True
+            try:
+                act_imps(turn, mem.sabotage, nav, ledger)
+            except DeadlineExceeded:
+                budget_reached = True
         if gate_guard is not None:
             gate_guard.finish()
         catch_nearby_imp(turn, mem, ledger)
