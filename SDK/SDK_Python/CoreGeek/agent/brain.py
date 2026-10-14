@@ -80,17 +80,26 @@ def observe_robot_summons(turn, mem):
     state.setdefault("anchor", None)
     state.setdefault("mode", None)
     state.setdefault("pending_plan", None)
-    if mem.night_scout.cancelled:
+    if turn.day != 6 and mem.night_scout.cancelled:
         state["buyer"] = None
     if state["observed_round"] == turn.round:
         return state
     results = turn.raw.get("lastRoundRoleActionResults") or {}
     purchase = state["pending_purchase"]
     if purchase and purchase[0] < turn.round:
-        previous_round, actor, quantity = purchase
-        if (previous_round == turn.round - 1
-                and results.get(str(actor), results.get(actor)) is False):
+        previous_round, actor, quantity, *receipt = purchase
+        rejected = (previous_round == turn.round - 1
+                    and results.get(str(actor), results.get(actor)) is False)
+        carrier = next((r for r in turn.raw.get('teamOur', {}).get('roles', [])
+                        if r['id'] == actor), None)
+        # Dead roles retain their backpacks. A delivered batch is still paid
+        # stock, not permission to spend another five orders on another actor.
+        missing = bool(receipt and carrier is not None and
+                       (carrier.get('backpack') or []).count('BossRobotSummonOrder') < receipt[0] + quantity)
+        if rejected or missing:
             state["purchased"] -= quantity
+            if receipt:
+                state['late_batch_bought'] = False
         state["pending_purchase"] = None
     station_purchase = state["station_pending"]
     if station_purchase and station_purchase[0] < turn.round:
@@ -121,7 +130,7 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                       use_only=False):
     """Use carried orders or prepare the strongest affordable surplus order."""
     state = observe_robot_summons(turn, mem)
-    if mem.night_scout.cancelled:
+    if turn.day != 6 and mem.night_scout.cancelled:
         reason = mem.night_scout.cancel_reason or 'enemy_gatling_spotted'
         ledger.spending_plan['robot_blocked'] = reason
         ledger.spending_plan['robot_use_blocked'] = reason
@@ -137,8 +146,14 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         return False
     ledger.summon_pending_positions = state["positions"].copy()
     ledger.summon_daily_count = state["count"]
-    ledger.robot_summon_anchor = state["anchor"] if turn.day == 1 else None
-    ledger.robot_summon_mode = state["mode"] if turn.day == 1 else None
+    late = turn.day == 6
+    if late:
+        ledger.late_known_weapons = tuple(
+            getattr(getattr(mem, 'robot_assault', None), 'buildings', {}).values())
+    ledger.robot_summon_anchor = state["anchor"] if turn.day == 1 or late else None
+    ledger.robot_summon_mode = state["mode"] if turn.day == 1 or late else None
+    if late and state.get('late_entry') is not None:
+        ledger.robot_assault_entry = state['late_entry']
     excluded = set(excluded)
     pioneer_plan = first_day_pioneer_plan_active(turn, mem)
     pioneer_summoning = (pioneer_plan and mem.first_day_pioneer.get('phase') == 'robots'
@@ -148,6 +163,10 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         excluded.add(turn.pioneer.id)
     free = [hero for hero in turn.heroes
             if hero.id not in ledger.used and hero.id not in excluded]
+    if late:
+        free = [hero for hero in free if hero.id != mem.wall_watch_id
+                and hero.id not in mem.return_targets
+                and mem.daytime_jobs.get(hero.id, {}).get('kind') not in ('sell', 'build', 'buy', 'use')]
     prepare_paid_upgrades(turn, mem, nav, ledger, free)
     free = [hero for hero in free if hero.id not in ledger.used]
     carriers = sorted(((-rank, hero.kind != 'worker', hero.id, hero, name)
@@ -157,7 +176,8 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     can_use = (turn.is_day and state["count"] < DAILY_SUMMON_LIMIT
                and not (state["pending"] and state["pending"][0] == turn.round))
     rear = (scouted_rear_summon_position(turn, ledger, nav.deadline)
-            if carriers and can_use and turn.tick >= FIRST_DAY_SCOUT_TICK else None)
+            if carriers and can_use and turn.tick >= FIRST_DAY_SCOUT_TICK
+            and not (late and state['anchor'] is not None) else None)
     if turn.day == 1 and not pioneer_summoning:
         scout = mem.night_scout
         base = enemy_base(turn)
@@ -184,7 +204,7 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                     state["pending"] = turn.round, hero.id, position
                     state["pending_plan"] = state["anchor"], state["mode"]
                     state["buyer"] = None
-                    if turn.day == 1 and (state["anchor"] is None
+                    if (turn.day == 1 or late) and (state["anchor"] is None
                             or state["mode"] != ledger.robot_summon_mode
                             or distance(position, state["anchor"]) > FIRST_DAY_SUMMON_RADIUS):
                         state["anchor"] = ledger.robot_summon_anchor = position
@@ -200,7 +220,8 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
     if pioneer_plan:
         ledger.spending_plan['robot_blocked'] = 'first_day_pioneer_after_tasks'
         return False
-    if turn.day > cfg.robot_purchase_last_day:
+    from .late_offense import purchase_day_allowed, evaluate, purchase_fits
+    if not purchase_day_allowed(turn, cfg):
         state["buyer"] = None
         ledger.spending_plan['robot_blocked'] = 'purchase_days_finished'
         return False
@@ -238,6 +259,13 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                 and mem.daytime_jobs.get(hero.id, {}).get('kind') not in
                     (('buy', 'use') if turn.day == 1 else ('build', 'buy', 'use'))]
         ledger.spending_plan['pioneer_reserved_for_task'] = True
+    late_plan = evaluate(turn, cfg, mem, nav, ledger, state, reserve) if late else None
+    if late and late_plan is None:
+        return False
+    if late:
+        reserve = late_plan['reserve']
+        item_only = 'BossRobotSummonOrder'
+        quantity_limit = min(quantity_limit or 5, late_plan['quantity'])
     reserve = max(reserve, first_day_purchase_reserve(turn, mem, ledger, include_robots=False))
     available = max(0, ledger.gold - reserve)
     names = [name for name in reversed(SUMMON_ORDERS)
@@ -269,6 +297,12 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
                                        shop_only, quantity, reserved_uses=held)
             if plan:
                 count, shop, route = plan
+                if late:
+                    count = next((n for n in range(count, late_plan['minimum'] - 1, -1)
+                                  if purchase_fits(turn, cfg, mem, nav, ledger, hero, shop, n, held)), 0)
+                    if not count:
+                        ledger.spending_plan['robot_blocked'] = 'late_offense_purchase_return_deadline'
+                        continue
                 if turn.day == 1 and state['purchased'] + count < FIRST_DAY_ROBOT_PURCHASE_MINIMUM:
                     small_batches.append(count)
                     continue
@@ -298,7 +332,12 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
             ledger.remember_work(hero, 'robot_buy', shop, name=name, quantity=quantity)
         else:
             state["purchased"] += quantity
-            state["pending_purchase"] = turn.round, hero.id, quantity
+            state["pending_purchase"] = ((turn.round, hero.id, quantity,
+                                          hero.inventory[name]) if late else
+                                         (turn.round, hero.id, quantity))
+            if late:
+                state.update(late_batch_bought=True, late_entry=late_plan['entry'],
+                             anchor=late_plan['anchor'], mode='late_wave')
         state["buyer"] = hero.id
         ledger.spending_plan.pop('robot_blocked', None)
         ledger.explain(hero.id, "prepare_highest_robot", item=name,
@@ -788,7 +827,8 @@ class Agent:
                     if watcher.id == ledger.income_worker_id:
                         emit_event('income_preempted', dict(actor=watcher.id, reason='wall_watch'), 'economy')
                         ledger.income_worker_id = None
-                ledger.gold -= min(watch_gold, ledger.gold)
+                ledger.watch_gold_reserved = min(watch_gold, ledger.gold)
+                ledger.gold -= ledger.watch_gold_reserved
                 scout_excluded = returning | ({watcher.id} if watcher else set()) | opening_scout_excluded
                 staged_scout = scout
                 enemy_station = enemy_base(turn)

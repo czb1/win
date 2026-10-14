@@ -283,6 +283,12 @@ def voucher_for(building):
     return f"{prefix}UpgradeVoucher{building.level}" if prefix and building.level < 3 else None
 
 
+def station_voucher_needed(turn, hero, name):
+    """Buy one usable current-tier base voucher for its actual carrier."""
+    return bool(name and turn.station and hero and hero.kind == 'pioneer'
+                and name == voucher_for(turn.station) and not hero.inventory[name])
+
+
 def first_day_scout_upgrades(turn, mem, hero):
     """Only the recalled opening scout may spend day-one weapon vouchers."""
     return bool(mem and turn.day == 1 and turn.is_day and mem.night_scout.cancelled
@@ -444,6 +450,8 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                     or dedicated and building.kind == 'wall' and hero.id != mem.wall_watch_id):
                 continue
             if building.kind == 'station':
+                if not station_voucher_needed(turn, hero, voucher_for(building)):
+                    continue
                 for level in (1, 2):
                     carried[f'StationUpgradeVoucher{level}'] = hero.inventory[f'StationUpgradeVoucher{level}']
             if target_sites is not None and building.pos not in target_sites:
@@ -455,6 +463,10 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
                 continue
             if not wall_purchase_allowed(turn, building, mem):
                 continue
+            if building.kind == 'wall':
+                from .wall_supply import priority_wall, defer_side_upgrades
+                if defer_side_upgrades(turn, mem) and not priority_wall(turn, mem, building, ledger.wall_cells):
+                    continue
             # Account for every voucher already carried, including vouchers
             # for the next level in a single shop trip. Never buy a duplicate.
             while name and carried[name] and wall_purchase_allowed(turn, building, mem):
@@ -612,6 +624,9 @@ def supplies(turn, cfg, mem, nav, ledger, hero, reserve=0, urgent_only=False,
 
 def buy_supply(turn, ledger, hero, plan):
     if not plan or not hero.space:
+        return False
+    if plan[0].startswith('StationUpgradeVoucher') and (
+            plan[2] != 1 or not station_voucher_needed(turn, hero, plan[0])):
         return False
     name, route, num = plan
     if route[1] is None:
