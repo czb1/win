@@ -185,8 +185,11 @@ def front_sites(turn, sites):
 
 
 def wall_level_limit(turn, position, sites=None):
-    """Every side can reach level three; upgrade order controls the stages."""
-    return 3
+    """Fund level three on the full blueprint's front, level two elsewhere."""
+    if sites is None:
+        sites = [*getattr(turn, 'planned_wall_sites', ()),
+                 *(w.pos for w in turn.ours if w.kind == 'wall')]
+    return 3 if position in front_sites(turn, sites) else 2
 
 
 def delivery_destination(turn, nav, ledger, hero):

@@ -262,7 +262,7 @@ class SixthDayOffenseTests(unittest.TestCase):
         self.assertTrue(mem.robot_summon_state['late_batch_bought'])
         self.assertFalse(ledger.purchases)
 
-    def test_front_and_damaged_side_walls_keep_both_upgrade_tiers(self):
+    def test_front_reaches_three_and_damaged_side_stops_at_two(self):
         data, cfg = self.data()
         walls = [r for r in data['teamOur']['roles'] if r['roleType'] == 'wall']
         front = next(r for r in walls if pos(r['pos']) == (8, 5))
@@ -272,8 +272,8 @@ class SixthDayOffenseTests(unittest.TestCase):
         turn, _, _, ledger = setup(data, cfg)
         mem = Memory(wall_watch_id=1)
         report = shopping_list(turn, mem, turn.workers[0], ledger.wall_cells, 1000, 100)
-        self.assertEqual(report['order'], {V1: 2, V2: 2})
-        self.assertGreater(report['deferred'][V2], 0)
+        self.assertEqual(report['order'], {V1: 2, V2: 1})
+        self.assertEqual(report['demand'][V2], 1)
         self.assertEqual(shopping_list(turn, mem, turn.workers[0], ledger.wall_cells, 20, 100)['order'], {V1: 1})
         data['roundNo'] = 780 + 40
         turn, _, _, ledger = setup(data, cfg)

@@ -160,7 +160,11 @@ def rebuilding_wall(turn, building, mem):
 
 def wall_upgrade_allowed(turn, building, mem=None, paid=False):
     """Purchase stages must not block an already paid, matching wall voucher."""
-    if building.kind == "wall" and building.level >= wall_level_limit(turn, building.pos):
+    # The late supplier's V2 stock is budgeted for the front. Do not consume
+    # it on a side L3 just to continue the preceding L1 delivery's face.
+    late_supply = turn.day >= RESOURCE_POLICY_DAY and mem and mem.wall_watch_id is not None
+    if (building.kind == "wall" and building.level >= wall_level_limit(turn, building.pos)
+            and (not paid or building.level >= 3 or late_supply)):
         return False
     if building.kind != "wall" or paid or rebuilding_wall(turn, building, mem):
         return True

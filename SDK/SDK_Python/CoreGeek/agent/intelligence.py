@@ -454,6 +454,8 @@ class Memory:
                     [self.wall_rebuild_levels[p]]
                     + [max(levels.get(q, 1), self.wall_rebuild_levels.get(q, 1)) for q in adjacent]))
         for p, level in list(self.wall_rebuild_levels.items()):
+            level = min(level, wall_level_limit(turn, p, sites))
+            self.wall_rebuild_levels[p] = level
             if levels.get(p, 0) >= level:
                 del self.wall_rebuild_levels[p]
         self.wall_health = current_walls

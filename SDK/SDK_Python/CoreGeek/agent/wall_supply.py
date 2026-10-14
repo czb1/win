@@ -35,38 +35,43 @@ def active(turn, mem):
 
 
 def requirements(turn, mem, hero, sites):
-    """Unbuilt planned walls count as L1; stock is counted across all carriers."""
+    """Stock actual walls and priority front/side breaches, net of all stock."""
+    from .economy_plan import front_sites, wall_level_limit
+    from .navigation import wall_gaps
     walls = {w.pos: w for w in turn.ours if w.kind == 'wall'}
     structures = {p for b in (*turn.ours, *turn.enemies) if b.kind not in HEROES for p in b.cells}
-    gaps = {p for p in sites if p not in structures and p not in mem.build_failures
-            and turn.zones.get(p, 'land') == 'land'}
+    front = set(front_sites(turn, sites))
+    rear_x = (min(p[0] for p in sites) if turn.station and turn.station.pos[0] < turn.width / 2
+              else max(p[0] for p in sites)) if sites else None
+    # Share the material builder's breach evidence. Untouched expansion,
+    # especially the unfinished rear, is not a prepaid future L1 wall.
+    breaches = wall_gaps(turn, sites, mem.wall_hits) | set(mem.wall_rebuild_levels)
+    gaps = {p for p in set(sites) & breaches if p not in structures
+            and p not in mem.build_failures and turn.zones.get(p, 'land') == 'land'
+            and (p in front or p[0] != rear_x)}
     one = sum(w.level == 1 for w in walls.values()) + len(gaps)
     two = sum(w.level == 2 for w in walls.values())
     held = Counter(item for h in turn.heroes for item in h.backpack)
-    from .economy_plan import front_sites
-    front = set(front_sites(turn, sites))
     key_walls = sum(1 for w in walls.values() if w.level < 3
-                    and (w.pos in front or mem.wall_hits.get(w.pos, 0)
-                         or w.health < WALL_MAX_HEALTH[w.level - 1]
-                         or w.pos in mem.wall_rebuild_levels))
-    key_gaps = sum(bool(p in front or mem.wall_hits.get(p, 0)) for p in gaps)
+                    and wall_level_limit(turn, w.pos, sites) == 3)
+    front_three = max(0, key_walls + len(gaps & front) - held[V2])
     key_one = sum(w.level == 1 and priority_wall(turn, mem, w, sites)
-                  for w in walls.values()) + key_gaps
+                  for w in walls.values()) + len(gaps)
     target = min(hero.capacity, mem.wall_watch.stock_target(turn))
     previous = mem.wall_watch.history[-1] if mem.wall_watch.history else None
     safety = min(target, max(3, previous.used + 2) if previous and previous.unmet else 3)
     return dict(one=one, two=two, gaps=len(gaps),
                 demand={V1: max(0, one - held[V1]),
-                        V2: max(0, one + two - held[V2]),
+                        V2: front_three,
                         PACK: max(0, target - hero.inventory[PACK])},
                 safety=max(0, safety - hero.inventory[PACK]), target=target,
-                key_three=max(0, key_walls + key_gaps - held[V2]),
+                key_three=front_three,
                 key_one=max(0, key_one - held[V1]),
                 stockout=bool(previous and previous.unmet))
 
 
 def shopping_list(turn, mem, hero, sites, gold, space):
-    """Minimum packs, all affordable L2, then pressure-aware L3/extra packs."""
+    """Minimum packs, L2 prerequisites, then front-only L3/extra packs."""
     report = requirements(turn, mem, hero, sites)
     demand, order = report['demand'], Counter()
     gold, space = max(0, gold), max(0, space)
@@ -160,7 +165,7 @@ def _shops(turn, cfg, mem, nav, ledger, hero, home, actions, preferred=None):
 def prepare(turn, cfg, mem, nav, ledger, hero, sites):
     """Own the watcher's full day; reserve the unbought order exactly once."""
     from .mining import earn, sale_inventory
-    from .economy import use_inventory, batch_sale_ready
+    from .economy import use_inventory, batch_sale_ready, wall_upgrade_allowed
     previous_job = mem.daytime_jobs.get(hero.id, {})
     state = mem.wall_supply_trip
     if state.get('key') != (turn.day, hero.id):
@@ -310,7 +315,8 @@ def prepare(turn, cfg, mem, nav, ledger, hero, sites):
         feasible = []
         for wall in walls:
             name = V1 if wall.level == 1 else V2 if wall.level == 2 else None
-            if not name or not hero.inventory[name] or wall.id in ledger.upgrade_claims:
+            if (not name or not hero.inventory[name] or wall.id in ledger.upgrade_claims
+                    or not wall_upgrade_allowed(turn, wall, mem, paid=True)):
                 continue
             route = dusk_route(turn, nav, ledger, hero, wall.cells,
                                home_override=(home, True))

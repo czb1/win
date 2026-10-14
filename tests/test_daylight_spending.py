@@ -48,6 +48,10 @@ def setup(data, cfg):
 class DaylightSpendingTests(unittest.TestCase):
     def test_spare_fixer_does_not_exclude_worker_from_voucher_purchase(self):
         data, cfg = case(tick=35)
+        # Exercise a needed front L3 batch; side L2 walls are complete.
+        for r in data['teamOur']['roles']:
+            if r['roleType'] == 'wall' and r['pos']['x'] == 8:
+                r.update(level=2, health=1500)
         data['teamOur']['roles'] = [r for r in data['teamOur']['roles'] if r['id'] not in (2, 3)]
         data['teamOur']['roles'][1]['pos'] = {'x': 6, 'y': 10}
         turn, cfg, nav, ledger = setup(data, cfg)
@@ -64,28 +68,28 @@ class DaylightSpendingTests(unittest.TestCase):
     def test_foreign_delivery_is_not_charged_to_new_buyers_route(self):
         data = payload(650+55, [unit(13, 'station', 0, 6, health=1500),
             unit(1, 'worker', 4, 6, health=500),
-            unit(2, 'worker', 20, 2, health=500, backpack=['WallUpgradeVoucher2']),
+            unit(2, 'worker', 5, 24, health=500, backpack=['WallUpgradeVoucher2']),
             unit(20, 'rocket', 3, 6, level=3),
-            unit(30, 'wall', 20, 3, level=2, health=1300),
+            unit(30, 'wall', 5, 25, level=2, health=1300),
             unit(31, 'wall', 5, 5, level=2, health=1500),
-            unit(32, 'wall', 25, 5, level=3, health=2000)])
-        data['mapInfo'].update(width=30, zones=[{'neutralType':'weaponShop','pos':{'x':4,'y':7}}])
+            unit(32, 'wall', 5, 15, level=3, health=2000)])
+        data['mapInfo'].update(width=30, height=32, zones=[{'neutralType':'weaponShop','pos':{'x':4,'y':7}}])
         data['weaponShopList'] = [{'name':'WallUpgradeVoucher2','price':30}]
         turn, cfg, nav, ledger = setup_case(data, layout_mode='explicit', loadout=['rocket'],
-            weapon_cells=[[3,6]], wall_cells=[[20,3],[5,5],[25,5]])
+            weapon_cells=[[3,6]], wall_cells=[[5,25],[5,5],[5,15]])
         plan = supplies(turn, cfg, Memory(), nav, ledger, turn.workers[0], bulk=True)
         self.assertEqual(plan, ('WallUpgradeVoucher2', (0, None), 1))
 
     def test_nearby_equal_stage_wall_can_be_bought_before_tick_sixty(self):
         data = payload(650+55, [unit(13,'station',0,6,health=1500),
             unit(1,'worker',4,6,health=500),unit(20,'rocket',3,6,level=3),
-            unit(30,'wall',20,3,level=2,health=1300),
+            unit(30,'wall',5,25,level=2,health=1300),
             unit(31,'wall',5,5,level=2,health=1500),
-            unit(32,'wall',25,5,level=3,health=2000)])
-        data['mapInfo'].update(width=30,zones=[{'neutralType':'weaponShop','pos':{'x':4,'y':7}}])
+            unit(32,'wall',5,15,level=3,health=2000)])
+        data['mapInfo'].update(width=30,height=32,zones=[{'neutralType':'weaponShop','pos':{'x':4,'y':7}}])
         data['weaponShopList']=[{'name':'WallUpgradeVoucher2','price':30}]
         turn,cfg,nav,ledger=setup_case(data,layout_mode='explicit',loadout=['rocket'],
-            weapon_cells=[[3,6]],wall_cells=[[20,3],[5,5],[25,5]])
+            weapon_cells=[[3,6]],wall_cells=[[5,25],[5,5],[5,15]])
         self.assertEqual(supplies(turn,cfg,Memory(),nav,ledger,turn.workers[0],bulk=True)[2],1)
 
     def test_courier_returns_to_inner_wall_but_operator_keeps_exact_post(self):
@@ -119,7 +123,7 @@ class DaylightSpendingTests(unittest.TestCase):
                                     turn.workers[0],list(ledger.wall_cells))
         self.assertEqual((locked,funds),(True,0))
         self.assertFalse(ledger.purchases)
-        self.assertEqual(ledger.notes[1]['conditions']['deferred']['WallUpgradeVoucher2'], 14)
+        self.assertEqual(ledger.notes[1]['conditions']['deferred']['WallUpgradeVoucher2'], 0)
 
     def test_daytime_damage_does_not_trigger_fixer_purchase(self):
         data,cfg=case()
@@ -182,6 +186,10 @@ class DaylightSpendingTests(unittest.TestCase):
 
     def test_planner_deduplicates_batch_reservations_and_protects_base_budget(self):
         data,cfg=case(tick=35)
+        # Exercise a needed front L3 batch; side L2 walls are complete.
+        for r in data['teamOur']['roles']:
+            if r['roleType'] == 'wall' and r['pos']['x'] == 8:
+                r.update(level=2, health=1500)
         turn,cfg,nav,ledger=setup(data,cfg)
         actors,reserve=plan_day_spending(turn,cfg,Memory(),nav,ledger,[(7,4)])
         self.assertTrue(actors)
@@ -192,6 +200,10 @@ class DaylightSpendingTests(unittest.TestCase):
 
     def test_two_workers_do_not_purchase_the_same_wall_batch(self):
         data,cfg=case(tick=35)
+        # Exercise a needed front L3 batch; side L2 walls are complete.
+        for r in data['teamOur']['roles']:
+            if r['roleType'] == 'wall' and r['pos']['x'] == 8:
+                r.update(level=2, health=1500)
         data['teamOur']['roles'][1]['pos']={'x':6,'y':10}
         data['teamOur']['roles'][2]['pos']={'x':5,'y':10}
         turn,cfg,nav,ledger=setup(data,cfg);mem=Memory()
@@ -276,11 +288,15 @@ class DaylightSpendingTests(unittest.TestCase):
 
     def test_robot_continuation_rechecks_new_defensive_purchase_budget(self):
         data,cfg=case(tick=35,gold=100)
+        # Exercise a needed front L3 batch; side L2 walls are complete.
+        for r in data['teamOur']['roles']:
+            if r['roleType'] == 'wall' and r['pos']['x'] == 8:
+                r.update(level=2, health=1500)
         turn,cfg,nav,ledger=setup(data,cfg)
         mem=Memory(daytime_jobs={2:dict(kind='robot_buy',target=(6,11),
                                       name='MiddleRobotSummonOrder',quantity=1)})
         resume_daytime_jobs(turn,cfg,mem,nav,ledger,[(7,4)],list(ledger.wall_cells),set())
-        self.assertEqual(ledger.commands['2'], command('move', (6,10)))
+        self.assertEqual(ledger.commands['2'], command('move', (7,10)))
         self.assertEqual(ledger.work_jobs[2], dict(kind='buy',target=(6,11),
                                                  name='WallUpgradeVoucher2',quantity=3))
         self.assertNotIn(2,mem.daytime_jobs)
@@ -288,6 +304,10 @@ class DaylightSpendingTests(unittest.TestCase):
 
     def test_agent_reports_spending_rejections_without_changing_cached_turn(self):
         data,cfg=case(tick=69)
+        # Exercise a needed front L3 batch; side L2 walls are complete.
+        for r in data['teamOur']['roles']:
+            if r['roleType'] == 'wall' and r['pos']['x'] == 8:
+                r.update(level=2, health=1500)
         agent=Agent(cfg);response=agent.decide(copy.deepcopy(data))
         self.assertEqual(agent.decide(copy.deepcopy(data)),response)
         turn,cfg,nav,ledger=setup(data,cfg)

@@ -57,11 +57,11 @@ class WallSupplyTripTests(unittest.TestCase):
                 prepare_watch(t, cfg, Memory(wall_watch_id=1), nav, l, t.units[1], l.wall_cells)
             new_trip.assert_not_called()
 
-    def test_mixed_levels_and_unbuilt_site_prefetch_both_tiers(self):
+    def test_mixed_levels_ignore_untouched_expansion(self):
         t, _, _, l = self.setup(self.case(backpack=[V1, V2, PACK]))
         report = requirements(t, Memory(wall_watch_id=1), t.units[1], l.wall_cells)
-        self.assertEqual((report['one'], report['two'], report['gaps']), (2, 1, 1))
-        self.assertEqual(report['demand'], {V1: 1, V2: 2, PACK: 3})
+        self.assertEqual((report['one'], report['two'], report['gaps']), (1, 1, 0))
+        self.assertEqual(report['demand'], {V1: 0, V2: 1, PACK: 3})
 
     def test_hit_counts_count_walls_not_number_of_hits(self):
         data = self.case()
@@ -70,14 +70,14 @@ class WallSupplyTripTests(unittest.TestCase):
         t, _, _, l = self.setup(data)
         report = requirements(t, Memory(wall_watch_id=1, wall_hits={(1, 11): 100}),
                               t.units[1], l.wall_cells)
-        self.assertEqual(report['key_three'], 3)
+        self.assertEqual(report['key_three'], 2)
 
     def test_tight_budget_buys_level_two_before_level_three(self):
-        t, _, _, l = self.setup(self.case(gold=85))
-        report = shopping_list(t, Memory(wall_watch_id=1), t.units[1], l.wall_cells, 85, 100)
-        self.assertEqual(report['order'], {PACK: 3, V1: 2})
-        self.assertEqual(report['unfunded'][V2], 3)
-        self.assertEqual(report['cost'], 85)
+        t, _, _, l = self.setup(self.case(gold=65))
+        report = shopping_list(t, Memory(wall_watch_id=1), t.units[1], l.wall_cells, 65, 100)
+        self.assertEqual(report['order'], {PACK: 3, V1: 1})
+        self.assertEqual(report['unfunded'][V2], 2)
+        self.assertEqual(report['cost'], 65)
 
     def test_unfunded_prerequisites_never_buy_level_three(self):
         t, _, _, l = self.setup(self.case())
@@ -93,7 +93,7 @@ class WallSupplyTripTests(unittest.TestCase):
                                                   empty_tick=95, unmet={(6, 8)}))
         report = shopping_list(t, mem, t.units[1], l.wall_cells, 145, 100)
         self.assertNotIn(V2, report['order'])
-        self.assertEqual(report['order'][V1], 2)
+        self.assertEqual(report['order'][V1], 1)
 
     def test_backpack_limit_keeps_upgrade_prerequisite_order(self):
         t, _, _, l = self.setup(self.case())
@@ -115,7 +115,7 @@ class WallSupplyTripTests(unittest.TestCase):
             data['teamOur']['goldNum'] -= t.shop[action['name']] * action['num']
             self.assertLessEqual(reserve, l.gold)
             data['roundNo'] += 1
-        self.assertEqual(purchases, [(PACK, 4), (V1, 2), (V2, 3)])
+        self.assertEqual(purchases, [(PACK, 4), (V1, 1), (V2, 2)])
         t, cfg, nav, l = self.setup(data)
         prepare(t, cfg, mem, nav, l, t.units[1], l.wall_cells)
         self.assertEqual(mem.wall_supply_trip['phase'], 'deliver')

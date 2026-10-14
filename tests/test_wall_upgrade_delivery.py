@@ -65,7 +65,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         self.assertEqual(supplies(t, c, Memory(), n, l, t.pioneer)[0], "StationUpgradeVoucher1")
         self.assertIsNone(supplies(t, c, Memory(wall_rebuild_levels={(7, 4): 3}), n, l, t.pioneer))
 
-    def test_flank_can_purchase_use_and_recover_to_three_after_front_done(self):
+    def test_paid_flank_stock_is_delivered_without_new_level_three_purchase(self):
         for tick in (40, 65, 440):
             p = self.case(tick)
             p["teamOur"]["roles"][3]["level"] = 3
@@ -81,7 +81,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
             p["teamOur"]["roles"][0]["backpack"] = []
             t, c, n, l = self.setup(p)
             plan = supplies(t, c, mem, n, l, t.workers[0], bulk=True)
-            self.assertEqual(plan[0], "WallUpgradeVoucher2")
+            self.assertIsNone(plan)
             # Once the observed rebuild is complete, a healthy base can upgrade.
             p["teamOur"]["roles"][4]["level"] = 3
             t, c, n, l = self.setup(p)
@@ -101,7 +101,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         self.assertNotEqual(wall_sector(t, t.ours[-1]), "front")
         self.assertFalse(wall_upgrade_allowed(t, t.ours[-1], mem))
 
-    def test_flank_rebuild_preserves_level_three_after_destruction(self):
+    def test_flank_rebuild_stops_at_two_after_destruction(self):
         for mirror in (False, True):
             p = self.case(129)
             p["teamOur"]["roles"][3].update(level=3, pos={"x": 7, "y": 4})
@@ -116,10 +116,10 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
             p["roundNo"] = 130
             p["teamOur"]["roles"][4].update(id=99, level=1)
             mem.observe(Turn(p, c), c)
-            self.assertEqual(mem.wall_rebuild_levels[tuple(sites[1])], 3)
+            self.assertEqual(mem.wall_rebuild_levels[tuple(sites[1])], 2)
             p["teamOur"]["roles"][4]["level"] = 2
             mem.observe(Turn(p, c), c)
-            self.assertEqual(mem.wall_rebuild_levels[tuple(sites[1])], 3)
+            self.assertNotIn(tuple(sites[1]), mem.wall_rebuild_levels)
             p["teamOur"]["roles"][4]["level"] = 3
             mem.observe(Turn(p, c), c)
             self.assertFalse(mem.wall_rebuild_levels)
@@ -199,7 +199,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
         p["teamOur"]["roles"][0]["backpack"] = ["WallUpgradeVoucher1"]
         t, c, n, l = self.setup(p)
         plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
-        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 2))
+        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 1))
 
     def test_shop_delivers_paid_first_tier_before_buying_next_tier(self):
         for rebuilding in (False, True):
@@ -240,7 +240,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
             p["mapInfo"]["zones"][0]["pos"]["x"] = 8
         return p
 
-    def test_front_three_expands_in_symmetric_layers_then_flanks_reach_three(self):
+    def test_front_three_expands_in_symmetric_layers_and_flanks_stop_at_two(self):
         for rows in (range(2, 9), range(2, 8)):
             for mirror in (False, True):
                 with self.subTest(rows=list(rows), mirror=mirror):
@@ -255,7 +255,7 @@ class WallUpgradeDeliveryTests(unittest.TestCase):
                             if w["pos"]["y"] in allowed:
                                 w["level"] = 3
                     t, _, _, _ = self.setup(p)
-                    self.assertTrue(wall_upgrade_allowed(t, t.ours[-1], Memory()))
+                    self.assertFalse(wall_upgrade_allowed(t, t.ours[-1], Memory()))
 
     def test_front_center_beats_nearer_edge_old_target_but_recovery_can_use_paid_edge(self):
         for mirror in (False, True):
