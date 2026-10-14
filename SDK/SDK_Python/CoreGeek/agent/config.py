@@ -18,6 +18,7 @@ class Config:
     loadout: list = field(default_factory=lambda: ["rocket", "rocket", "gatling"])
     # Keep inherited assumptions until verified against the official engine.
     projectile_origin: str = "weapon"
+    # Only railguns test obstacle occlusion; gatling shots ignore these cells.
     projectile_characters_block: bool = True
     stone_batch: int = 10
     sell_batch: int = 40

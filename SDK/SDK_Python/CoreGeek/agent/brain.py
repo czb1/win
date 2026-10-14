@@ -15,7 +15,7 @@ from .navigation import Navigator, layout, DeadlineExceeded
 from .commands import Ledger, command
 from .combat import (assignments, fixed_gatling_crew, operator_posts, return_plan, defend, emergency_items,
                      shared_crew, shared_defend, clear_gunner_route, yield_gate_operators,
-                     finish_weapon_reports, catch_nearby_imp, relieve_night_pioneer)
+                     finish_weapon_reports, catch_nearby_imp, relieve_night_pioneer, night_guard_reason)
 from .projectiles import wall_gates
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .economy import reserve_treasure_gold, pioneer_needs_night_relief
@@ -640,18 +640,12 @@ class Agent:
                 if not posts and mem.operator_yields:
                     posts = {hero.id: (hero.pos, 0) for hero, _ in pairs if hero.id in mem.operator_yields}
             if not turn.is_day:
-                # Recall from the current position early enough for an approaching
-                # wave, but release workers immediately when local danger ends.
+                # An approaching wave is not a cleared wave. Keep assigned workers
+                # at their posts until it is gone and the local battery is safe.
                 def needs_defence(hero, tower):
                     if hero.kind != "worker" or (relief and hero.id == relief[0].id):
                         return True
-                    route = (nav.search(hero, {posts[hero.id][0]}) if hero.id in posts
-                             else nav.approach(hero, [tower.pos]))
-                    lead = (route[0] if route else 130) + self.cfg.return_margin
-                    return any(turn.threatens_us(r) and (
-                        turn.base_distance(r.pos) <= max(self.cfg.task_danger_radius, lead + r.attack_range)
-                        or distance(tower.pos, r.pos) <= tower.attack_range + 1)
-                        or distance(hero.pos, r.pos) <= r.attack_range + 2 for r in turn.robots)
+                    return night_guard_reason(turn, tower, self.cfg.task_danger_radius) is not None
                 pairs = [(hero, tower) for hero, tower in pairs
                          if (shared is not None and tower.kind == "rocket")
                          or hero.id in mem.operator_yields or needs_defence(hero, tower)]
@@ -696,6 +690,9 @@ class Agent:
                                             "return_margin": self.cfg.return_margin, "day_left": turn.day_left,
                                             "return_tick": DEFENCE_RETURN_TICK,
                                             "post": posts.get(hero.id), "tower": tower.id}
+                    if not turn.is_day and hero.kind == "worker":
+                        ledger.plans[hero.id]["hold_reason"] = night_guard_reason(
+                            turn, tower, self.cfg.task_danger_radius)
                     if hero.id in posts:
                         evaluation = ledger.operator_post_reports.get((hero.id, tower.id, posts[hero.id][0]))
                         if evaluation:

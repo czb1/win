@@ -2,7 +2,7 @@
 import logging
 from itertools import permutations, product
 from collections import deque
-from .model import HEROES, WEAPONS, distance, dump, neighbours
+from .model import HEROES, CHARACTERS, WEAPONS, distance, dump, neighbours
 from .commands import command
 from .navigation import check_time
 from .projectiles import (line_cells, projectile_origin, projectile_obstacles,
@@ -174,6 +174,20 @@ def fixed_gatling_crew(turn, mem, nav, ledger, excluded=()):
     return [(holder, gatling)] if holder and gatling else []
 
 
+def night_guard_reason(turn, tower, danger_radius):
+    """Keep the crew through an incoming wave, even before it reaches range."""
+    if any(turn.threatens_us(robot) for robot in turn.robots):
+        return "incoming_wave"
+    # Static enemy walls/base do not pin a worker forever after the wave clears.
+    # Visible enemy characters or weapons near our battery still prevent mining.
+    if any(enemy.kind in (*CHARACTERS, *WEAPONS)
+           and min(turn.base_distance(enemy.pos), distance(tower.pos, enemy.pos))
+           <= max(danger_radius, tower.attack_range + 1, enemy.attack_range + 2)
+           for enemy in turn.enemies):
+        return "nearby_enemy"
+    return None
+
+
 def assignments(turn, nav, ledger, excluded=(), fixed=None, towers=None):
     towers = turn.weapons[:3] if towers is None else towers
     heroes = [h for h in turn.heroes if h.id not in ledger.used and h.id not in excluded]
@@ -325,7 +339,8 @@ def select_targets(turn, tower, damage, deadline, controller=None, actor_positio
             diagnostics["focus_target_id"] = None
         diagnostics.update(controller_id=controller.id if controller else None,
                            origin_mode=turn.projectile_origin,
-                           characters_block=turn.projectile_characters_block,
+                           obstacles_block=tower.kind == "railgun",
+                           characters_block=tower.kind == "railgun" and turn.projectile_characters_block,
                            attack_range=tower.attack_range, cooldown=tower.cooldown,
                            in_range=0, clear_paths=0, blocker_counts={}, blocker_samples=[])
     if tower.attack_range <= 0:
@@ -343,7 +358,9 @@ def select_targets(turn, tower, damage, deadline, controller=None, actor_positio
     if not targets and tower.kind != "rocket":
         return empty("no_enemy_in_range")
     protected = {r.id for r in turn.robots if not turn.threatens_us(r)}
-    if tower.kind != "rocket":
+    # Gatling shots are not stopped by buildings, characters or neutral cells.
+    # Robot first-hit resolution below is separate from obstacle occlusion.
+    if tower.kind == "railgun":
         obstacles = projectile_obstacles(turn, tower, actor_positions)
         clear = []
         categories = {}
@@ -620,6 +637,9 @@ def yield_gate_operators(turn, nav, ledger, mem, walls, pairs):
             if helper.id in ledger.operator_posts:
                 goals = {ledger.operator_posts[helper.id]}
             elif helper.id not in paired and helper.id in mem.mine_targets:
+                if not turn.is_day and night_guard_reason(turn, tower, ledger.cfg.task_danger_radius):
+                    # Mining traffic must wait until the operator can leave safely.
+                    continue
                 mine = mem.mine_targets[helper.id]
                 goals = set(neighbours(mine)) - {mine}
             else:
