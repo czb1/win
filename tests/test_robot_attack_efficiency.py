@@ -74,20 +74,19 @@ class RobotAttackEfficiencyTests(unittest.TestCase):
                     for uid in ids:
                         self.assertEqual(ledger.commands[str(uid)]["action"], "attack")
 
-    def test_observed_side_step_continues_route_instead_of_returning_to_gap(self):
+    def test_observed_stances_keep_all_shots_without_side_steps(self):
         data = self.opening_case(((29, 8), (29, 7), (30, 7)))
         first, memory = decide(data, entry=(30, 7))
-        self.assertEqual(first.commands["30036"], command("move", (28, 7)))
+        self.assertEqual(first.commands["30036"], command("attack", (30, 9)))
         data["roundNo"] += 1
         # Reported r75 positions, including the other robot's observed move.
         data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 28, "y": 7}
         data["teamOur"]["summonRobotList"][2]["pos"] = {"x": 30, "y": 8}
         data["lastRoundRoleActionResults"] = {"30036": True}
         ledger, _ = decide(data, memory, entry=(30, 7))
-        self.assertEqual(ledger.commands["30036"]["action"], "move")
-        self.assertNotEqual(pos(ledger.commands["30036"]["targetPos"][0]), (29, 7))
-        self.assertLess(ledger.notes[30036]["conditions"]["route_steps"],
-                        first.notes[30036]["conditions"]["route_steps"])
+        for uid in (30035, 30036, 30037):
+            self.assertEqual(ledger.commands[str(uid)]["action"], "attack")
+            self.assertEqual(ledger.notes[uid]["conditions"]["target_id"], 20013)
 
     def test_occupied_scout_gap_does_not_interrupt_another_clear_shot(self):
         data = self.opening_case(((31, 6),))
@@ -191,7 +190,7 @@ class RobotAttackEfficiencyTests(unittest.TestCase):
                 else:
                     data["teamEnemy"]["roles"].append(unit(10042, "rocket", 8, 22))
                 ledger, _ = decide(data)
-                aim = (9, 22) if obstruction == 'enemy_tower' else (9, 21)
+                aim = (9, 22) if obstruction in ('enemy_tower', 'public_robot') else (9, 21)
                 self.assertEqual(ledger.commands["31036"], command("attack", aim))
                 self.assertEqual(ledger.notes[31036]["conditions"]["target_id"], 10013)
                 self.assertNotIn("30000", ledger.commands)
@@ -223,7 +222,7 @@ class RobotAttackEfficiencyTests(unittest.TestCase):
         data["teamOur"]["summonRobotList"][0]["pos"] = {"x": 8, "y": 19}
         data["lastRoundRoleActionResults"] = {"31036": True}
         ledger, _ = decide(data, memory)
-        self.assertEqual(ledger.commands["31036"], command("attack", (9, 22)))
+        self.assertEqual(ledger.commands["31036"], first.commands["31036"])
 
     def test_attack_goals_include_stances_that_only_clear_an_alternate_cell(self):
         data = base_corner_case()

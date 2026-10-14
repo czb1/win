@@ -34,7 +34,7 @@ class RobotYieldProgressTests(unittest.TestCase):
         memory = RobotAssaultMemory(day=1, base_id=20013, base_pos=(30, 10),
                                    approach_best={30037: 3}, approach_stalls={30037: 3})
         _, ledger, memory = decide(data, memory, entry=(28, 7))
-        self.assertEqual(ledger.commands["30036"], command("move", (30, 8)))
+        self.assertEqual(ledger.commands["30036"], command("move", (29, 9)))
         self.assertEqual(ledger.notes[30037]["reason"], "robot_wait_assault_lane")
         self.assertEqual(memory.approach_stalls[30037], 3)
         return data, memory
@@ -81,7 +81,7 @@ class RobotYieldProgressTests(unittest.TestCase):
             with self.subTest(result=result):
                 data, memory = self.waiting_yield()
                 data["roundNo"] = 78
-                data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 30, "y": 8}
+                data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 29, "y": 9}
                 if result is not None:
                     data["lastRoundRoleActionResults"] = {"30036": result}
                 memory.approach_stalls[30035] = 2
@@ -108,9 +108,9 @@ class RobotYieldProgressTests(unittest.TestCase):
                 if change != "missing_no_move":
                     data["lastRoundRoleActionResults"] = {"30036": change != "illegal_no_move"}
                 if change == "different_destination":
-                    data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 29, "y": 9}
-                elif change == "old_cell_reoccupied":
                     data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 30, "y": 8}
+                elif change == "old_cell_reoccupied":
+                    data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 29, "y": 9}
                     data["teamOur"]["roles"].append(unit(10012, "worker", 29, 8))
                 self.observe(data, memory)
                 self.assertEqual(memory.approach_stalls[30037], 3)
@@ -122,7 +122,7 @@ class RobotYieldProgressTests(unittest.TestCase):
             with self.subTest(change=change):
                 data, memory = self.waiting_yield()
                 data["roundNo"] = 79 if change == "skipped_round" else 78
-                data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 30, "y": 8}
+                data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 29, "y": 9}
                 if change == "lost_mover":
                     data["teamOur"]["summonRobotList"].pop(1)
                 self.observe(data, memory)
@@ -134,7 +134,7 @@ class RobotYieldProgressTests(unittest.TestCase):
             with self.subTest(change=change):
                 data, memory = self.waiting_yield()
                 data["roundNo"] = 200 if change == "day" else 78
-                data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 30, "y": 8}
+                data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 29, "y": 9}
                 if change == "base":
                     data["teamEnemy"]["roles"][0]["pos"] = {"x": 20, "y": 10}
                 elif change == "lost_waiter":
@@ -147,9 +147,9 @@ class RobotYieldProgressTests(unittest.TestCase):
         data, memory = self.waiting_yield()
         turn = self.observe(data, memory)
         self.assertTrue(memory.yield_waiters)
-        memory.remember(turn, turn.summon_robots[1], "move", (29, 9))
+        memory.remember(turn, turn.summon_robots[1], "move", (30, 8))
         data["roundNo"] += 1
-        data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 29, "y": 9}
+        data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 30, "y": 8}
         self.observe(data, memory)
         self.assertFalse(memory.yield_waiters)
         self.assertEqual(memory.approach_stalls[30037], 3)
@@ -188,7 +188,7 @@ class RobotYieldProgressTests(unittest.TestCase):
     def test_new_backtracking_after_a_yield_still_triggers_clearance(self):
         data, memory = self.waiting_yield()
         data["roundNo"] += 1
-        data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 30, "y": 8}
+        data["teamOur"]["summonRobotList"][1]["pos"] = {"x": 29, "y": 9}
         self.observe(data, memory)
         for destination in ((27, 7), (26, 8), (27, 7), (26, 8)):
             record_move(data, memory, 30037, destination)

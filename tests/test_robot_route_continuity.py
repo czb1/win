@@ -47,11 +47,15 @@ def detour():
 class RobotRouteContinuityTests(unittest.TestCase):
     def clearing_approach(self):
         data = frontage(72, ((30, 6), (33, 7), (33, 8)))
+        # An opaque character, rather than a teammate's firing ray, closes
+        # the direct stance so this still exercises real clearance routing.
+        data['teamOur']['roles'].append(unit(10010, 'worker', 32, 8))
         _, ledger, memory = decide(data, entry=(29, 7))
         self.assertEqual(ledger.notes[30036]['conditions']['target_id'], 20011)
         self.assertEqual(ledger.commands['30036'], command('move', (34, 8)))
         # The next frame is supplied explicitly, not a simulated move result.
         data = frontage(73, ((29, 7), (34, 8), (33, 8)))
+        data['teamOur']['roles'].append(unit(10010, 'worker', 32, 8))
         return data, memory
 
     def test_simultaneous_arrivals_keep_their_planned_base_shots(self):
@@ -106,21 +110,23 @@ class RobotRouteContinuityTests(unittest.TestCase):
         self.assertEqual(note['conditions']['target_id'], 20011)
         self.assertTrue(note['conditions']['route_continued'])
         self.assertEqual(ledger.commands['30036'], command('move', (34, 9)))
-        self.assertFalse(memory.yield_waiters)
+        self.assertNotIn(30036, memory.yield_waiters)
+        self.assertTrue(all(30036 not in waiters for waiters in memory.yield_waiters.values()))
         self.assertNotIn(30036, memory.approach_stalls)
 
     def test_scout_entry_does_not_choose_a_far_side_yield(self):
         data = frontage(73, ((29, 7), (34, 8), (33, 8)))
         _, ledger, _ = decide(data, entry=(29, 7))
         self.assertNotEqual(ledger.notes[30035]['reason'], 'robot_make_room_inside')
-        self.assertEqual(ledger.notes[30037]['reason'], 'robot_make_room_inside')
+        self.assertEqual(ledger.notes[30037]['reason'], 'robot_attack_base')
 
     def test_direct_base_shot_preempts_a_clearance_commitment(self):
         data, memory = self.clearing_approach()
-        # The east wall disappears and the teammate vacates the firing ray.
+        # The east wall disappears and the opaque worker vacates the ray.
+        # The teammate may stay: it no longer blocks the direct base shot.
         data['teamEnemy']['roles'] = [r for r in data['teamEnemy']['roles']
                                      if r['roleType'] != 'wall' or pos(r['pos']) != (33, 9)]
-        data['teamOur']['summonRobotList'][2]['pos'] = dict(x=36, y=8)
+        next(r for r in data['teamOur']['roles'] if r['id'] == 10010)['pos'] = dict(x=36, y=8)
         _, ledger, memory = decide(data, memory)
         self.assertEqual(ledger.commands['30036']['action'], 'attack')
         self.assertEqual(ledger.notes[30036]['conditions']['target_id'], 20013)
@@ -209,8 +215,8 @@ class RobotRouteContinuityTests(unittest.TestCase):
         memory.remember(turn, turn.summon_robots[0], 'attack', (5, 4), 104)
         self.assertNotIn(30036, memory.routes)
         _, _, _, new_ledger = setup_case(data)
-        ledger.robot_firing_lanes[30036] = {(4, 5)}
-        self.assertFalse(new_ledger.robot_firing_lanes)
+        ledger.reserved.add((4, 5))
+        self.assertFalse(new_ledger.reserved)
 
 
 if __name__ == '__main__':
