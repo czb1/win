@@ -39,8 +39,12 @@ _RUNTIME = r'''
 import contextlib
 import json
 import os
+import shlex
+import shutil
+import stat
 import sys
 import tempfile
+import time
 import traceback
 import re
 import urllib.error
@@ -190,6 +194,221 @@ else:
     requests.models.Response.json = checked_json
 
 
+class TaskDiagnostics:
+    """Best-effort file evidence, not a business checker or security boundary."""
+    def __init__(self, directory):
+        self.active = self.busy = False
+        self.root = self.saved = None
+        self.records, self.notes = [], []
+        self.reads, self.writes = set(), set()
+        self.spent = self.total = self.inline = 0
+        self.before = {}
+        try:
+            if not directory:
+                self.note('taskDirectory unknown; automatic file collection unavailable')
+                return
+            self.root = os.path.realpath(directory)
+            if not os.path.isdir(self.root):
+                self.root = None
+                self.note('taskDirectory is not a directory')
+                return
+            self.before = self.inventory()
+            sys.addaudithook(self.observe)
+            self.active = True
+        except Exception as error:
+            self.note(type(error).__name__ + ': ' + str(error))
+
+    def note(self, text):
+        text = str(text)[:400]
+        if text not in self.notes and len(self.notes) < 12:
+            self.notes.append(text)
+
+    def available(self):
+        if self.spent >= 0.75:
+            self.note('collection time limit reached; evidence is incomplete')
+            return False
+        return True
+
+    def local(self, name):
+        if not isinstance(name, (str, bytes, os.PathLike)) or not self.root:
+            return None
+        path = os.path.realpath(os.fsdecode(name))
+        if os.path.commonpath([self.root, path]) != self.root:
+            return None
+        parts = os.path.relpath(path, self.root).split(os.sep)
+        if '__pycache__' in parts or any(p.startswith('.task-evidence-') for p in parts):
+            return None
+        return path
+
+    def inventory(self):
+        """Stat at most 256 entries, without following directory symlinks."""
+        result, pending, count = {}, [self.root], 0
+        started = time.monotonic()
+        try:
+            while pending:
+                with os.scandir(pending.pop()) as entries:
+                    for entry in entries:
+                        count += 1
+                        if count > 256 or time.monotonic() - started > 0.15 or not self.available():
+                            self.note('directory scan limit reached; change inventory is incomplete')
+                            return result
+                        if entry.name == '__pycache__' or entry.name.startswith('.task-evidence-'):
+                            continue
+                        try:
+                            info = entry.stat(follow_symlinks=False)
+                            if stat.S_ISDIR(info.st_mode):
+                                pending.append(entry.path)
+                            elif stat.S_ISREG(info.st_mode):
+                                result[entry.path] = (info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode)
+                        except OSError as error:
+                            self.note(str(error))
+        except OSError as error:
+            self.note(str(error))
+        finally:
+            self.spent += time.monotonic() - started
+        return result
+
+    def save(self, data, entry, complete):
+        if not self.saved:
+            self.saved = tempfile.mkdtemp(prefix='.task-evidence-', dir=self.root)
+        path = os.path.join(self.saved, '%03d.txt' % len(self.records))
+        with open(path, 'wb') as target:
+            target.write(data)
+        self.total += len(data)
+        entry.update(snapshot_path=path, snapshot_bytes=len(data), captured_complete=complete,
+                     shown_complete=False, read_command='READ ' + shlex.quote(path) + ' 0')
+        try:
+            text = data.decode('utf-8')
+            if '\x00' in text:
+                raise ValueError('binary content')
+            entry['encoding'] = 'utf-8'
+            size = len(json.dumps(text, ensure_ascii=False).encode('utf-8'))
+            if entry['kind'] != 'execution_output' and complete and self.inline + size <= 12000:
+                entry.update(content=text, shown_complete=True)
+                self.inline += size
+        except (UnicodeError, ValueError):
+            entry['encoding'] = 'binary; snapshot preserves bytes, READ is text only'
+
+    def capture(self, path, kind):
+        entry = {'source_path': path, 'kind': kind, 'captured_complete': False, 'shown_complete': False}
+        if len(self.records) >= 64:
+            self.note('64 snapshot limit reached; evidence is incomplete')
+            return
+        self.records.append(entry)
+        if not self.available() or self.total >= 4194304:
+            entry['omitted'] = 'collection time or total byte limit reached'
+            return
+        started = time.monotonic()
+        try:
+            # Never wait on a FIFO/device or follow a final-component symlink.
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    entry['omitted'] = 'not a regular file'
+                    return
+                entry['source_bytes'] = info.st_size
+                limit = min(1048576, 4194304 - self.total)
+                data = source.read(limit + 1)
+                after = os.fstat(source.fileno())
+            complete = len(data) <= limit and (info.st_size, info.st_mtime_ns) == (after.st_size, after.st_mtime_ns)
+            self.save(data[:limit], entry, complete)
+            if not complete:
+                entry['omitted'] = 'file exceeds byte limit or changed during capture; snapshot is partial'
+        except Exception as error:
+            entry['error'] = type(error).__name__ + ': ' + str(error)[:400]
+        finally:
+            self.spent += time.monotonic() - started
+
+    def observe(self, event, args):
+        if not self.active or self.busy or event != 'open':
+            return
+        self.busy = True
+        try:
+            path = self.local(args[0])
+            if not path:
+                return
+            flags = args[2]
+            reading = not flags & os.O_WRONLY
+            writing = bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
+            if path not in self.reads and path not in self.writes and len(self.reads | self.writes) >= 64:
+                self.note('64 tracked file limit reached; evidence is incomplete')
+                return
+            if reading and path not in self.reads:
+                self.reads.add(path)
+                self.capture(path, 'before_read')
+            if writing and path not in self.writes:
+                if path not in self.reads and os.path.isfile(path):
+                    self.capture(path, 'before_write')
+                self.writes.add(path)
+        except Exception as error:
+            # Audit hooks must never make an otherwise valid task open fail.
+            self.note(type(error).__name__ + ': ' + str(error))
+        finally:
+            self.busy = False
+
+    def finish(self, output, reason):
+        self.active = False
+        if self.root:
+            for path in sorted(self.writes):
+                self.capture(path, 'after_write')
+            after = self.inventory()
+            for path in sorted(set(after) | set(self.before)):
+                if path not in self.writes and after.get(path) != self.before.get(path):
+                    self.capture(path, 'directory_change')
+            entry = {'source_path': None, 'kind': 'execution_output',
+                     'captured_complete': False, 'shown_complete': False}
+            self.records.append(entry)
+            started = time.monotonic()
+            try:
+                if self.available() and self.total < 4194304:
+                    output.flush()
+                    source = output.buffer
+                    source.seek(0)
+                    entry['source_bytes'] = os.fstat(source.fileno()).st_size
+                    limit = min(1048576, 4194304 - self.total)
+                    data = source.read(limit + 1)
+                    self.save(data[:limit], entry, len(data) <= limit)
+                    if len(data) > limit:
+                        entry['omitted'] = 'execution output exceeds byte limit; snapshot is partial'
+                else:
+                    entry['omitted'] = 'collection time or total byte limit reached'
+            except Exception as error:
+                entry['error'] = type(error).__name__ + ': ' + str(error)[:400]
+            finally:
+                self.spent += time.monotonic() - started
+        detail = {'reason': reason, 'directory': self.root, 'files': self.records, 'notes': self.notes,
+                  'scope': 'Observed task file opens and bounded directory changes; not hidden expected answers or all subprocess reads.'}
+        try:
+            if self.root:
+                if not self.saved:
+                    self.saved = tempfile.mkdtemp(prefix='.task-evidence-', dir=self.root)
+                manifest = os.path.join(self.saved, 'manifest.json')
+                with open(manifest, 'w', encoding='utf-8') as target:
+                    json.dump(detail, target, ensure_ascii=False, indent=2)
+                detail.update(manifest_path=manifest, read_command='READ ' + shlex.quote(manifest) + ' 0')
+        except Exception as error:
+            self.note('manifest unavailable: ' + str(error))
+        # Keep the entry point usable even when many long paths or fields exist.
+        view = {**detail, 'files': [dict(entry) for entry in self.records]}
+        if len(json.dumps(view, ensure_ascii=False).encode('utf-8')) > 16000:
+            for entry in view['files']:
+                entry.pop('content', None)
+                entry['shown_complete'] = False
+        while len(json.dumps(view, ensure_ascii=False).encode('utf-8')) > 16000 and view['files']:
+            view['files'].pop()
+            view['files_omitted_from_display'] = view.get('files_omitted_from_display', 0) + 1
+        return view
+
+    def cleanup(self):
+        self.active = False
+        if self.saved:
+            try:
+                shutil.rmtree(self.saved)
+            except Exception:
+                pass
+
+
 answer_value = []
 def task_result(text):
     if not isinstance(text, str):
@@ -197,11 +416,13 @@ def task_result(text):
     answer_value[:] = [text]
 
 exit_code = 0
+diagnostics = None
 with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
         try:
             if TASK_DIRECTORY:
                 os.chdir(TASK_DIRECTORY)
+            diagnostics = TaskDiagnostics(TASK_DIRECTORY)
             scope = {'__name__': '__main__', 'task_result': task_result}
             exec(compile(TASK_CODE, '<task>', 'exec'), scope)
         except SystemExit as error:
@@ -209,19 +430,36 @@ with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as output:
         except BaseException:
             traceback.print_exc()
             exit_code = 1
+    if diagnostics:
+        diagnostics.active = False
     output.seek(0)
     body = output.read(60001)
+    if diagnostics and (exit_code or not answer_value):
+        try:
+            report['diagnostics'] = diagnostics.finish(output, 'nonzero_exit' if exit_code else 'no_final_answer')
+        except Exception as error:
+            report['diagnostics'] = {'error': type(error).__name__ + ': ' + str(error)[:400]}
+    elif diagnostics:
+        diagnostics.cleanup()
 report['http_errors'] = list(request_errors.values())[:4]
 if answer_value:
     report['stdout'] = body[:6000]
-print('TASK_RUNTIME ' + json.dumps(report, ensure_ascii=False))
+metadata = 'TASK_RUNTIME ' + json.dumps(report, ensure_ascii=False) + '\n'
+# Reserve space for the output/answer and the official status/duration headers.
+if len(metadata.encode('utf-8')) > 32000:
+    report = {'http_successes': report['http_successes'], 'metadata_truncated': True,
+              'diagnostics': report.get('diagnostics', {}),
+              'note': 'HTTP metadata exceeds display budget; not a complete HTTP report.'}
+    metadata = 'TASK_RUNTIME ' + json.dumps(report, ensure_ascii=False) + '\n'
 if answer_value and not exit_code and len(body) <= 60000:
-    print('FINAL_ANSWER')
-    sys.stdout.write(answer_value[0])
+    rendered = 'FINAL_ANSWER\n' + answer_value[0]
 else:
-    print(body[:60000], end='')
-if len(body) > 60000:
-    print('\n[TRUNCATED]')
+    rendered = body[:60000]
+room = 60000 - len(metadata.encode('utf-8'))
+encoded = rendered.encode('utf-8')
+if len(encoded) > room or len(body) > 60000:
+    rendered = encoded[:max(0, room - 14)].decode('utf-8', errors='ignore') + '\n[TRUNCATED]\n'
+sys.stdout.write(metadata + rendered)
 # HTTP diagnostics do not decide whether a handled response is valid task data.
 raise SystemExit(exit_code)
 '''
