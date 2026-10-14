@@ -36,7 +36,8 @@ from .spending import (first_day_guns_built, first_day_purchase_reserve, plan_da
                        heal_station_with_pioneer, prepare_station_reserve,
                        first_day_pioneer_plan_active, first_day_pioneer_work_pending,
                        prepare_first_day_pioneer, first_day_robot_batch_allowed,
-                       FIRST_DAY_ROBOT_PURCHASE_MINIMUM)
+                       FIRST_DAY_ROBOT_PURCHASE_MINIMUM, first_day_pioneer_task_due,
+                       FIRST_DAY_ROBOT_TASK_STOP)
 from .scouting import (FIRST_DAY_SCOUT_TICK, act_night_scout, prepare_night_scout,
                        yield_wall_entry)
 from .task_schedule import task_options
@@ -163,10 +164,11 @@ def summon_best_robot(turn, cfg, mem, nav, ledger, towers, walls, excluded=(), r
         ledger.robot_assault_entry = state['late_entry']
     excluded = set(excluded)
     pioneer_plan = first_day_pioneer_plan_active(turn, mem)
+    active_task = bool(turn.phase_task and mem.stop_reason != FIRST_DAY_ROBOT_TASK_STOP)
     pioneer_summoning = (pioneer_plan and mem.first_day_pioneer.get('phase') == 'robots'
                          and not mem.first_day_pioneer.get('pending_buy')
-                         and not turn.phase_task)
-    if turn.pioneer and (turn.phase_task or (treasure_active(turn, mem) and not pioneer_summoning)):
+                         and not active_task)
+    if turn.pioneer and (active_task or (treasure_active(turn, mem) and not pioneer_summoning)):
         excluded.add(turn.pioneer.id)
     free = [hero for hero in turn.heroes
             if hero.id not in ledger.used and hero.id not in excluded]
@@ -573,6 +575,10 @@ class Agent:
             if not turn.is_day:
                 act_robots(turn, mem.robot_assault, nav, ledger)
             h = turn.pioneer
+            opening_shop_due = first_day_pioneer_task_due(turn, mem, ledger)
+            if opening_shop_due and mem.stop_reason != FIRST_DAY_ROBOT_TASK_STOP:
+                mem.stop_reason = FIRST_DAY_ROBOT_TASK_STOP
+                LOG.info("round=%s task_stop=%s", turn.round, mem.stop_reason)
             within_timeout = bool(h and turn.phase_task and turn.round - mem.task_started <
                                   min(mem.task_timeout, self.cfg.task_max_rounds))
             home = [w.cells for w in turn.weapons] or ([turn.station.cells] if turn.station else [])
@@ -584,12 +590,12 @@ class Agent:
                 or distance(h.pos, r.pos) <= max(self.cfg.task_danger_radius, r.attack_range + 2))
                 for r in turn.robots))
             nav.vehicle_detours = not danger
-            # Shopping chains finish their current task before the usual
-            # task/recall cutoff; workers and wall construction keep it.
+            # Uninterrupted shopping tasks may finish before the usual recall;
+            # an affordable opening robot plan takes over from tick 54.
             defence_return_due = turn.is_day and bool(home) and turn.tick >= DEFENCE_RETURN_TICK
             first_watch = turn.day == 1 and defence_return_due
             finish_opening_task = (turn.day == 1 and turn.tick >= FIRST_DAY_PIONEER_SHOP_TICK
-                                   and within_timeout and not mem.first_day_pioneer)
+                                   and within_timeout and not mem.first_day_pioneer and not opening_shop_due)
             finish_daily_task = (daily_pioneer_active(turn, mem)
                                  and mem.daily_pioneer_offense['phase'] == 'task' and within_timeout)
             finish_current_task = finish_opening_task or finish_daily_task
@@ -601,6 +607,7 @@ class Agent:
                            "day_left": turn.day_left, "danger": danger, "first_watch": first_watch,
                            "defence_return_due": defence_return_due, "return_tick": DEFENCE_RETURN_TICK,
                            "finish_opening_task": finish_opening_task,
+                           "opening_shop_due": opening_shop_due,
                            "finish_daily_task": finish_daily_task,
                            "hold_task": hold_task, "stop_reason": mem.stop_reason}, "evolution")
             if not turn.is_day:
@@ -794,7 +801,8 @@ class Agent:
                             returning.add(helper.id)
                             mem.return_targets[helper.id] = weapon.id
                             mem.return_posts[helper.id] = posts[helper.id][0]
-            if h and turn.phase_task and not (not turn.is_day and pioneer_gunner):
+            if (h and turn.phase_task and mem.stop_reason != FIRST_DAY_ROBOT_TASK_STOP
+                    and not (not turn.is_day and pioneer_gunner)):
                 # Submit a ready answer before a return movement can cancel it.
                 # LLM/sandbox work holds the pioneer at the task point and gets
                 # its own chance before expensive worker connectivity searches.

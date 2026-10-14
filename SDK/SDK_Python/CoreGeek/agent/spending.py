@@ -1,9 +1,11 @@
 """Reserve construction/upgrades and spend the remaining gold on robots."""
 from .economy_plan import front_sites, planned_weapons, via
-from .model import DEFENCE_RETURN_TICK, FIRST_DAY_PIONEER_SHOP_TICK
+from .model import (DEFENCE_RETURN_TICK, FIRST_DAY_PIONEER_SHOP_TICK,
+                    FIRST_DAY_PIONEER_TASK_DEADLINE, SUMMON_ORDERS)
 
 FIRST_DAY_ROBOT_PURCHASE_LIMIT = 3
 FIRST_DAY_ROBOT_PURCHASE_MINIMUM = 2
+FIRST_DAY_ROBOT_TASK_STOP = 'first_day_robot_deadline'
 
 
 def first_day_robot_batch_allowed(turn, mem, ledger, quantity):
@@ -142,17 +144,63 @@ def prepare_station_reserve(turn, cfg, mem, nav, ledger):
     return accepted
 
 
+def _first_day_pioneer_cart(turn, mem, ledger, summons, purchased):
+    """Share the actual base reserve, stock and robot budget with task handoff."""
+    from .brain import DAILY_SUMMON_LIMIT
+    from .economy import station_voucher_needed, voucher_for
+    from .robot_assault import enemy_base
+    hero = turn.pioneer
+    name = voucher_for(turn.station)
+    base_missing = bool(name and not summons['station_purchased']
+                        and station_voucher_needed(turn, hero, name))
+    base_price = turn.shop.get(name, -1) if base_missing else 0
+    robot_price = turn.shop.get('BossRobotSummonOrder', -1)
+    remaining = 0 if mem.night_scout.cancelled else max(0, FIRST_DAY_ROBOT_PURCHASE_LIMIT - purchased)
+    stock = sum(h.inventory[item] for h in turn.heroes for item in SUMMON_ORDERS)
+    quantity = min(remaining, max(0, DAILY_SUMMON_LIMIT - summons['count'] - stock),
+                   max(0, hero.space - int(base_missing)))
+    if enemy_base(turn) is None or robot_price < 0:
+        quantity = 0
+    elif robot_price:
+        quantity = min(quantity, max(0, ledger.gold - max(0, base_price)) // robot_price)
+    return base_missing, base_price, remaining, quantity
+
+
+def first_day_pioneer_task_due(turn, mem, ledger):
+    """Stop solving at tick 54 only when the opening robot plan can proceed."""
+    if (turn.day != 1 or not turn.is_day or turn.tick < FIRST_DAY_PIONEER_TASK_DEADLINE
+            or not turn.phase_task or not turn.pioneer or not turn.station):
+        return False
+    # A blocked move or delayed task-clear report must not restart task work.
+    if mem.stop_reason == FIRST_DAY_ROBOT_TASK_STOP:
+        return True
+    from .brain import DAILY_SUMMON_LIMIT, observe_robot_summons
+    from .robot_assault import enemy_base
+    summons = observe_robot_summons(turn, mem)
+    if (mem.night_scout.cancelled or enemy_base(turn) is None
+            or not any(kind == 'weaponShop' for kind in turn.zones.values())):
+        return False
+    purchased = mem.first_day_pioneer.get('robot_purchased', summons['purchased'])
+    base_missing, base_price, _, quantity = _first_day_pioneer_cart(
+        turn, mem, ledger, summons, purchased)
+    if base_missing and (base_price < 0 or ledger.gold < base_price or not turn.pioneer.space):
+        return False
+    held = sum(turn.pioneer.inventory[item] for item in SUMMON_ORDERS)
+    if held and summons['count'] < DAILY_SUMMON_LIMIT:
+        return True
+    return bool(quantity and summons['purchased'] + quantity >= FIRST_DAY_ROBOT_PURCHASE_MINIMUM)
+
+
 def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
     """Continue opening work in daylight, preserving it during night recall."""
-    if (not first_day_pioneer_plan_active(turn, mem) or turn.phase_task
+    if (not first_day_pioneer_plan_active(turn, mem)
+            or (turn.phase_task and mem.stop_reason != FIRST_DAY_ROBOT_TASK_STOP)
             or not (mem.first_day_pioneer or first_day_tasks_finished(turn)
                     or turn.tick >= FIRST_DAY_PIONEER_SHOP_TICK)):
         return False
     from .brain import DAILY_SUMMON_LIMIT, observe_robot_summons, summon_best_robot
     from .commands import command
-    from .economy import station_voucher_needed, voucher_for
-    from .model import SUMMON_ORDERS
-    from .robot_assault import enemy_base
+    from .economy import voucher_for
 
     hero, station = turn.pioneer, turn.station
     if hero.id in ledger.used or not station:
@@ -161,7 +209,8 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
     state = mem.first_day_pioneer
     if not state:
         state.update(phase='shop', station_item=voucher_for(station), pending_buy=None,
-                     trigger='tick_51' if turn.tick >= FIRST_DAY_PIONEER_SHOP_TICK else 'tasks_finished')
+                     trigger=('tick_54' if mem.stop_reason == FIRST_DAY_ROBOT_TASK_STOP else
+                              'tick_51' if turn.tick >= FIRST_DAY_PIONEER_SHOP_TICK else 'tasks_finished'))
         mem.task_target = mem.task_wait_cell = None
         # The shopping chain takes precedence over the ordinary tick-67 recall.
         mem.return_targets.pop(hero.id, None)
@@ -191,22 +240,10 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
     held = sum(hero.inventory[item] for item in SUMMON_ORDERS)
 
     if state['phase'] == 'shop':
-        base_missing = bool(name and name == voucher_for(station)
-                            and not summons['station_purchased']
-                            and station_voucher_needed(turn, hero, name))
-        base_price = turn.shop.get(name, -1) if base_missing else 0
+        base_missing, base_price, remaining, quantity = _first_day_pioneer_cart(
+            turn, mem, ledger, summons, state['robot_purchased'])
         robot_name = 'BossRobotSummonOrder'
         robot_price = turn.shop.get(robot_name, -1)
-        remaining = max(0, FIRST_DAY_ROBOT_PURCHASE_LIMIT - state['robot_purchased'])
-        if mem.night_scout.cancelled:
-            remaining = 0
-        stock = sum(h.inventory[item] for h in turn.heroes for item in SUMMON_ORDERS)
-        quantity = min(remaining, max(0, DAILY_SUMMON_LIMIT - summons['count'] - stock),
-                       max(0, hero.space - int(base_missing)))
-        if enemy_base(turn) is None or robot_price < 0:
-            quantity = 0
-        elif robot_price:
-            quantity = min(quantity, max(0, ledger.gold - max(0, base_price)) // robot_price)
         if not held and remaining and not first_day_robot_batch_allowed(turn, mem, ledger, quantity):
             remaining = quantity = 0
         if not base_missing and (held or not remaining):

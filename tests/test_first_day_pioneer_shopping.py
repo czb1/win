@@ -123,14 +123,14 @@ class FirstDayPioneerShoppingTests(unittest.TestCase):
         self.assertTrue(accepted)
         self.assertEqual(ledger.commands['2'], command('buy', name=BOSS, num=3))
 
-    def test_active_task_at_51_finishes_before_shopping_even_past_67(self):
+    def test_active_task_at_51_can_finish_before_the_robot_deadline(self):
         data = self.data(round_no=51)
         data['phaseTask'] = 'active task'
         data['teamOur']['playerTasks'][0].update(coldDownRounds=30, timeoutRounds=40)
         _, cfg, _, _ = fortified_case(data)
         agent = Agent(cfg)
         with patch.object(Intelligence, 'task', return_value=('', '')) as task:
-            for tick in (51, 67, 70):
+            for tick in (51, 52, 53):
                 data['roundNo'] = tick
                 response = agent.decide(copy.deepcopy(data))['roleCommandMap']
                 mem = next(iter(agent.sessions.values()))
