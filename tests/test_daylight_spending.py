@@ -106,7 +106,8 @@ class DaylightSpendingTests(unittest.TestCase):
         mem=Memory(wall_watch_id=1)
         locked,funds=prepare_watch(turn,cfg,mem,nav,ledger,turn.workers[0],list(ledger.wall_cells))
         self.assertTrue(locked)
-        self.assertEqual(funds,420)
+        # Healthy side walls wait behind the sixth-night attack window.
+        self.assertEqual(funds,0)
         self.assertEqual(ledger.commands['1'],command('buy',name='WallFixer',num=8))
         self.assertEqual(ledger.gold,461)
 
@@ -116,9 +117,9 @@ class DaylightSpendingTests(unittest.TestCase):
         turn,cfg,nav,ledger=setup(data,cfg)
         locked,funds=prepare_watch(turn,cfg,Memory(wall_watch_id=1),nav,ledger,
                                     turn.workers[0],list(ledger.wall_cells))
-        self.assertEqual((locked,funds),(True,420))
-        self.assertEqual(ledger.work_jobs[1]['kind'], 'buy')
-        self.assertEqual(ledger.work_jobs[1]['name'], 'WallUpgradeVoucher2')
+        self.assertEqual((locked,funds),(True,0))
+        self.assertFalse(ledger.purchases)
+        self.assertEqual(ledger.notes[1]['conditions']['deferred']['WallUpgradeVoucher2'], 14)
 
     def test_daytime_damage_does_not_trigger_fixer_purchase(self):
         data,cfg=case()

@@ -49,12 +49,11 @@ def first_day_purchase_reserve(turn, mem, ledger, include_robots=True):
     if first_day_pioneer_plan_active(turn, mem) and mem.first_day_pioneer.get('phase') == 'return':
         return 0
     from .brain import observe_robot_summons
-    from .economy import voucher_for
+    from .economy import station_voucher_needed, voucher_for
     from .robot_assault import enemy_base
     state = observe_robot_summons(turn, mem)
     name = voucher_for(turn.station) if turn.station else None
-    held = any(name in (role.get('backpack') or [])
-               for role in turn.raw.get('teamOur', {}).get('roles', [])) if name else False
+    held = bool(turn.pioneer and not station_voucher_needed(turn, turn.pioneer, name)) if name else False
     reserve = (max(0, turn.shop.get(name, 0)) if name and not held
                and not state['station_purchased'] and name not in ledger.purchases else 0)
     if include_robots and not mem.night_scout.cancelled and enemy_base(turn) is not None:
@@ -89,7 +88,7 @@ def prepare_station_reserve(turn, cfg, mem, nav, ledger):
     """Buy the opening base heal before allocating money to robots or guns."""
     from .brain import observe_robot_summons
     from .commands import command
-    from .economy import voucher_for
+    from .economy import station_voucher_needed, voucher_for
     from .mining import return_destination
     hero, station = turn.pioneer, turn.station
     state = observe_robot_summons(turn, mem)
@@ -101,8 +100,7 @@ def prepare_station_reserve(turn, cfg, mem, nav, ledger):
     name = voucher_for(station)
     if (not name or name not in turn.shop or turn.shop[name] < 0
             or (hero.id, name) in mem.buy_failures or name in ledger.purchases
-            or any(name in (role.get('backpack') or [])
-                   for role in turn.raw.get('teamOur', {}).get('roles', []))):
+            or not station_voucher_needed(turn, hero, name)):
         return False
     if ledger.gold < turn.shop[name]:
         return False
@@ -149,7 +147,7 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
         return False
     from .brain import DAILY_SUMMON_LIMIT, observe_robot_summons, summon_best_robot
     from .commands import command
-    from .economy import voucher_for
+    from .economy import station_voucher_needed, voucher_for
     from .mining import return_destination
     from .model import SUMMON_ORDERS, neighbours
     from .robot_assault import enemy_base
@@ -185,14 +183,15 @@ def prepare_first_day_pioneer(turn, cfg, mem, nav, ledger):
             else:
                 summons['station_purchased'] = False
         state['pending_buy'] = None
-    name = state['station_item']
+    # Emergency use may have advanced the base since this shopping chain
+    # started. Never retry a stored, obsolete tier after it was consumed.
+    name = state['station_item'] = voucher_for(station)
     held = sum(hero.inventory[item] for item in SUMMON_ORDERS)
 
     if state['phase'] == 'shop':
         base_missing = bool(name and name == voucher_for(station)
                             and not summons['station_purchased']
-                            and not any(name in (role.get('backpack') or [])
-                                        for role in turn.raw['teamOur'].get('roles', [])))
+                            and station_voucher_needed(turn, hero, name))
         base_price = turn.shop.get(name, -1) if base_missing else 0
         robot_name = 'BossRobotSummonOrder'
         robot_price = turn.shop.get(robot_name, -1)

@@ -10,6 +10,23 @@ V1 = 'WallUpgradeVoucher1'
 V2 = 'WallUpgradeVoucher2'
 
 
+def priority_wall(turn, mem, wall, sites):
+    """Front, damaged and previously pressured walls keep upgrade priority."""
+    from .economy_plan import front_sites
+    return (wall.pos in front_sites(turn, sites) or mem.wall_hits.get(wall.pos, 0)
+            or wall.health < WALL_MAX_HEALTH[wall.level - 1]
+            or wall.pos in mem.wall_rebuild_levels)
+
+
+def defer_side_upgrades(turn, mem):
+    """Only the sixth-day defense-ready economy reserves an assault window."""
+    from .robot_assault import enemy_base
+    previous = mem.wall_watch.history[-1] if mem.wall_watch.history else None
+    return bool(turn.day == 6 and mem.wall_watch_id is not None and enemy_base(turn)
+                and turn.weapons and all(w.level == 3 for w in turn.weapons)
+                and not (previous and (previous.unmet or previous.lost)))
+
+
 def active(turn, mem):
     return bool(turn.day >= 4 and mem and mem.wall_watch_id is not None
                 and any(h.id == mem.wall_watch_id for h in turn.workers)
@@ -33,6 +50,8 @@ def requirements(turn, mem, hero, sites):
                          or w.health < WALL_MAX_HEALTH[w.level - 1]
                          or w.pos in mem.wall_rebuild_levels))
     key_gaps = sum(bool(p in front or mem.wall_hits.get(p, 0)) for p in gaps)
+    key_one = sum(w.level == 1 and priority_wall(turn, mem, w, sites)
+                  for w in walls.values()) + key_gaps
     target = min(hero.capacity, mem.wall_watch.stock_target(turn))
     previous = mem.wall_watch.history[-1] if mem.wall_watch.history else None
     safety = min(target, max(3, previous.used + 2) if previous and previous.unmet else 3)
@@ -42,6 +61,7 @@ def requirements(turn, mem, hero, sites):
                         PACK: max(0, target - hero.inventory[PACK])},
                 safety=max(0, safety - hero.inventory[PACK]), target=target,
                 key_three=max(0, key_walls + key_gaps - held[V2]),
+                key_one=max(0, key_one - held[V1]),
                 stockout=bool(previous and previous.unmet))
 
 
@@ -63,14 +83,19 @@ def shopping_list(turn, mem, hero, sites, gold, space):
             gold -= count * price
             space -= count
 
+    # Sixth-day offense defers only healthy, unpressured side/rear walls.
+    deferred = defer_side_upgrades(turn, mem)
+    one = report['key_one'] if deferred else demand[V1]
+    two = report['key_three'] if deferred else demand[V2]
     allocate(PACK, report['safety'])
-    allocate(V1, demand[V1])
+    allocate(V1, one)
     # Never fund L3 while an L2 prerequisite remains unpaid.
-    if order[V1] == demand[V1] and not report['stockout']:
+    if order[V1] == one and not report['stockout']:
         allocate(V2, report['key_three'])
     allocate(PACK, demand[PACK])
-    if order[V1] == demand[V1]:
-        allocate(V2, demand[V2])
+    if order[V1] == one:
+        allocate(V2, max(0, two - order[V2]))
+    report['deferred'] = {V1: demand[V1] - one, V2: demand[V2] - two} if deferred else {}
     report.update(order=dict(order), cost=sum(n * turn.shop[k] for k, n in order.items()),
                   unfunded={k: n - order[k] for k, n in demand.items() if n > order[k]})
     return report
@@ -332,7 +357,7 @@ def other_worker(turn, cfg, mem, nav, ledger, hero, towers, sites):
 
 def station_plan(turn, cfg, mem, nav, ledger, hero):
     """Only the pioneer buys base vouchers; protect an active task in place."""
-    from .economy import station_purchase_allowed, voucher_for
+    from .economy import station_purchase_allowed, station_voucher_needed, voucher_for
     from .mining import return_destination
     station = turn.station
     if (turn.day <= 1 or not turn.is_day or not hero or hero.id in ledger.used
@@ -342,7 +367,7 @@ def station_plan(turn, cfg, mem, nav, ledger, hero):
     name = voucher_for(station)
     if (not name or name in ledger.purchases or (hero.id, name) in mem.buy_failures
             or turn.shop.get(name, -1) < 0 or ledger.gold < turn.shop[name]
-            or hero.inventory[name]):
+            or not station_voucher_needed(turn, hero, name)):
         return None
     home, exact = return_destination(turn, nav, ledger, hero, mem)
     if not home:

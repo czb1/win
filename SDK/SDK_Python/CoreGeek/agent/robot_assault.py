@@ -441,13 +441,15 @@ def _spawn_at_entry(turn, ledger, base, entry, wall, deadline, rear_only=False, 
     return best
 
 
-def weakest_approach(turn, ledger, deadline=None, *, prefer_rear=False, preferred_sides=()):
+def weakest_approach(turn, ledger, deadline=None, *, prefer_rear=False, preferred_sides=(),
+                     wall_filter=None, spawn_filter=None):
     base = enemy_base(turn)
     if base is None:
         return None
     entries = sorted(((int(point[1] not in preferred_sides),
                        *_entry_rank(turn, base, point, wall, prefer_rear)), point, wall)
-                     for point, wall in _entry_walls(turn, base))
+                     for point, wall in _entry_walls(turn, base)
+                     if wall_filter is None or wall_filter(wall))
     chosen, chosen_key = None, None
     for rank, entry, wall in entries:
         if chosen_key is not None and rank > chosen_key[:len(rank)]:
@@ -457,6 +459,8 @@ def weakest_approach(turn, ledger, deadline=None, *, prefer_rear=False, preferre
                                 rear_only=prefer_rear and rear_approach(turn, base, entry),
                                 side_row=entry[1] if preferred else None)
         if spawn is None:
+            continue
+        if spawn_filter is not None and not spawn_filter(spawn[3]):
             continue
         key = (*rank, *spawn[:3], entry, spawn[3])
         if chosen_key is None or key < chosen_key:
@@ -484,7 +488,7 @@ def in_summon_cluster(ledger, point):
     return anchor is None or distance(anchor, point) <= FIRST_DAY_SUMMON_RADIUS
 
 
-def _summon_in_cluster(turn, ledger, base, entry, deadline):
+def _summon_in_cluster(turn, ledger, base, entry, deadline, forbidden=()):
     """Keep later day-one orders near the first still-reserved placement."""
     if deadline is not None:
         check_time(deadline)
@@ -493,7 +497,7 @@ def _summon_in_cluster(turn, ledger, base, entry, deadline):
         entry = None
     axis = wall_entry_axis(base, entry) if entry else 1
     side_row = entry[axis] if entry else None
-    blocked = turn.blocked | ledger.reserved | ledger.summon_pending_positions
+    blocked = turn.blocked | ledger.reserved | ledger.summon_pending_positions | set(forbidden)
     options = [(x, y)
                for x in range(anchor[0] - FIRST_DAY_SUMMON_RADIUS, anchor[0] + FIRST_DAY_SUMMON_RADIUS + 1)
                for y in range(anchor[1] - FIRST_DAY_SUMMON_RADIUS, anchor[1] + FIRST_DAY_SUMMON_RADIUS + 1)
@@ -540,7 +544,7 @@ def scouted_rear_summon_position(turn, ledger, deadline=None):
     The rear is relative to the two bases, not a hard-coded map direction.
     """
     base = enemy_base(turn)
-    if turn.day != 1 or not turn.is_day or base is None:
+    if turn.day not in (1, 6) or not turn.is_day or base is None:
         return None
     weapons = {u.id: u for u in (*ledger.robot_known_enemies, *turn.enemies)
                if u.kind in WEAPONS and base_distance(base, u.pos) == 1}
@@ -579,8 +583,16 @@ def choose_summon_position(turn, ledger, deadline=None):
     base = enemy_base(turn)
     if base is None:
         return None
+    if ledger.robot_summon_mode == 'late_wave' and ledger.robot_summon_anchor is not None:
+        weapons = (*ledger.robot_known_enemies, *turn.enemies,
+                   *getattr(ledger, 'late_known_weapons', ()))
+        forbidden = {(x, y) for x in range(ledger.robot_summon_anchor[0] - 2, ledger.robot_summon_anchor[0] + 3)
+                     for y in range(ledger.robot_summon_anchor[1] - 2, ledger.robot_summon_anchor[1] + 3)
+                     if any(w.kind == 'gatling' and distance(w.pos, (x, y)) <= w.attack_range
+                            for w in weapons)}
+        return _summon_in_cluster(turn, ledger, base, ledger.robot_assault_entry, deadline, forbidden)
     entry = open_assault_entry(turn, base, ledger.robot_assault_entry)
-    if entry is not None:
+    if turn.day == 1 and entry is not None:
         # A usable worker gap owns deployment, even after an earlier rear or
         # weak-entry fallback. Only keep an anchor already serving this gap.
         anchor = ledger.robot_summon_anchor
@@ -601,6 +613,11 @@ def choose_summon_position(turn, ledger, deadline=None):
     if (turn.day == 1 and ledger.robot_summon_anchor is not None
             and ledger.robot_summon_mode != 'rear_direct'):
         return _summon_in_cluster(turn, ledger, base, entry, deadline)
+    if turn.day != 1 and entry is not None:
+        position = _summon_at_gap(turn, ledger, base, entry, deadline)
+        if position is not None:
+            ledger.robot_summon_mode = 'scout_gap'
+            return position
     clear_sides = first_day_clear_sides(turn, base, ledger.robot_known_enemies) if base else set()
     # Without a direct rear shot or a usable gap, retain the old weak-entry
     # fallback, preferring an unarmed horizontal face when one is known.
