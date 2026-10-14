@@ -50,9 +50,13 @@ class RobotRouteContinuityTests(unittest.TestCase):
         # An opaque character, rather than a teammate's firing ray, closes
         # the direct stance so this still exercises real clearance routing.
         data['teamOur']['roles'].append(unit(10010, 'worker', 32, 8))
-        _, ledger, memory = decide(data, entry=(29, 7))
+        # Exercise ordinary clearance continuity without a prepared entrance;
+        # prepared-gap ray blockers now deliberately preempt these detours.
+        _, ledger, memory = decide(data)
         self.assertEqual(ledger.notes[30036]['conditions']['target_id'], 20011)
         self.assertEqual(ledger.commands['30036'], command('move', (34, 8)))
+        # Keep the route but no entrance commitment in this continuity fixture.
+        memory.clearance_entry = None
         # The next frame is supplied explicitly, not a simulated move result.
         data = frontage(73, ((29, 7), (34, 8), (33, 8)))
         data['teamOur']['roles'].append(unit(10010, 'worker', 32, 8))
@@ -104,7 +108,7 @@ class RobotRouteContinuityTests(unittest.TestCase):
 
     def test_clearance_is_not_abandoned_for_an_unhelpful_yield_or_base_detour(self):
         data, memory = self.clearing_approach()
-        _, ledger, memory = decide(data, memory, entry=(29, 7))
+        _, ledger, memory = decide(data, memory)
         note = ledger.notes[30036]
         self.assertEqual(note['reason'], 'robot_approach_path_blocker')
         self.assertEqual(note['conditions']['target_id'], 20011)
