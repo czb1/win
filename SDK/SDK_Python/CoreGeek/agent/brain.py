@@ -24,6 +24,7 @@ from .economy import first_day_front, build
 from .economy_plan import via, reserve_income_worker, maxed_weapon_mining_phase
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
+from .night_economy import hostiles as night_hostiles, release_gatling, work as night_work, resume_morning
 from .wall_watch import select_watch, prepare_watch, repair_watch
 from .sabotage import act_imps
 from .gate_guard import prepare_gate_guard
@@ -646,9 +647,15 @@ class Agent:
                     if hero.kind != "worker" or (relief and hero.id == relief[0].id):
                         return True
                     return night_guard_reason(turn, tower, self.cfg.task_danger_radius) is not None
+                released = release_gatling(turn, mem, ledger, pairs) if mixed else False
                 pairs = [(hero, tower) for hero, tower in pairs
                          if (shared is not None and tower.kind == "rocket")
+                         or (mixed and turn.day >= 2 and hero.id == mem.gatling_operator_id
+                             and not released)
                          or hero.id in mem.operator_yields or needs_defence(hero, tower)]
+                if released:
+                    pairs = [(hero, tower) for hero, tower in pairs
+                             if hero.id != mem.gatling_operator_id]
                 posts = {uid: p for uid, p in posts.items() if uid in {hero.id for hero, _ in pairs}}
                 mem.return_targets.clear()
                 mem.return_posts.clear()
@@ -758,6 +765,12 @@ class Agent:
                 if not opening_boss:
                     summon_best_robot(turn, self.cfg, mem, nav, ledger, towers, walls)
                 for hero in turn.heroes:
+                    if (hero.kind == 'worker' and hero.id not in ledger.used and turn.day >= 2
+                            and hero.id not in {h.id for h, _ in pairs}
+                            and (not night_hostiles(turn)
+                                 or mixed and released and hero.id == mem.gatling_operator_id)
+                            and night_work(turn, self.cfg, mem, nav, ledger, hero, start=True)):
+                        continue
                     if watcher and hero.id == watcher.id and hero.id not in ledger.used:
                         if hero.health <= 165 and hero.inventory["Medicine"]:
                             use_inventory(turn, nav, ledger, hero, local_only=True, mem=mem)
@@ -780,6 +793,7 @@ class Agent:
                 if income:
                     emit_event('income_reserve', dict(actor=income.id, day_left=turn.day_left), 'economy')
                 coordinate_traffic(turn, self.cfg, mem, nav, ledger, returning)
+                resume_morning(turn, self.cfg, mem, nav, ledger, returning)
                 # Reserve the watcher's repair budget before other dusk buyers
                 # spend it. The watcher may sell its own ore first.
                 watch_locked, watch_gold = prepare_watch(turn, self.cfg, mem, nav, ledger, watcher, walls)
