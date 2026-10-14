@@ -199,12 +199,67 @@ class WallWatchTests(unittest.TestCase):
         for level in (1, 2, 3):
             self.assertFalse(needs_night_repair(Unit.load(unit(30, 'wall', 5, 5, level=level, health=0))))
 
-    def test_no_pack_or_healthy_walls_keep_watcher_inside(self):
-        for packs, damaged in ((0, True), (3, False)):
-            p = self.case(packs=packs, damaged=damaged)
+    def test_stocked_watcher_returns_even_when_walls_are_healthy(self):
+        for damaged in (False, True):
+            p = self.case(packs=3, damaged=damaged)
             p['teamOur']['roles'][2]['pos'] = {'x': 10, 'y': 2}
             result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
             self.assertNotEqual(result['2']['action'], 'collect')
+
+    def test_empty_watcher_mines_even_when_walls_are_under_attack(self):
+        for tick in (70, 71, 79):
+            for mirror in (False, True):
+                with self.subTest(tick=tick, mirror=mirror):
+                    p = self.case(tick=tick, packs=0, mirror=mirror)
+                    p['teamOur']['roles'][2]['pos'] = {'x': 4 if mirror else 10, 'y': 2}
+                    result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
+                    self.assertEqual(result['2']['action'], 'collect')
+
+    def test_empty_watcher_can_mine_before_wave_appears(self):
+        p = self.case(packs=0)
+        p['robot']['roles'] = []
+        p['teamOur']['roles'][2]['pos'] = {'x': 10, 'y': 2}
+        agent = Agent(Config(llm_enabled=False))
+        for _ in range(2):
+            result = agent.decide(p)['roleCommandMap']
+            self.assertEqual(result['2']['action'], 'collect')
+            p['roundNo'] += 1
+
+    def test_last_pack_exhaustion_releases_watcher_on_observed_inventory(self):
+        p = self.case(tick=79, packs=1)
+        agent = Agent(Config(llm_enabled=False))
+        result = agent.decide(p)['roleCommandMap']
+        self.assertEqual(result['2'].get('name'), 'WallFixer')
+        p['roundNo'] += 1
+        p['teamOur']['roles'][2]['backpack'] = []
+        turn, cfg, nav, ledger = setup_case(p)
+        mem = next(iter(agent.sessions.values()))
+        self.assertFalse(repair_watch(turn, mem, nav, ledger, turn.units[2], layout(turn, cfg)[1]))
+        self.assertEqual(ledger.notes[2]['reason'], 'wall_watch_empty_released')
+        self.assertNotIn(2, ledger.used)
+
+    def test_failed_last_pack_use_keeps_watcher_defending(self):
+        p = self.case(tick=79, packs=1)
+        agent = Agent(Config(llm_enabled=False))
+        self.assertEqual(agent.decide(p)['roleCommandMap']['2'].get('name'), 'WallFixer')
+        p['roundNo'] += 1
+        p['lastRoundRoleActionResults'] = {'2': False}
+        self.assertEqual(agent.decide(p)['roleCommandMap']['2'].get('name'), 'WallFixer')
+
+    def test_empty_watcher_keeps_robot_danger_out_of_mining_route(self):
+        p = self.case(tick=79, packs=0)
+        p['teamOur']['roles'][2]['pos'] = {'x': 10, 'y': 2}
+        p['robot']['roles'][0]['pos'] = {'x': 11, 'y': 2}
+        result = Agent(Config(llm_enabled=False)).decide(p)['roleCommandMap']
+        self.assertNotEqual(result.get('2', {}).get('action'), 'collect')
+
+    def test_stocked_watcher_stays_inside_with_stunned_robots(self):
+        p = self.case(tick=79, packs=1, damaged=False)
+        p['robot']['roles'][0]['abnormalState'] = 'dizzy'
+        agent = Agent(Config(llm_enabled=False))
+        result = agent.decide(p)['roleCommandMap']
+        self.assertNotEqual(result.get('2', {}).get('action'), 'collect')
+        self.assertNotIn(2, next(iter(agent.sessions.values())).night_work)
 
     def test_daytime_buys_batch_even_with_healthy_walls(self):
         p = self.case(tick=40, packs=0, damaged=False)

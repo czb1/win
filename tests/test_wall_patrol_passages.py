@@ -94,6 +94,27 @@ class WallPatrolPassageTests(unittest.TestCase):
                 wall = next(w for w in turn.ours if w.pos == (28, 7))
                 self.assertIsNone(watch_route(turn, nav, ledger, mem, turn.units[1], sites, wall))
 
+    def test_stocked_outside_watcher_enters_reachable_pocket_when_target_is_blocked(self):
+        for mirror in (False, True):
+            with self.subTest(mirror=mirror):
+                data = self.case(mirror=mirror)
+                data['teamOur']['roles'][1]['pos'] = dict(x=6 if mirror else 34, y=13)
+                data['teamOur']['roles'][2]['pos'] = dict(x=10 if mirror else 30, y=11)
+                turn, _, nav, ledger, mem, sites = self.context(data)
+                wall = next(w for w in turn.ours if w.kind == 'wall' and w.health == 100)
+                self.assertIsNone(watch_route(turn, nav, ledger, mem, turn.units[1], sites, wall))
+                for _ in range(6):
+                    if turn.units[1].pos in geometry(turn, sites)[0]:
+                        break
+                    self.assertTrue(repair_watch(turn, mem, nav, ledger, turn.units[1], sites))
+                    self.assertEqual(ledger.commands['1']['action'], 'move')
+                    step = pos(ledger.commands['1']['targetPos'][0])
+                    self.assertNotIn(step, turn.blocked)
+                    data['teamOur']['roles'][1]['pos'] = ledger.commands['1']['targetPos'][0]
+                    data['roundNo'] += 1
+                    turn, _, nav, ledger, _, sites = self.context(data)
+                self.assertIn(turn.units[1].pos, geometry(turn, sites)[0])
+
     def test_boundary_under_enemy_attack_is_not_a_transit_cell(self):
         data = self.case()
         data['robot']['roles'][0]['pos'] = dict(x=31, y=15)
