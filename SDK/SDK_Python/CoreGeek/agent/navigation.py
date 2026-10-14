@@ -54,13 +54,11 @@ class Navigator:
         vehicle, reason = None, 'no_available_route'
         eligible = hero.kind == 'pioneer' and self.turn.is_day and self.turn.vehicle_cells
         if eligible:
-            returning_onboard = (returning and hero.is_driving
-                                 and hero.pos in self.turn.vehicle_cells)
             prefer = (prefer_vehicle and self.vehicle_detours and not self.turn.phase_task
                       and self.turn.tick < DEFENCE_RETURN_TICK and hero.health > 150
                       and ledger.plans.get(hero.id, {}).get('reason') != 'defence_recall')
             limit = max_rounds
-            if prefer and not returning_onboard:
+            if prefer and not returning:
                 limit = min(limit if limit is not None else self.turn.day_left,
                             DEFENCE_RETURN_TICK - self.turn.tick)
             else:
@@ -74,7 +72,7 @@ class Navigator:
                 try:
                     vehicle = plan_route(self, ledger, hero, goals, route, reserved,
                                          prefer=True, max_rounds=limit,
-                                         returning=returning_onboard)
+                                         returning=returning)
                     reason = vehicle.mode if vehicle else 'unavailable_or_deadline'
                 except DeadlineExceeded:
                     reason = 'search_budget_exhausted'

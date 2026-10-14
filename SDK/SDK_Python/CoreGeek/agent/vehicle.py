@@ -98,9 +98,9 @@ def plan_route(nav, ledger, hero, goals, walking, reserved=(), *, prefer=True, m
             or (nav.memory and hero.id in getattr(nav.memory, 'driving_disabled', ()))):
         return None
     driving = hero.is_driving and hero.pos in turn.vehicle_cells
-    # An onboard return may finish on foot after dark. Only its driving prefix
-    # uses the daylight budget; pickup and other trips retain full-trip limits.
-    allow_late_walk = returning and driving
+    # Return trips may board before dark and finish on foot after the car
+    # disappears. Only pickup/driving uses daylight; other trips keep full limits.
+    allow_late_walk = returning
     cars = turn.free_vehicle_cells
     if not driving and not cars:
         return None

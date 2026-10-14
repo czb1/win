@@ -212,8 +212,50 @@ class VehiclePriorityTests(unittest.TestCase):
         n.move_along(t.pioneer, l, n.search(t.pioneer, {goal}), {goal}, returning=True)
         self.assertEqual(len(l.commands['11']['targetPos']), 1)
 
-    def test_late_return_exception_does_not_extend_pickup_or_business_trip(self):
-        for driving, returning in [(False, True), (True, False)]:
+    def test_late_pedestrian_return_boards_adjacent_car_through_defend(self):
+        from agent.combat import defend
+        data = self.late_return_case(round_no=65, driving=False)
+        data['teamOur']['roles'][0]['pos'] = dict(x=24, y=19)
+        data['mapInfo']['zones'][0]['pos'] = dict(x=23, y=18)
+        t, c, n, l = self.setup(data)
+        goal = (8, 22)
+        l.operator_posts[11] = goal
+        l.plans[11] = {'reason': 'defence_recall'}
+        walking = n.search(t.pioneer, {goal})
+        self.assertGreater(walking[0], t.day_left)
+        selected = plan_route(n, l, t.pioneer, {goal}, walking, returning=True)
+        self.assertIsNotNone(selected)
+        self.assertGreater(selected.rounds, t.day_left)
+        self.assertLessEqual(selected.rounds - selected.walking_tail, t.day_left)
+        self.assertNotIn(selected.parking, home_area(t, l))
+        defend(t, n, l, pairs=[(t.pioneer, t.weapons[0])], posts={11: goal})
+        self.assertEqual(l.commands['11'], command('move', (23, 18)))
+
+    def test_last_daylight_pedestrian_return_boards_then_night_walks(self):
+        memory = MovementMemory()
+        goal = (12, 5)
+        t, c, n, l = self.setup(case(round_no=69), memory)
+        n.move_along(t.pioneer, l, n.search(t.pioneer, {goal}), {goal}, returning=True)
+        self.assertEqual(l.commands['11'], command('move', (2, 5)))
+        previous = l.commands
+        t, c, n, l = self.setup(case(start=(2, 5), car=None, round_no=70), memory)
+        memory.vehicle.observe(t, SimpleNamespace(last_round=69, last_commands=previous))
+        self.assertIsNone(memory.vehicle.journey)
+        walking = n.search(t.pioneer, {goal})
+        n.move_along(t.pioneer, l, walking, {goal}, returning=True)
+        self.assertEqual(l.commands['11'], command('move', walking[1]))
+        self.assertEqual(len(l.commands['11']['targetPos']), 1)
+
+    def test_late_return_cannot_fetch_car_before_it_disappears(self):
+        t, c, n, l = self.setup(case(car=(1, 13), round_no=67))
+        goal = (5, 5)
+        walking = n.search(t.pioneer, {goal})
+        self.assertIsNone(plan_route(n, l, t.pioneer, {goal}, walking, returning=True))
+        n.move_along(t.pioneer, l, walking, {goal}, returning=True)
+        self.assertEqual(l.commands['11'], command('move', walking[1]))
+
+    def test_late_return_exception_does_not_extend_business_trip(self):
+        for driving, returning in [(False, False), (True, False)]:
             with self.subTest(driving=driving, returning=returning):
                 data = case(start=(2, 5) if driving else (1, 5), driving=driving, round_no=69)
                 t, c, n, l = self.setup(data)
