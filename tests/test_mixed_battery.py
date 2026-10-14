@@ -41,7 +41,7 @@ def enemy_walls(data, count=6):
 
 
 class MixedBatteryTests(unittest.TestCase):
-    def test_gatling_is_on_inward_y_flank_without_moving_rockets_or_walls(self):
+    def test_gatling_is_on_inward_y_flank_with_only_its_wall_gate_moved(self):
         for cfg in (Config(), Config.load(ROOT / 'config/default.json'),
                     Config(loadout=['gatling', 'rocket', 'rocket'])):
             for station, expected in (((8, 23), (8, 21)), ((31, 10), (32, 11))):
@@ -55,7 +55,12 @@ class MixedBatteryTests(unittest.TestCase):
                     old_sites, old_walls = layout(Turn(data, old_cfg), old_cfg)
                     rockets = {p for kind, p in zip(cfg.loadout, sites) if kind == 'rocket'}
                     self.assertEqual(rockets, set(old_sites[:2]))
-                    self.assertEqual(walls, old_walls)
+                    sy = -1 if station[1] > 16 else 1
+                    gate = (expected[0], expected[1] + sy)
+                    old_gate = (station[0] - 2 if station[0] < 20 else station[0] + 3,
+                                station[1] - 1 if sy < 0 else station[1])
+                    self.assertEqual(set(old_walls) - set(walls), {gate})
+                    self.assertEqual(set(walls) - set(old_walls), {old_gate})
                     self.assertEqual(turn.base_distance(expected), 1)
                     ys = [p[1] for p in turn.station.cells]
                     self.assertEqual(expected[1], min(ys) - 1 if station[0] < 20 else max(ys) + 1)

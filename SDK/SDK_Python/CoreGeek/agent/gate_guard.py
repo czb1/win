@@ -254,8 +254,8 @@ def prepare_gate_guard(turn, cfg, mem, nav, ledger, towers, walls):
     else:
         inward = (0, -1)
     facing = gate[0] + inward[0], gate[1] + inward[1]
-    # The inferred Y-flank gatling still covers the unchanged side gate.
-    # Explicit layouts retain the original directly-facing requirement.
+    # Default and legacy batteries face their sole gate directly. Retain the
+    # clear-ray fallback for other inferred weapon permutations.
     covered = False
     if (cfg.layout_mode != 'explicit' and len(towers) == 3
             and cfg.loadout.count('rocket') == 2 and cfg.loadout.count('gatling') == 1):

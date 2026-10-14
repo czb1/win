@@ -20,7 +20,7 @@ from .projectiles import wall_gates
 from .economy import workers, pioneer, walk, vacate_site, use_inventory, finish_preparation, wall_sector, dusk_resources
 from .economy import reserve_treasure_gold, pioneer_needs_night_relief
 from .treasure_clues import treasure_active
-from .economy import first_day_front, build
+from .economy import first_day_front, build, open_wall_gate
 from .economy_plan import via, reserve_income_worker, maxed_weapon_mining_phase
 from .intelligence import Memory, Intelligence
 from .mining import night_mine
@@ -529,6 +529,7 @@ class Agent:
             if not scout_shopping:
                 prepare_station_reserve(turn, self.cfg, mem, nav, ledger)
             nav.vehicle_detours = True
+            open_wall_gate(turn, self.cfg, nav, ledger)
             opening_scout_excluded = ({w.id for w in turn.workers}
                 if turn.day == 1 and len(turn.workers) < 2
                 and not first_day_guns_built(turn, self.cfg) else set())

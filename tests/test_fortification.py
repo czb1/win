@@ -57,12 +57,13 @@ class LayoutRegressionTests(unittest.TestCase):
         self.assertTrue(all(t.base_distance(p) == 2 for p in walls))
         self.assertTrue(all(p[0] in (1, 6) or p[1] in (8, 13) for p in walls))
         self.assertTrue(all(t.base_distance(p) == 1 for p in towers))
-        # A single side/rear cell keeps the shared post and inner aisle open.
-        self.assertNotIn((1, 10), walls)
+        # The sole entrance is directly outside the inward-Y gatling.
+        self.assertNotIn((3, 8), walls)
+        self.assertIn((1, 10), walls)
         self.assertIn((1, 11), walls)
         self.assertIn((2, 8), walls)
 
-    def test_only_one_side_gate_connects_inside_and_outside_in_all_corners(self):
+    def test_only_one_gatling_gate_connects_inside_and_outside_in_all_corners(self):
         for x, y in ((3, 11), (10, 4), (3, 4), (10, 11)):
             with self.subTest(station=(x, y)):
                 p = payload(roles=[unit(13, "station", x, y), unit(10, "worker", 7, 7)])
@@ -70,7 +71,7 @@ class LayoutRegressionTests(unittest.TestCase):
                 towers, walls = layout(t, cfg)
                 perimeter = {(a, b) for a in range(x - 2, x + 4) for b in range(y - 3, y + 3)
                              if a in (x - 2, x + 3) or b in (y - 3, y + 2)}
-                gate = (x - 2 if x < 7 else x + 3, y - 1 if y > 7 else y)
+                gate = (x if x < 7 else x + 1, y - 3 if y > 7 else y + 2)
                 self.assertEqual(perimeter - set(walls), {gate})
                 p["teamOur"]["roles"] += [unit(100+i, "wall", *s) for i, s in enumerate(walls)]
                 p["teamOur"]["roles"] += [unit(20+i, "rocket", *s) for i, s in enumerate(towers)]
@@ -80,14 +81,14 @@ class LayoutRegressionTests(unittest.TestCase):
                 self.assertIsNone(nav.approach(t.workers[0], t.station.cells))
                 self.assertNotIn(gate, wall_gaps(t, walls, {gate: 10}))
 
-    def test_side_gate_is_never_queued_as_a_repair(self):
+    def test_gatling_gate_is_never_queued_as_a_repair(self):
         p = payload(roles=[unit(13, "station", 3, 11)])
         cfg = Config()
         _, walls = layout(Turn(p, cfg), cfg)
         p["teamOur"]["roles"] += [unit(100+i, "wall", *s) for i, s in enumerate(walls)]
-        mem = Memory(wall_hits={(1, 10): 10})
+        mem = Memory(wall_hits={(3, 8): 10})
         mem.observe(Turn(p, cfg), cfg)
-        self.assertNotIn((1, 10), mem.wall_rebuild_levels)
+        self.assertNotIn((3, 8), mem.wall_rebuild_levels)
         self.assertFalse(mem.wall_rebuild_levels)
 
     def test_side_switch_mirrors_the_entire_blueprint(self):
@@ -157,7 +158,7 @@ class ConstructionRegressionTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 p = payload(roles=[unit(13, "station", 3, 11),
                                    unit(10, "worker", 2, 11, backpack=["stone"]),
-                                   unit(14, kind, 1, 10)])
+                                   unit(14, kind, 3, 8)])
                 t, cfg, _, _ = setup_case(p)
                 towers, walls = layout(t, cfg)
                 target = (1, 11)
