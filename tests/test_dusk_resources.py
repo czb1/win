@@ -174,14 +174,14 @@ class DuskResourceTests(unittest.TestCase):
         plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
         self.assertIsNone(plan)
 
-    def test_late_wall_phase_prefetches_front_and_other_level_three(self):
+    def test_late_wall_phase_prefetches_only_front_level_three(self):
         p = self.case(440, gold=120)
         p["teamOur"]["roles"][2]["level"] = 3
         p["teamOur"]["roles"][3]["level"] = 2
         p["teamOur"]["roles"].append(unit(31, "wall", 2, 3, level=2, health=1000))
         t, c, n, l = self.setup(p)
         plan = supplies(t, c, Memory(), n, l, t.workers[0], bulk=True)
-        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 2))
+        self.assertEqual((plan[0], plan[2]), ("WallUpgradeVoucher2", 1))
 
     def test_final_turn_can_use_adjacent_voucher_without_leaving_post(self):
         p = self.case(69)

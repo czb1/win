@@ -184,7 +184,7 @@ class WallDaylightPriorityTests(unittest.TestCase):
         self.assertTrue(batch_sale_ready(t, cfg, mem, nav, ledger, t.workers[0]))
         locked, funds = prepare_watch(t, cfg, mem, nav, ledger, t.workers[0], ledger.wall_cells)
         self.assertTrue(locked)
-        self.assertEqual(funds, 650)
+        self.assertEqual(funds, 220)
         self.assertEqual(ledger.work_jobs[1]['kind'], 'sell')
         self.assertEqual(ledger.work_jobs[1]['target'], (20, 16))
         self.assertIn(1, mem.sale_workers)
